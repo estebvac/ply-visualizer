@@ -395,6 +395,19 @@ The implementation is expected to modify:
 - `engine/src/state/viewer.svelte.js`
   - default control scheme becomes `orbit`.
 
+- `engine/index.html`
+  - static Help/shortcuts copy updated to the Standard Orbit mouse contract;
+  - legacy T/O/I/K shortcut descriptions removed.
+
+VS Code host files are expected to remain behaviorally unchanged:
+
+- `src/extension.ts`
+  - retain the existing `retainContextWhenHidden: true` custom-editor registration;
+- `src/pointCloudEditorProvider.ts`
+  - no new navigation message types or CSP changes.
+
+Modify those host files only if verification exposes a concrete integration problem.
+
 Tests expected to change/add include:
 
 - `engine/test/controls-camera-tabs.spec.ts`;
@@ -406,7 +419,103 @@ Tests expected to change/add include:
 
 `engine/src/cameraViews.ts` and `CameraControlsPanel.svelte` should remain behaviorally unchanged unless synchronization tests expose a missing `controls.update()` call.
 
-## 14. Acceptance Criteria
+## 14. VS Code Custom Editor Requirements
+
+The primary product surface is a VS Code custom editor webview, not a normal top-level browser page. The standalone browser build remains useful for automated interaction tests, but implementation decisions must also respect the VS Code host.
+
+### 14.1 Webview execution model
+
+The viewer is hosted by `PointCloudEditorProvider` as a VS Code `CustomReadonlyEditorProvider`. The webview already enables scripts and loads the compiled viewer bundle through `webview.asWebviewUri()` under a nonce-based Content Security Policy.
+
+OrbitControls is bundled into the existing `main.js` by webpack. The navigation change must therefore:
+
+- add no remote script, CDN, or external runtime dependency;
+- require no CSP relaxation;
+- require no new extension-to-webview message type;
+- continue to initialize entirely inside the existing webview bundle.
+
+The existing `webviewReady` message gate must remain unrelated to camera navigation. Navigation must be usable once the webview JavaScript initializes, regardless of whether file data is still being transferred.
+
+### 14.2 Webview lifecycle and hidden tabs
+
+The extension already registers the custom editor with:
+
+```ts
+webviewOptions: {
+  retainContextWhenHidden: true,
+}
+```
+
+That behavior is intentionally retained for this feature. A hidden/revealed editor must keep the current camera, target, selected navigation mode, and loaded GPU scene without reinitializing OrbitControls.
+
+This task must not add a second camera-persistence mechanism such as `acquireVsCodeApi().setState()` solely for navigation. If VS Code fully destroys and recreates the custom editor, a fresh viewer may start with the normal Standard Orbit defaults and the existing document loading/fit flow.
+
+### 14.3 Right-click ownership and VS Code context menus
+
+VS Code webviews can provide a context menu on `contextmenu`. Standard Orbit assigns right mouse drag to pan, so the canvas must suppress the host/webview context menu for right-click interactions.
+
+Requirement:
+
+- right-click/drag on `#three-canvas` must be consumed by OrbitControls and must not open the VS Code webview context menu;
+- context-menu behavior outside the 3D canvas must not be globally disabled.
+
+OrbitControls already installs a canvas-level `contextmenu` handler. The implementation should rely on that native behavior if verified in the VS Code host. Add an extra canvas listener only if the host smoke test demonstrates that OrbitControls alone is insufficient.
+
+### 14.4 Pointer capture and touch behavior
+
+OrbitControls must stay connected directly to `renderer.domElement` / `#three-canvas`. Pointer capture, pointer move/up, wheel, and touch listeners must not be proxied through the VS Code extension host.
+
+No extension-side mouse messages are introduced.
+
+The implementation must verify that dragging continues correctly when the pointer moves rapidly within the webview and that releasing the pointer ends the interaction without sticky orbit/pan state.
+
+### 14.5 Keyboard ownership
+
+The viewer already has its own document-level shortcut handler. OrbitControls' optional `listenToKeyEvents()` must **not** be enabled.
+
+Reasons:
+
+- VS Code owns many keyboard commands at the workbench level;
+- the visualizer already uses arrow/navigation keys in sequence workflows;
+- duplicate key listeners would make the active behavior depend on focus and event ordering.
+
+Only the application's existing shortcut handler owns `F` and `R` for Fit and Reset. Shortcuts remain disabled while an input, textarea, or select element has focus.
+
+### 14.6 Focus and editor interaction
+
+Mouse navigation must work whenever the pointer is over the canvas without requiring the canvas to become a separately tab-focusable control.
+
+The task must not add a `tabindex` merely to support OrbitControls because mouse/pointer navigation does not require it. This also avoids changing VS Code keyboard focus traversal.
+
+Clicking controls in the Svelte side panels must not leave OrbitControls in a dragging state, and returning the pointer to the canvas must resume normal navigation.
+
+### 14.7 Rendering and background behavior
+
+Standard Orbit uses `enableDamping = false`, so it does not require a perpetual animation loop. This is especially important inside VS Code, where hidden or inactive editors should not spend frames on inertial camera settling.
+
+The existing on-demand `requestRender()` strategy remains authoritative. OrbitControls `change` events request renders only while the camera is actively changing or when a programmatic camera operation occurs.
+
+### 14.8 VS Code-specific verification
+
+Browser Playwright tests remain the fast automated interaction layer, but release verification must also cover the actual VS Code custom editor because browser tests cannot prove workbench/webview context-menu and focus behavior.
+
+The VS Code host smoke test must verify:
+
+1. open a supported file through `plyViewer.plyEditor`;
+2. confirm Standard Orbit is active immediately;
+3. LMB orbit works;
+4. MMB and wheel dolly work;
+5. RMB pans without opening a VS Code context menu;
+6. double-click pivot and Shift + double-click measurement work;
+7. `F` and `R` work while the canvas/webview has focus;
+8. shortcuts do not fire while editing a numeric/text input;
+9. switch to another editor tab and back; camera/target remain unchanged because `retainContextWhenHidden` is enabled;
+10. switch to a legacy mode and back to Standard Orbit without camera jump;
+11. close and reopen the editor; the viewer initializes cleanly with Standard Orbit and existing file-loading behavior.
+
+The extension-host regression suite must still pass, including custom editor registration, CSP/resource loading, ready-gate behavior, and disposal.
+
+## 15. Acceptance Criteria
 
 The change is complete when:
 
@@ -422,14 +531,20 @@ The change is complete when:
 10. recovered orientation and XYZ camera controls remain synchronized;
 11. legacy control engines remain accessible under Advanced Navigation;
 12. switching modes does not jump or corrupt camera state;
-13. all focused navigation/picking tests and the existing relevant regression suite pass.
+13. all focused navigation/picking tests and the existing relevant regression suite pass;
+14. the bundled navigation requires no CSP relaxation or new webview message protocol;
+15. RMB pan works inside the real VS Code custom editor without opening the webview context menu;
+16. hiding and restoring the editor preserves camera/target state under the existing `retainContextWhenHidden` configuration;
+17. the VS Code custom-editor smoke checklist in Section 14.8 passes.
 
-## 15. Reference Behavior
+## 16. Reference Behavior
 
 The standard behavior intentionally follows Three.js OrbitControls rather than reproducing it manually:
 
 - Three.js OrbitControls documentation: https://threejs.org/docs/pages/OrbitControls.html
 - Three.js official example: https://threejs.org/examples/misc_controls_orbit.html
 - Varjo Teleport camera controls sample: https://d1ziouw89q7sp5.cloudfront.net/teleport-js/samples/camera_controls.html
+- VS Code Webview API: https://code.visualstudio.com/api/extension-guides/webview
+- VS Code Custom Editor API: https://code.visualstudio.com/api/extension-guides/custom-editors
 
 The project currently uses Three.js `^0.185.0`; implementation should use the OrbitControls API already present in that dependency and must not add a competing navigation dependency.
