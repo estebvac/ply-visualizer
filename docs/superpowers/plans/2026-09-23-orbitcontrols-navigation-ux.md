@@ -372,14 +372,52 @@ expect(afterMiss.target).toEqual(beforeMiss.target);
 
 - [ ] **Step 2: Add a pivot regression asserting camera position stays fixed**
 
-In `engine/test/orbit-navigation.spec.ts`, load a visible point cloud, capture camera position and target, dispatch a double-click that produces the existing `screen-space pick` log, then assert:
+In `engine/test/orbit-navigation.spec.ts`, use a deterministic two-point ASCII PLY so the fitted target is not equal to the point that will be selected:
+
+```ts
+const pivotPly = Buffer.from(
+  [
+    'ply',
+    'format ascii 1.0',
+    'element vertex 2',
+    'property float x',
+    'property float y',
+    'property float z',
+    'end_header',
+    '-1 0 0',
+    '3 0 0',
+    '',
+  ].join('\\n'),
+  'utf8'
+);
+```
+
+Load it through `#hiddenFileInput`. Project the known world point `(3, 0, 0)` to canvas coordinates using the live camera:
+
+```ts
+const pick = await page.evaluate(() => {
+  const v: any = (window as any).visualizer;
+  const THREE = (window as any).THREE;
+  const canvas = document.getElementById('three-canvas') as HTMLCanvasElement;
+  const rect = canvas.getBoundingClientRect();
+  const p = new THREE.Vector3(3, 0, 0).project(v.camera);
+  return {
+    x: rect.left + ((p.x + 1) * 0.5) * rect.width,
+    y: rect.top + ((1 - p.y) * 0.5) * rect.height,
+  };
+});
+```
+
+If `THREE` is not exposed globally by the bundle, compute the projection in the test from the camera's serialized projection/view matrices instead of changing production code just for the test.
+
+Capture camera position and target, dispatch the double-click at `pick`, then assert:
 
 ```ts
 expect(delta3(after.position, before.position)).toBeLessThan(1e-6);
-expect(delta3(after.target, before.target)).toBeGreaterThan(1e-6);
+expect(delta3(after.target, before.target)).toBeGreaterThan(1e-3);
 ```
 
-For Shift + double-click, assert the measurement count increments while target remains unchanged. Read the actual manager state from `window.visualizer.measurementManager`; do not infer success only from a status string.
+For Shift + double-click at the same projected point, assert the measurement count increments while target remains unchanged. Read the actual manager state from `window.visualizer.measurementManager`; do not infer success only from a status string.
 
 - [ ] **Step 3: Run the two focused tests and verify failure**
 
@@ -573,7 +611,31 @@ Move the existing mode buttons and rotation-center behavior into:
     >Arcball</button>
   </div>
 
-  <!-- Existing Rotation Center Behavior buttons stay here. -->
+  <p class="setting-description">When double-clicking to set rotation center:</p>
+  <div class="control-buttons">
+    <button
+      id="rotation-center-move-camera"
+      class="control-button"
+      class:active={rotationCenterMode === 'move-camera'}
+      onclick={() => setRotationCenterMode('move-camera')}
+    >Move Camera (Lateral)</button>
+    <button
+      id="rotation-center-keep-camera"
+      class="control-button"
+      class:active={rotationCenterMode === 'keep-camera'}
+      onclick={() => setRotationCenterMode('keep-camera')}
+    >Keep Camera Position</button>
+    <button
+      id="rotation-center-keep-distance"
+      class="control-button"
+      class:active={rotationCenterMode === 'keep-distance'}
+      onclick={() => setRotationCenterMode('keep-distance')}
+    >Keep Distance</button>
+  </div>
+  <p class="setting-description">
+    Move Camera slides the camera on the view plane. Keep Camera changes only the pivot.
+    Keep Distance moves the camera to preserve its distance from the new pivot.
+  </p>
 </details>
 ```
 
@@ -714,18 +776,41 @@ git commit -m "feat: simplify navigation UI around standard orbit"
 
 - [ ] **Step 1: Add a preset/XYZ synchronization regression**
 
-In `engine/test/orbit-navigation.spec.ts`, use the Camera tab to apply one axis preset and one ISO preset. For each preset:
+In `engine/test/orbit-navigation.spec.ts`, use the Camera tab and the existing ARIA labels from `ViewOrientationSelector.svelte`:
 
 ```ts
-const before = await cameraState(page);
-// Click the preset button by its existing data/aria selector.
-const after = await cameraState(page);
+await page.click('[data-tab="camera"]');
 
-expect(delta3(after.target, before.target)).toBeLessThan(1e-6);
-expect(Math.abs(after.distance - before.distance)).toBeLessThan(1e-4);
+const beforeAxis = await cameraState(page);
+await page
+  .getByRole('button', { name: 'View from +X toward the rotation center' })
+  .click();
+const afterAxis = await cameraState(page);
+
+expect(delta3(afterAxis.target, beforeAxis.target)).toBeLessThan(1e-6);
+expect(Math.abs(afterAxis.distance - beforeAxis.distance)).toBeLessThan(1e-4);
+
+const beforeIso = await cameraState(page);
+await page
+  .getByRole('button', { name: 'Isometric view from +X, −Y, +Z' })
+  .click();
+const afterIso = await cameraState(page);
+
+expect(delta3(afterIso.target, beforeIso.target)).toBeLessThan(1e-6);
+expect(Math.abs(afterIso.distance - beforeIso.distance)).toBeLessThan(1e-4);
 ```
 
-Then edit one XYZ numeric field and assert:
+Then edit the existing X-position numeric field and assert:
+
+```ts
+const xInput = page.getByLabel('Camera X position');
+const newX = afterIso.position[0] + Math.max(afterIso.distance * 0.1, 0.1);
+await xInput.fill(String(newX));
+await xInput.press('Enter');
+const afterXYZ = await cameraState(page);
+```
+
+and assert:
 
 ```ts
 expect(delta3(afterXYZ.target, after.target)).toBeLessThan(1e-6);
@@ -1061,7 +1146,8 @@ Minimum release-candidate smoke:
 If no changes were needed, do not create an empty commit. Otherwise:
 
 ```bash
-git add <only-the-verified-test-or-doc-files>
+git add engine/test src/test docs/superpowers
+git diff --cached --check
 git commit -m "test: complete orbit navigation regression coverage"
 ```
 
