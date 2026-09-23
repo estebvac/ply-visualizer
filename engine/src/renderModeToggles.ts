@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { SpatialData } from './interfaces';
+import { createVoxelMesh } from './visualization/VoxelRenderer';
 
 /**
  * Per-file solid/wireframe/points/normals render-mode toggles and the mesh
@@ -10,14 +11,17 @@ export interface RenderModeHost {
   solidVisible: boolean[];
   wireframeVisible: boolean[];
   pointsVisible: boolean[];
+  voxelsVisible: boolean[];
   normalsVisible: boolean[];
   meshes: (THREE.Mesh | THREE.Points | THREE.LineSegments | null)[];
   multiMaterialGroups: (THREE.Group | null)[];
   materialMeshes: (THREE.Object3D[] | null)[];
   vertexPointsObjects: (THREE.Points | null)[];
+  voxelObjects: (THREE.InstancedMesh | null)[];
   normalsVisualizers: (THREE.LineSegments | null)[];
   fileVisibility: boolean[];
   pointSizes: number[];
+  voxelSizes: number[];
   allowTransparency: boolean;
   scene: THREE.Scene;
   requestRender(): void;
@@ -58,6 +62,9 @@ export function toggleUniversalRenderMode(
       break;
     case 'points':
       togglePointsRendering(host, fileIndex);
+      break;
+    case 'voxels':
+      toggleVoxelRendering(host, fileIndex);
       break;
     case 'normals':
       toggleNormalsRendering(host, fileIndex);
@@ -118,6 +125,41 @@ export function togglePointsRendering(host: RenderModeHost, fileIndex: number): 
 
   // Toggle points visibility state
   host.pointsVisible[fileIndex] = !host.pointsVisible[fileIndex];
+  if (host.pointsVisible[fileIndex]) {
+    host.voxelsVisible[fileIndex] = false;
+  }
+
+  updateMeshVisibilityAndMaterial(host, fileIndex);
+  host.requestRender();
+}
+
+export function toggleVoxelRendering(host: RenderModeHost, fileIndex: number): void {
+  if (fileIndex < 0 || fileIndex >= host.spatialFiles.length) {
+    return;
+  }
+  const source = host.meshes[fileIndex];
+  if (!(source instanceof THREE.Points)) {
+    return;
+  }
+
+  while (host.voxelsVisible.length <= fileIndex) {
+    host.voxelsVisible.push(false);
+  }
+  host.voxelsVisible[fileIndex] = !host.voxelsVisible[fileIndex];
+
+  if (host.voxelsVisible[fileIndex]) {
+    host.pointsVisible[fileIndex] = false;
+    if (!host.voxelObjects[fileIndex]) {
+      const voxels = createVoxelMesh(source, host.voxelSizes[fileIndex] || 0.1);
+      voxels.matrix.copy(source.matrix);
+      voxels.matrixAutoUpdate = false;
+      voxels.matrixWorldNeedsUpdate = true;
+      host.voxelObjects[fileIndex] = voxels;
+      host.scene.add(voxels);
+    }
+  } else {
+    host.pointsVisible[fileIndex] = true;
+  }
 
   updateMeshVisibilityAndMaterial(host, fileIndex);
   host.requestRender();
@@ -137,12 +179,17 @@ export function updateMeshVisibilityAndMaterial(host: RenderModeHost, fileIndex:
   const solidVisible = host.solidVisible[fileIndex] ?? true;
   const wireframeVisible = host.wireframeVisible[fileIndex] ?? false;
   const pointsVisible = host.pointsVisible[fileIndex] ?? true;
+  const voxelsVisible = host.voxelsVisible[fileIndex] ?? false;
   const fileVisible = host.fileVisibility[fileIndex] ?? true;
 
   // Set visibility for the target (mesh or multi-material group)
   if (mesh && mesh.type === 'Points') {
     // Point cloud case
     mesh.visible = pointsVisible && fileVisible;
+    const voxels = host.voxelObjects[fileIndex];
+    if (voxels) {
+      voxels.visible = voxelsVisible && fileVisible;
+    }
   } else {
     // Triangle mesh or multi-material group case
     target.visible = (solidVisible || wireframeVisible) && fileVisible;
@@ -436,6 +483,9 @@ export function updateUniversalRenderButtonStates(host: RenderModeHost): void {
         break;
       case 'points':
         isActive = host.pointsVisible[fileIndex] ?? true;
+        break;
+      case 'voxels':
+        isActive = host.voxelsVisible[fileIndex] ?? false;
         break;
       case 'normals':
         isActive = host.normalsVisible[fileIndex] ?? false;

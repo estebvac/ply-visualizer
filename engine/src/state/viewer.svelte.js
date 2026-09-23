@@ -22,8 +22,14 @@ export const viewerState = $state(
    *   cameraNear: number;
    *   cameraFar: number;
    *   cameraPositionText: string;
+   *   cameraPositionX: number;
+   *   cameraPositionY: number;
+   *   cameraPositionZ: number;
    *   cameraRotationText: string;
    *   cameraTargetText: string;
+   *   cameraTargetX: number;
+   *   cameraTargetY: number;
+   *   cameraTargetZ: number;
    * }}
    */ ({
     controlScheme: 'trackball',
@@ -41,7 +47,13 @@ export const viewerState = $state(
     cameraNear: 0.001,
     cameraFar: 1000000,
     cameraPositionText: '(0.000, 0.000, 0.000)',
+    cameraPositionX: 0,
+    cameraPositionY: 0,
+    cameraPositionZ: 0,
     cameraRotationText: '(0.0°, 0.0°, 0.0°)',
     cameraTargetText: '(0.000, 0.000, 0.000)',
+    cameraTargetX: 0,
+    cameraTargetY: 0,
+    cameraTargetZ: 0,
   })
 );

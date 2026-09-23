@@ -1,8 +1,80 @@
 <script lang="ts">
   import { viewerState } from '../state/viewer.svelte';
   import { captureScreenshot, copyCameraStateToClipboard } from '../utils/viewCapture';
+  import { setCameraPosition } from '../cameraViews';
+  import ViewOrientationSelector from './ViewOrientationSelector.svelte';
 
   let { host }: { host: any } = $props();
+
+  type PositionAxis = 'x' | 'y' | 'z';
+
+  const cameraDistance = $derived(
+    Math.hypot(
+      viewerState.cameraPositionX - viewerState.cameraTargetX,
+      viewerState.cameraPositionY - viewerState.cameraTargetY,
+      viewerState.cameraPositionZ - viewerState.cameraTargetZ
+    )
+  );
+  const positionSliderSpan = $derived(Math.max(cameraDistance * 2, 1));
+  const positionSliderStep = $derived(Math.max(positionSliderSpan / 1000, 0.001));
+  const positionAxes = $derived([
+    {
+      key: 'x' as PositionAxis,
+      label: 'X',
+      value: viewerState.cameraPositionX,
+      target: viewerState.cameraTargetX,
+    },
+    {
+      key: 'y' as PositionAxis,
+      label: 'Y',
+      value: viewerState.cameraPositionY,
+      target: viewerState.cameraTargetY,
+    },
+    {
+      key: 'z' as PositionAxis,
+      label: 'Z',
+      value: viewerState.cameraPositionZ,
+      target: viewerState.cameraTargetZ,
+    },
+  ]);
+
+  function updatePositionAxis(axis: PositionAxis, value: number): boolean {
+    if (!Number.isFinite(value)) {
+      return false;
+    }
+    const next = {
+      x: viewerState.cameraPositionX,
+      y: viewerState.cameraPositionY,
+      z: viewerState.cameraPositionZ,
+    };
+    next[axis] = value;
+    return setCameraPosition(host, next.x, next.y, next.z);
+  }
+
+  function onPositionSliderInput(axis: PositionAxis, e: Event) {
+    updatePositionAxis(axis, parseFloat((e.target as HTMLInputElement).value));
+  }
+
+  function onPositionInputCommit(axis: PositionAxis, e: Event) {
+    const input = e.target as HTMLInputElement;
+    const value = parseFloat(input.value);
+    if (!updatePositionAxis(axis, value)) {
+      const current =
+        axis === 'x'
+          ? viewerState.cameraPositionX
+          : axis === 'y'
+            ? viewerState.cameraPositionY
+            : viewerState.cameraPositionZ;
+      input.value = current.toFixed(3);
+    }
+  }
+
+  function onPositionInputKeydown(axis: PositionAxis, e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      onPositionInputCommit(axis, e);
+      (e.target as HTMLInputElement).blur();
+    }
+  }
 
   function onFovSliderInput(e: Event) {
     const newFov = parseFloat((e.target as HTMLInputElement).value);
@@ -87,6 +159,11 @@
 </script>
 
 <div class="camera-controls-section">
+  <span style="font-size:10px;font-weight:bold;">View Orientation:</span>
+  <ViewOrientationSelector {host} />
+</div>
+
+<div class="camera-controls-section">
   <label for="camera-fov" style="font-size:10px;">Field of View:</label><br />
   <input
     type="range"
@@ -107,6 +184,41 @@
     onkeydown={onFovInputKeydown}
     onfocus={onFovInputFocus}
   /><span style="font-size:10px;">°</span>
+</div>
+
+<div class="camera-controls-section">
+  <span style="font-size:10px;font-weight:bold;">Camera XYZ Position:</span>
+  <div class="position-description">
+    Moving an axis keeps the current rotation center and recalculates the camera direction.
+  </div>
+  {#each positionAxes as axis (axis.key)}
+    <div class="position-axis-row">
+      <label for={`camera-position-${axis.key}`} class="axis-label">{axis.label}</label>
+      <input
+        type="range"
+        id={`camera-position-${axis.key}`}
+        min={axis.target - positionSliderSpan}
+        max={axis.target + positionSliderSpan}
+        step={positionSliderStep}
+        value={axis.value}
+        class="position-slider"
+        oninput={e => onPositionSliderInput(axis.key, e)}
+      />
+      <input
+        type="number"
+        value={axis.value.toFixed(3)}
+        step={positionSliderStep}
+        class="position-value"
+        aria-label={`Camera ${axis.label} position`}
+        onblur={e => onPositionInputCommit(axis.key, e)}
+        onkeydown={e => onPositionInputKeydown(axis.key, e)}
+        onfocus={onFovInputFocus}
+      />
+    </div>
+  {/each}
+  <div class="position-range-note">
+    Slider range follows the current target and camera distance. Numeric fields accept coordinates outside that range.
+  </div>
 </div>
 
 <div class="camera-controls-section">
@@ -146,6 +258,46 @@
     >Reset Camera</button
   >
 </div>
+
+<style>
+  .position-description,
+  .position-range-note {
+    color: var(--vscode-descriptionForeground);
+    font-size: 9px;
+    line-height: 1.3;
+    margin: 4px 0 6px;
+  }
+
+  .position-range-note {
+    margin: 5px 0 0;
+  }
+
+  .position-axis-row {
+    display: grid;
+    grid-template-columns: 13px minmax(70px, 1fr) 68px;
+    gap: 5px;
+    align-items: center;
+    margin-top: 4px;
+  }
+
+  .axis-label {
+    font-size: 10px;
+    font-weight: bold;
+  }
+
+  .position-slider {
+    width: 100%;
+    min-width: 0;
+    margin: 0;
+  }
+
+  .position-value {
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+    font-size: 9px;
+  }
+</style>
 
 <div class="camera-controls-section">
   <span style="font-size:10px;font-weight:bold;">Clip Planes (near / far):</span>

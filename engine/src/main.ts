@@ -42,6 +42,7 @@ import * as sequencePlayback from './sequencePlayback';
 import * as pose from './pose';
 import * as renderStats from './renderStats';
 import * as pointCloudRenderer from './visualization/PointCloudRenderer';
+import * as voxelRenderer from './visualization/VoxelRenderer';
 import * as meshBuilder from './visualization/MeshBuilder';
 import * as uiStatus from './ui/status';
 import * as intensity from './utils/intensity';
@@ -179,6 +180,7 @@ class PointCloudVisualizer {
   meshes: (THREE.Mesh | THREE.Points | THREE.LineSegments)[] = [];
   normalsVisualizers: (THREE.LineSegments | null)[] = [];
   vertexPointsObjects: (THREE.Points | null)[] = []; // Vertex points for triangle meshes
+  voxelObjects: (THREE.InstancedMesh | null)[] = [];
   multiMaterialGroups: (THREE.Group | null)[] = []; // Multi-material Groups for OBJ files
   materialMeshes: (THREE.Object3D[] | null)[] = []; // Sub-meshes for multi-material OBJ files
   fileVisibility: boolean[] = [];
@@ -188,10 +190,12 @@ class PointCloudVisualizer {
   solidVisible: boolean[] = []; // Solid mesh rendering
   wireframeVisible: boolean[] = []; // Wireframe rendering
   pointsVisible: boolean[] = []; // Points rendering
+  voxelsVisible: boolean[] = []; // Instanced cube rendering for point clouds
   normalsVisible: boolean[] = []; // Normals lines rendering
 
   private useOriginalColors = true; // Default to original colors
   pointSizes: number[] = []; // Individual point sizes for each point cloud
+  voxelSizes: number[] = []; // Physical cube edge length in scene units
 
   // Sequence mode state
   sequenceMode = false;
@@ -290,11 +294,6 @@ class PointCloudVisualizer {
       totalChunks: number;
       receivedChunks: number;
       vertices: SpatialVertex[];
-      positionsArray?: Float32Array;
-      colorsArray?: Uint8Array;
-      normalsArray?: Float32Array;
-      scalarFields?: Record<string, Float32Array>;
-      useTypedArrays: boolean;
       hasColors: boolean;
       hasNormals: boolean;
       faces: SpatialFace[];
@@ -304,12 +303,6 @@ class PointCloudVisualizer {
       startTime: number;
       firstChunkTime: number;
       lastChunkTime: number;
-      shortPath?: string;
-      hasIntensity?: boolean;
-      sourcePointCount?: number;
-      sourceOrigin?: [number, number, number];
-      metadata?: Record<string, unknown>;
-      fileSizeInBytes?: number;
     }
   > = new Map();
 
@@ -2158,9 +2151,6 @@ class PointCloudVisualizer {
         case 'largeFileComplete':
           await this.handleLargeFileComplete(message);
           break;
-        case 'cancelLargeFile':
-          largeFileChunking.handleCancelLargeFile(this, message);
-          break;
         case 'depthData':
           this.handleDepthData(message);
           break;
@@ -2582,6 +2572,10 @@ class PointCloudVisualizer {
           oldMaterial.dispose();
         }
       }
+      const voxels = this.voxelObjects[fileIndex];
+      if (voxels && this.meshes[fileIndex] instanceof THREE.Points) {
+        voxelRenderer.refreshVoxelColors(voxels, this.meshes[fileIndex] as THREE.Points);
+      }
     }
   }
 
@@ -2594,10 +2588,6 @@ class PointCloudVisualizer {
     const desiredVisible = checkboxEl
       ? !!checkboxEl.checked
       : !(this.fileVisibility[fileIndex] ?? true);
-    this.setFileEntryVisibility(fileIndex, desiredVisible);
-  }
-
-  private setFileEntryVisibility(fileIndex: number, desiredVisible: boolean): void {
     this.fileVisibility[fileIndex] = desiredVisible;
     filesState.visibility[fileIndex] = desiredVisible;
 
@@ -2857,9 +2847,12 @@ class PointCloudVisualizer {
       // Wireframe and normals always start disabled
       this.wireframeVisible.push(false);
       this.normalsVisible.push(false);
+      this.voxelsVisible.push(false);
+      this.voxelSizes.push(0.1);
 
       // Initialize vertex points object (null initially, created on demand)
       this.vertexPointsObjects.push(null);
+      this.voxelObjects.push(null);
 
       // Initialize color mode before creating material
       // Ensure the individualColorModes array is large enough for this file's index
@@ -3296,6 +3289,12 @@ class PointCloudVisualizer {
       }
     }
 
+    const voxels = this.voxelObjects[fileIndex];
+    if (voxels) {
+      this.scene.remove(voxels);
+      voxelRenderer.disposeVoxelMesh(voxels);
+    }
+
     // Remove normals visualizer from scene and dispose
     const normalsVisualizer = this.normalsVisualizers[fileIndex];
     if (normalsVisualizer) {
@@ -3351,10 +3350,12 @@ class PointCloudVisualizer {
     this.meshes.splice(fileIndex, 1);
     this.normalsVisualizers.splice(fileIndex, 1); // Remove normals visualizer for this file
     this.vertexPointsObjects.splice(fileIndex, 1); // Remove vertex points object for this file
+    this.voxelObjects.splice(fileIndex, 1);
     this.multiMaterialGroups.splice(fileIndex, 1); // Remove multi-material group for this file
     this.materialMeshes.splice(fileIndex, 1); // Remove sub-meshes for this file
     this.fileVisibility.splice(fileIndex, 1);
     this.pointSizes.splice(fileIndex, 1); // Remove point size for this file
+    this.voxelSizes.splice(fileIndex, 1);
     this.individualColorModes.splice(fileIndex, 1); // Remove color mode for this file
     filesState.visibility.splice(fileIndex, 1);
     filesState.pointSizes.splice(fileIndex, 1);
@@ -3367,6 +3368,7 @@ class PointCloudVisualizer {
     this.solidVisible.splice(fileIndex, 1);
     this.wireframeVisible.splice(fileIndex, 1);
     this.pointsVisible.splice(fileIndex, 1);
+    this.voxelsVisible.splice(fileIndex, 1);
     this.normalsVisible.splice(fileIndex, 1);
 
     // Remove transformation matrix for this file
@@ -3503,6 +3505,18 @@ class PointCloudVisualizer {
     pointSizeScaling.updatePointSize(this, fileIndex, newSize);
   }
 
+  updateVoxelSize(fileIndex: number, newSize: number): void {
+    if (fileIndex < 0 || fileIndex >= this.spatialFiles.length || newSize <= 0) {
+      return;
+    }
+    this.voxelSizes[fileIndex] = newSize;
+    const voxels = this.voxelObjects[fileIndex];
+    if (voxels) {
+      voxelRenderer.updateVoxelSize(voxels, newSize);
+      this.requestRender();
+    }
+  }
+
   private getColorName(fileIndex: number): string {
     return colorModeUtils.getColorName(fileIndex);
   }
@@ -3533,21 +3547,40 @@ class PointCloudVisualizer {
   }
 
   private soloPointCloud(fileIndex: number): void {
-    const totalEntries =
-      this.spatialFiles.length + this.poseGroups.length + this.cameraGroups.length;
-    const selectedIsSoleVisible =
-      (this.fileVisibility[fileIndex] ?? filesState.visibility[fileIndex] ?? true) &&
-      Array.from({ length: totalEntries }, (_, index) => index).every(
-        index =>
-          index === fileIndex ||
-          !(this.fileVisibility[index] ?? filesState.visibility[index] ?? true)
-      );
-    const showAll = selectedIsSoleVisible;
-
+    // Hide all objects (point clouds and poses)
+    const totalEntries = this.spatialFiles.length + this.poseGroups.length;
     for (let i = 0; i < totalEntries; i++) {
-      this.setFileEntryVisibility(i, showAll || i === fileIndex);
+      this.fileVisibility[i] = false;
+      filesState.visibility[i] = false;
+      if (i < this.meshes.length) {
+        const obj = this.meshes[i];
+        if (obj) {
+          obj.visible = false;
+        }
+        const voxels = this.voxelObjects[i];
+        if (voxels) {
+          voxels.visible = false;
+        }
+      } else {
+        const poseIndex = i - this.spatialFiles.length;
+        const group = this.poseGroups[poseIndex];
+        if (group) {
+          group.visible = false;
+        }
+      }
     }
-
+    // Show only the selected entry
+    this.fileVisibility[fileIndex] = true;
+    filesState.visibility[fileIndex] = true;
+    if (fileIndex < this.meshes.length) {
+      this.updateMeshVisibilityAndMaterial(fileIndex);
+    } else {
+      const poseIndex = fileIndex - this.spatialFiles.length;
+      const group = this.poseGroups[poseIndex];
+      if (group) {
+        group.visible = true;
+      }
+    }
     // Update UI
     this.updateFileList();
     // Request render to show visibility changes

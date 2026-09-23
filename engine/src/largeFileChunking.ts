@@ -10,11 +10,6 @@ export interface LargeFileChunkingHost {
       totalChunks: number;
       receivedChunks: number;
       vertices: SpatialVertex[];
-      positionsArray?: Float32Array;
-      colorsArray?: Uint8Array;
-      normalsArray?: Float32Array;
-      scalarFields?: Record<string, Float32Array>;
-      useTypedArrays: boolean;
       hasColors: boolean;
       hasNormals: boolean;
       faces: SpatialFace[];
@@ -24,12 +19,6 @@ export interface LargeFileChunkingHost {
       startTime: number;
       firstChunkTime: number;
       lastChunkTime: number;
-      shortPath?: string;
-      hasIntensity?: boolean;
-      sourcePointCount?: number;
-      sourceOrigin?: [number, number, number];
-      metadata?: Record<string, unknown>;
-      fileSizeInBytes?: number;
     }
   >;
   updateWelcomeMessageVisibility(): void;
@@ -54,51 +43,27 @@ export function handleStartLargeFile(host: LargeFileChunkingHost, message: any):
   }
 
   // Initialize chunked file state
-  const useTypedArrays = !!message.useTypedArrays;
-  const scalarFields = useTypedArrays
-    ? Object.fromEntries(
-        (message.scalarFieldNames || []).map((name: string) => [
-          name,
-          new Float32Array(message.totalVertices),
-        ])
-      )
-    : undefined;
-  host.chunkedFileState.set(message.transferId || message.fileName, {
+  host.chunkedFileState.set(message.fileName, {
     fileName: message.fileName,
     totalVertices: message.totalVertices,
     totalChunks: message.totalChunks,
     receivedChunks: 0,
-    vertices: useTypedArrays ? [] : new Array(message.totalVertices),
-    positionsArray: useTypedArrays ? new Float32Array(message.totalVertices * 3) : undefined,
-    colorsArray:
-      useTypedArrays && message.hasColors ? new Uint8Array(message.totalVertices * 3) : undefined,
-    normalsArray:
-      useTypedArrays && message.hasNormals
-        ? new Float32Array(message.totalVertices * 3)
-        : undefined,
-    scalarFields,
-    useTypedArrays,
+    vertices: new Array(message.totalVertices),
     hasColors: message.hasColors,
     hasNormals: message.hasNormals,
     faces: message.faces || [],
     format: message.format,
     comments: message.comments || [],
-    messageType: message.messageType,
+    messageType: '',
     startTime: startTime,
     firstChunkTime: 0,
     lastChunkTime: 0,
-    shortPath: message.shortPath,
-    hasIntensity: message.hasIntensity,
-    sourcePointCount: message.sourcePointCount,
-    sourceOrigin: message.sourceOrigin,
-    metadata: message.metadata,
-    fileSizeInBytes: message.fileSizeInBytes,
   });
 }
 
 export function handleLargeFileChunk(host: LargeFileChunkingHost, message: any): void {
   const chunkReceiveTime = performance.now();
-  const fileState = host.chunkedFileState.get(message.transferId || message.fileName);
+  const fileState = host.chunkedFileState.get(message.fileName);
   if (!fileState) {
     console.error(`No state found for chunked file: ${message.fileName}`);
     return;
@@ -112,25 +77,12 @@ export function handleLargeFileChunk(host: LargeFileChunkingHost, message: any):
   }
 
   // Add chunk vertices to the appropriate position
-  const startIndex = message.startIndex ?? message.chunkIndex * 1000000;
-  const chunkVertices = message.vertices || [];
+  const startIndex = message.chunkIndex * 1000000; // Must match ultra-fast CHUNK_SIZE
+  const chunkVertices = message.vertices;
 
   const copyStartTime = performance.now();
-  if (fileState.useTypedArrays) {
-    fileState.positionsArray!.set(new Float32Array(message.positionBuffer), startIndex * 3);
-    if (fileState.colorsArray && message.colorBuffer) {
-      fileState.colorsArray.set(new Uint8Array(message.colorBuffer), startIndex * 3);
-    }
-    if (fileState.normalsArray && message.normalBuffer) {
-      fileState.normalsArray.set(new Float32Array(message.normalBuffer), startIndex * 3);
-    }
-    for (const [name, buffer] of Object.entries(message.scalarFieldBuffers || {})) {
-      fileState.scalarFields?.[name]?.set(new Float32Array(buffer as ArrayBuffer), startIndex);
-    }
-  } else {
-    for (let i = 0; i < chunkVertices.length; i++) {
-      fileState.vertices[startIndex + i] = chunkVertices[i];
-    }
+  for (let i = 0; i < chunkVertices.length; i++) {
+    fileState.vertices[startIndex + i] = chunkVertices[i];
   }
   const copyTime = performance.now() - copyStartTime;
 
@@ -147,16 +99,8 @@ export function handleLargeFileChunk(host: LargeFileChunkingHost, message: any):
   // Only log every 10th chunk to reduce console spam
   if (message.chunkIndex % 10 === 0 || fileState.receivedChunks === fileState.totalChunks) {
     console.log(
-      `Chunk ${message.chunkIndex + 1}/${message.totalChunks} (${message.vertexCount ?? chunkVertices.length} vertices, copy: ${copyTime.toFixed(2)}ms)`
+      `Chunk ${message.chunkIndex + 1}/${message.totalChunks} (${chunkVertices.length} vertices, copy: ${copyTime.toFixed(2)}ms)`
     );
-  }
-}
-
-export function handleCancelLargeFile(host: LargeFileChunkingHost, message: any): void {
-  host.chunkedFileState.delete(message.transferId || message.fileName);
-  if (host.chunkedFileState.size === 0) {
-    host.isFileLoading = false;
-    document.getElementById('loading')?.classList.add('hidden');
   }
 }
 
@@ -165,8 +109,7 @@ export async function handleLargeFileComplete(
   message: any
 ): Promise<void> {
   const completeTime = performance.now();
-  const stateKey = message.transferId || message.fileName;
-  const fileState = host.chunkedFileState.get(stateKey);
+  const fileState = host.chunkedFileState.get(message.fileName);
   if (!fileState) {
     console.error(`No state found for completed chunked file: ${message.fileName}`);
     return;
@@ -195,20 +138,8 @@ export async function handleLargeFileComplete(
     faceCount: fileState.faces.length,
     hasColors: fileState.hasColors,
     hasNormals: fileState.hasNormals,
-    hasIntensity: fileState.hasIntensity,
     fileName: fileState.fileName,
-    shortPath: fileState.shortPath,
     fileIndex: 0,
-    positionsArray: fileState.positionsArray,
-    colorsArray: fileState.colorsArray ?? null,
-    normalsArray: fileState.normalsArray ?? null,
-    intensityArray: fileState.scalarFields?.intensity ?? null,
-    scalarFields: fileState.scalarFields,
-    useTypedArrays: fileState.useTypedArrays,
-    sourcePointCount: fileState.sourcePointCount,
-    sourceOrigin: fileState.sourceOrigin,
-    metadata: fileState.metadata,
-    fileSizeInBytes: fileState.fileSizeInBytes,
   };
 
   const assemblyTime = performance.now() - assemblyStartTime;
@@ -233,5 +164,5 @@ export async function handleLargeFileComplete(
   document.getElementById('loading')?.classList.add('hidden');
 
   // Clean up chunked file state
-  host.chunkedFileState.delete(stateKey);
+  host.chunkedFileState.delete(message.fileName);
 }

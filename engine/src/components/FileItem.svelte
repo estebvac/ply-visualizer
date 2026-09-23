@@ -106,6 +106,9 @@
       const buttons: Array<{ mode: string; label: string; cls: string }> = [
         { mode: 'points', label: '👁️ Points', cls: 'points-btn' },
       ];
+      if (!hasGeometry) {
+        buttons.push({ mode: 'voxels', label: '🧱 Voxels', cls: 'voxels-btn' });
+      }
       if (hasGeometry) {
         buttons.push({ mode: 'mesh', label: '🔷 Mesh', cls: 'mesh-btn' });
         buttons.push({ mode: 'wireframe', label: '📐 Wireframe', cls: 'wireframe-btn' });
@@ -162,6 +165,15 @@
 
   function onSizeInputFocus(e: Event) {
     (e.target as HTMLInputElement).select();
+  }
+
+  const voxelSize = $derived(host.voxelSizes[index] ?? 0.1);
+
+  function onVoxelSizeInput(e: Event) {
+    const newSize = parseFloat((e.target as HTMLInputElement).value);
+    if (!isNaN(newSize) && newSize > 0) {
+      host.updateVoxelSize(index, newSize);
+    }
   }
 
   const isObjFile = $derived(kind === 'pointcloud' && (data as any)?.isObjFile);
@@ -319,6 +331,27 @@
           onfocus={onSizeInputFocus}
         />
       </div>
+
+      {#if !hasGeometry}
+        <div class="voxel-size-control" style="margin-top: 4px;">
+          <label for={`voxel-size-${index}`} style="font-size: 11px;">Voxel Size:</label>
+          <input
+            type="number"
+            id={`voxel-size-${index}`}
+            min="0.0001"
+            step="0.01"
+            value={voxelSize}
+            style="font-size: 10px; width: 58px;"
+            onchange={onVoxelSizeInput}
+            onkeydown={(e: KeyboardEvent) => {
+              if (e.key === 'Enter') {
+                onVoxelSizeInput(e);
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+          />
+        </div>
+      {/if}
 
       {#if isObjWireframeOrFile}
         <div class="obj-controls" style="margin-top: 8px;">
