@@ -81,6 +81,7 @@ interface LeafState {
   count: number;
   buffer: Buffer;
   offset: number;
+  writeChain: Promise<void>;
 }
 
 function scalarReader(
@@ -425,6 +426,8 @@ function nodeBounds(
 
 class LeafSpooler {
   private states = new Map<string, LeafState>();
+  private pendingBytes = 0;
+
   constructor(
     private readonly directory: string,
     private readonly recordStride: number,
@@ -440,28 +443,48 @@ class LeafSpooler {
         count: 0,
         buffer: Buffer.allocUnsafe(Math.max(this.bufferBytes, this.recordStride * 4)),
         offset: 0,
+        writeChain: Promise.resolve(),
       };
       this.states.set(id, state);
     }
     return state;
   }
 
-  async append(id: string, writer: (buffer: Buffer, offset: number) => void): Promise<void> {
+  /**
+   * Hot-path append is intentionally synchronous. Awaiting one Promise per
+   * point made a 1 GB cloud create tens of millions of microtasks. Flushes
+   * copy only a small leaf buffer and are serialized per leaf in the
+   * background; callers periodically apply bounded backpressure per source
+   * chunk.
+   */
+  append(id: string, writer: (buffer: Buffer, offset: number) => void): void {
     const state = this.state(id);
-    if (state.offset + this.recordStride > state.buffer.length) await this.flush(state);
+    if (state.offset + this.recordStride > state.buffer.length) this.queueFlush(state);
     writer(state.buffer, state.offset);
     state.offset += this.recordStride;
     state.count++;
   }
 
-  private async flush(state: LeafState): Promise<void> {
+  private queueFlush(state: LeafState): void {
     if (state.offset === 0) return;
-    await fs.promises.appendFile(state.filePath, state.buffer.subarray(0, state.offset));
+    const chunk = Buffer.from(state.buffer.subarray(0, state.offset));
     state.offset = 0;
+    this.pendingBytes += chunk.byteLength;
+    state.writeChain = state.writeChain
+      .then(() => fs.promises.appendFile(state.filePath, chunk))
+      .finally(() => {
+        this.pendingBytes -= chunk.byteLength;
+      });
+  }
+
+  async drainIfNeeded(limitBytes = 32 * 1024 * 1024): Promise<void> {
+    if (this.pendingBytes <= limitBytes) return;
+    await Promise.all([...this.states.values()].map(state => state.writeChain));
   }
 
   async finish(): Promise<Map<string, LeafState>> {
-    for (const state of this.states.values()) await this.flush(state);
+    for (const state of this.states.values()) this.queueFlush(state);
+    await Promise.all([...this.states.values()].map(state => state.writeChain));
     return this.states;
   }
 }
@@ -688,7 +711,7 @@ export async function buildProgressiveCache(
       const base = local * header.vertexStride;
       const xyz = readXYZ(chunk.bytes, base, props, header.littleEndian);
       const id = octreePath(xyz[0], xyz[1], xyz[2], previewResult.bounds, depth);
-      await spooler.append(id, (target, targetOffset) =>
+      spooler.append(id, (target, targetOffset) =>
         writeCacheRecord(
           target,
           targetOffset,
@@ -703,6 +726,8 @@ export async function buildProgressiveCache(
     }
     processed += records;
     onProgress?.('index', Math.min(1, processed / header.vertexCount));
+    await spooler.drainIfNeeded();
+    await new Promise<void>(resolve => setImmediate(resolve));
   }
 
   const leaves = await spooler.finish();
