@@ -146,10 +146,7 @@ export function selectProgressiveNodes(
     if (desired.length >= maxNodes) break;
     const nextPoints = points + candidate.node.pointCount;
     const nextBytes = bytes + candidate.node.byteLength;
-    if (
-      desired.length > 0 &&
-      (nextPoints > pointBudget || nextBytes > memoryBudgetBytes)
-    ) {
+    if (nextPoints > pointBudget || nextBytes > memoryBudgetBytes) {
       continue;
     }
     desired.push(candidate.node);
