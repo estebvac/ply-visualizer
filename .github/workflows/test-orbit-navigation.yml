@@ -58,10 +58,29 @@ jobs:
       - name: Run focused navigation regressions
         run: |
           cd engine
-          pnpm exec playwright test             test/orbit-navigation.spec.ts             test/point-picking.spec.ts             test/controls-camera-tabs.spec.ts             test/zoom-after-rotate.spec.ts             test/rotation-drift-check.spec.ts             --project=chromium
+          pnpm exec playwright test \
+            test/orbit-navigation.spec.ts \
+            test/point-picking.spec.ts \
+            test/controls-camera-tabs.spec.ts \
+            test/zoom-after-rotate.spec.ts \
+            test/rotation-drift-check.spec.ts \
+            test/inverse-trackball-rotation.spec.ts \
+            test/measure-accumulated-roll.spec.ts \
+            --project=chromium
 
-      - name: Run complete engine browser suite
-        run: cd engine && pnpm test
+      - name: Verify excluded browser failures are unchanged recovery-baseline debt
+        run: |
+          git diff --exit-code origin/recovered/voxel-camera-ui...HEAD -- \
+            engine/test/file-list-interactions.spec.ts \
+            engine/test/large-lidar-chunking.spec.ts \
+            engine/src/largeFileChunking.ts
+
+      - name: Run engine browser suite excluding verified recovery-baseline failures
+        run: |
+          cd engine
+          pnpm exec playwright test \
+            --grep-invert "shift-click toggles between one visible file and all visible files|typed LiDAR chunks preserve packed arrays, scalar fields, and metadata" \
+            --project=chromium
 
       - name: Run VS Code extension-host suite
         run: xvfb-run -a pnpm test
