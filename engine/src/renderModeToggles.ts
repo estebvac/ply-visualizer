@@ -85,6 +85,7 @@ export function toggleUniversalRenderMode(
           host.splatMode.disable(fileIndex);
         } else {
           updateMeshVisibilityAndMaterial(host, fileIndex);
+          host.progressivePly?.syncVoxelMode(fileIndex);
           host.requestRender();
         }
       } else {
