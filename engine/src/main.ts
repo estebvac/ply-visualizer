@@ -3029,6 +3029,7 @@ class PointCloudVisualizer {
       if (voxels && this.meshes[fileIndex] instanceof THREE.Points) {
         voxelRenderer.refreshVoxelColors(voxels, this.meshes[fileIndex] as THREE.Points);
       }
+      this.progressivePly.syncColorMode(fileIndex, value);
     }
     // The renderer draws on demand, so a colour change that does not ask for a
     // frame is invisible until something else does — a camera nudge, a resize.
