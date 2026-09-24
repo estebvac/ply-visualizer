@@ -25,11 +25,13 @@ async function setup(page: Page, mode: 'trackball' | 'inverse-trackball-controls
   await page.waitForTimeout(1500);
   await page.click('[data-tab="controls"]');
   await page.waitForTimeout(300);
+  await page.locator('#advanced-navigation > summary').click();
   if (mode === 'inverse-trackball-controls') {
-    await page.locator('#advanced-navigation > summary').click();
     await page.click('#inverse-trackball-controls');
-    await page.waitForTimeout(300);
+  } else {
+    await page.click('#trackball-controls');
   }
+  await page.waitForTimeout(300);
   await page.evaluate(() => {
     const v: any = (window as any).visualizer;
     v.controls.target.set(0, 0, 0);
