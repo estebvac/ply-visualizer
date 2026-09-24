@@ -53,6 +53,39 @@ async function getCamState(page: Page) {
   });
 }
 
+
+async function waitForCameraSettled(page: Page, epsilon = 1e-5, timeoutMs = 4000) {
+  const deadline = Date.now() + timeoutMs;
+  let previous = await getCamState(page);
+  let stableSamples = 0;
+
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(80);
+    const current = await getCamState(page);
+    const motion =
+      Math.hypot(
+        current.pos[0] - previous.pos[0],
+        current.pos[1] - previous.pos[1],
+        current.pos[2] - previous.pos[2]
+      ) +
+      Math.hypot(
+        current.target[0] - previous.target[0],
+        current.target[1] - previous.target[1],
+        current.target[2] - previous.target[2]
+      );
+
+    if (motion < epsilon) {
+      stableSamples += 1;
+      if (stableSamples >= 3) return;
+    } else {
+      stableSamples = 0;
+    }
+    previous = current;
+  }
+
+  throw new Error('Trackball camera did not settle within the expected damping window');
+}
+
 function isFinite3(v: number[]) {
   return v.every(n => Number.isFinite(n));
 }
@@ -77,7 +110,7 @@ async function dragStraight(
     await page.waitForTimeout(8);
   }
   await page.mouse.up();
-  await page.waitForTimeout(150);
+  await waitForCameraSettled(page);
 }
 
 // A circular drag sweeping `totalDegrees` of arc around the canvas center,
@@ -93,7 +126,7 @@ async function dragCircular(page: Page, cx: number, cy: number, totalDegrees: nu
     await page.waitForTimeout(8);
   }
   await page.mouse.up();
-  await page.waitForTimeout(150);
+  await waitForCameraSettled(page);
 }
 
 async function rollAngle(page: Page, before: any, after: any): Promise<number> {
