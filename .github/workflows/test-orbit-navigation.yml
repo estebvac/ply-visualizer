@@ -44,6 +44,9 @@ jobs:
       - name: Build standalone engine for Playwright
         run: cd engine && pnpm run build
 
+      - name: Build standalone engine for Playwright
+        run: cd engine && pnpm run build
+
       - name: Install Playwright Chromium
         run: cd engine && pnpm exec playwright install --with-deps chromium
 
