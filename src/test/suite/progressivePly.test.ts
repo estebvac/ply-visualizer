@@ -14,6 +14,40 @@ import {
 } from '../../progressivePly/cache';
 import { supportsProgressivePlyUri } from '../../progressivePly/service';
 
+function makeBigEndianBinaryPly(pointCount = 64): Buffer {
+  const header = Buffer.from(
+    [
+      'ply',
+      'format binary_big_endian 1.0',
+      'comment progressive-big-endian-test',
+      `element vertex ${pointCount}`,
+      'property float x',
+      'property float y',
+      'property float z',
+      'property uchar red',
+      'property uchar green',
+      'property uchar blue',
+      'element face 0',
+      'property list uchar int vertex_indices',
+      'end_header',
+      '',
+    ].join('\n'),
+    'ascii'
+  );
+  const stride = 15;
+  const body = Buffer.alloc(pointCount * stride);
+  for (let i = 0; i < pointCount; i++) {
+    const offset = i * stride;
+    body.writeFloatBE(i + 0.25, offset);
+    body.writeFloatBE(i * 2 + 0.5, offset + 4);
+    body.writeFloatBE(-i - 0.75, offset + 8);
+    body[offset + 12] = i % 256;
+    body[offset + 13] = (i * 2) % 256;
+    body[offset + 14] = (i * 3) % 256;
+  }
+  return Buffer.concat([header, body]);
+}
+
 function makeBinaryPly(pointCount = 2048): Buffer {
   const header = Buffer.from(
     [
@@ -81,6 +115,61 @@ suite('Progressive PLY remote loading', () => {
       }),
       true
     );
+  });
+
+  test('rejects meshes, ASCII files, and Gaussian splats from progressive routing', () => {
+    const base = {
+      format: 'binary_little_endian' as const,
+      vertexCount: 1000,
+      faceCount: 0,
+      hasColors: true,
+      hasNormals: false,
+      hasIntensity: false,
+      scalarFieldNames: [] as string[],
+      isGaussianSplat: false,
+      fixedVertexStride: 15,
+    };
+    const force = { fileSizeThresholdBytes: 1, decodedBytesThresholdBytes: 1 };
+    assert.strictEqual(shouldUseProgressivePly(1024, { ...base, faceCount: 1 }, force), false);
+    assert.strictEqual(
+      shouldUseProgressivePly(1024, { ...base, format: 'ascii' as const }, force),
+      false
+    );
+    assert.strictEqual(
+      shouldUseProgressivePly(1024, { ...base, isGaussianSplat: true }, force),
+      false
+    );
+  });
+
+  test('decodes big-endian fixed-stride PLY previews correctly', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ply-progressive-be-'));
+    const filePath = path.join(dir, 'big-endian.ply');
+    fs.writeFileSync(filePath, makeBigEndianBinaryPly(64));
+    try {
+      const probe = fs.readFileSync(filePath).subarray(0, 4096);
+      const header = parseProgressivePlyHeader(probe);
+      assert.strictEqual(header.format, 'binary_big_endian');
+      assert.strictEqual(header.littleEndian, false);
+      assert.strictEqual(header.vertexStride, 15);
+      const preview = await buildProgressivePreview(filePath, header, {
+        previewPoints: 64,
+        tilePoints: 32,
+        lodSamplePoints: 16,
+        maxDepth: 3,
+        chunkBytes: 128,
+      });
+      assert.strictEqual(preview.preview.count, 64);
+      // Positions are stored relative to the first source point.
+      assert.ok(Math.abs(preview.preview.positions[0]) < 1e-6);
+      assert.ok(Math.abs(preview.preview.positions[1]) < 1e-6);
+      assert.ok(Math.abs(preview.preview.positions[2]) < 1e-6);
+      assert.ok(Math.abs(preview.preview.positions[3] - 1) < 1e-6);
+      assert.ok(Math.abs(preview.preview.positions[4] - 2) < 1e-6);
+      assert.ok(Math.abs(preview.preview.positions[5] + 1) < 1e-6);
+      assert.deepStrictEqual(Array.from(preview.preview.colors!.slice(0, 6)), [0, 0, 0, 1, 2, 3]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('does not consume binary body bytes that happen to equal CR/LF', () => {
@@ -242,6 +331,50 @@ suite('Progressive PLY remote loading', () => {
       assert.strictEqual(
         fs.readdirSync(dir).some(name => name.startsWith('cache.tmp-')),
         false
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('cleans an incomplete cache when progressive indexing is cancelled', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ply-progressive-cancel-'));
+    const filePath = path.join(dir, 'cancel.ply');
+    const cacheDir = path.join(dir, 'cache');
+    fs.writeFileSync(filePath, makeBinaryPly(20_000));
+    try {
+      const probe = fs.readFileSync(filePath).subarray(0, 4096);
+      const header = parseProgressivePlyHeader(probe);
+      const options = {
+        previewPoints: 128,
+        tilePoints: 128,
+        lodSamplePoints: 32,
+        maxDepth: 4,
+        chunkBytes: 2048,
+      };
+      const preview = await buildProgressivePreview(filePath, header, options);
+      const stat = fs.statSync(filePath);
+      let cancelled = false;
+      await assert.rejects(
+        () =>
+          buildProgressiveCache(
+            filePath,
+            cacheDir,
+            header,
+            { size: stat.size, mtime: stat.mtimeMs },
+            preview,
+            options,
+            (phase, fraction) => {
+              if (phase === 'index' && fraction > 0) cancelled = true;
+            },
+            () => cancelled
+          ),
+        /cancelled/
+      );
+      assert.strictEqual(fs.existsSync(cacheDir), false);
+      assert.deepStrictEqual(
+        fs.readdirSync(dir).filter(name => name.startsWith('cache.tmp-')),
+        []
       );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
