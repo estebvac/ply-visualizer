@@ -434,8 +434,11 @@ class LeafSpooler {
   constructor(
     private readonly directory: string,
     private readonly recordStride: number,
-    private readonly bufferBytes = 32 * 1024,
-    private readonly maxActiveBuffers = 128
+    // 8 KiB × 8192 active leaves caps the spool buffer pool at 64 MiB while
+    // allowing a typical ~1 GB cloud (depth-4 octree, <=4096 leaves) to avoid
+    // LRU churn even when acquisition order is spatially interleaved.
+    private readonly bufferBytes = 8 * 1024,
+    private readonly maxActiveBuffers = 8192
   ) {}
 
   state(id: string): LeafState {
