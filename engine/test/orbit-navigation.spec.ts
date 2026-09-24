@@ -38,6 +38,38 @@ function delta3(a: number[], b: number[]) {
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 }
 
+async function projectWorldPointToCanvas(
+  page: Page,
+  world: [number, number, number]
+): Promise<{ clientX: number; clientY: number }> {
+  return page.evaluate(([x, y, z]) => {
+    const v: any = (window as any).visualizer;
+    const canvas = document.getElementById('three-canvas') as HTMLCanvasElement;
+    const rect = canvas.getBoundingClientRect();
+
+    v.camera.updateMatrixWorld(true);
+    const view = v.camera.matrixWorldInverse.elements as number[];
+    const projection = v.camera.projectionMatrix.elements as number[];
+
+    const mul = (m: number[], p: number[]) => [
+      m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12] * p[3],
+      m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13] * p[3],
+      m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14] * p[3],
+      m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15] * p[3],
+    ];
+
+    const cameraPoint = mul(view, [x, y, z, 1]);
+    const clip = mul(projection, cameraPoint);
+    const ndcX = clip[0] / clip[3];
+    const ndcY = clip[1] / clip[3];
+
+    return {
+      clientX: rect.left + ((ndcX + 1) * 0.5) * rect.width,
+      clientY: rect.top + ((1 - ndcY) * 0.5) * rect.height,
+    };
+  }, world);
+}
+
 async function loadSampleMesh(page: Page) {
   await page.click('[data-tab="files"]');
   const plyPath = path.resolve('../testfiles/open3d/sample_mesh.ply');
@@ -161,32 +193,7 @@ test.describe('Standard Orbit navigation', () => {
     }
     await page.waitForTimeout(500);
 
-    const pick = await page.evaluate(() => {
-      const v: any = (window as any).visualizer;
-      const canvas = document.getElementById('three-canvas') as HTMLCanvasElement;
-      const rect = canvas.getBoundingClientRect();
-
-      v.camera.updateMatrixWorld(true);
-      const view = v.camera.matrixWorldInverse.elements as number[];
-      const projection = v.camera.projectionMatrix.elements as number[];
-
-      const mul = (m: number[], p: number[]) => [
-        m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12] * p[3],
-        m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13] * p[3],
-        m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14] * p[3],
-        m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15] * p[3],
-      ];
-
-      const cameraPoint = mul(view, [3, 0, 0, 1]);
-      const clip = mul(projection, cameraPoint);
-      const ndcX = clip[0] / clip[3];
-      const ndcY = clip[1] / clip[3];
-
-      return {
-        clientX: rect.left + ((ndcX + 1) * 0.5) * rect.width,
-        clientY: rect.top + ((1 - ndcY) * 0.5) * rect.height,
-      };
-    });
+    const pick = await projectWorldPointToCanvas(page, [3, 0, 0]);
 
     const before = await cameraState(page);
     await page.evaluate(
@@ -211,6 +218,7 @@ test.describe('Standard Orbit navigation', () => {
         count: v.measurementManager?.getMeasurements().length ?? 0,
       };
     });
+    const measurePick = await projectWorldPointToCanvas(page, [3, 0, 0]);
 
     await page.evaluate(
       ({ clientX, clientY }) => {
@@ -224,7 +232,7 @@ test.describe('Standard Orbit navigation', () => {
           })
         );
       },
-      pick
+      measurePick
     );
     await page.waitForTimeout(100);
 
