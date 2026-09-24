@@ -43,6 +43,48 @@ async function setup(page: Page, mode: 'trackball' | 'inverse-trackball-controls
   await page.waitForTimeout(100);
 }
 
+
+async function waitForCameraSettled(page: Page, epsilon = 1e-5, timeoutMs = 4000) {
+  const state = () =>
+    page.evaluate(() => {
+      const v: any = (window as any).visualizer;
+      return {
+        pos: v.camera.position.toArray() as number[],
+        target: v.controls.target.toArray() as number[],
+      };
+    });
+
+  const deadline = Date.now() + timeoutMs;
+  let previous = await state();
+  let stableSamples = 0;
+
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(80);
+    const current = await state();
+    const motion =
+      Math.hypot(
+        current.pos[0] - previous.pos[0],
+        current.pos[1] - previous.pos[1],
+        current.pos[2] - previous.pos[2]
+      ) +
+      Math.hypot(
+        current.target[0] - previous.target[0],
+        current.target[1] - previous.target[1],
+        current.target[2] - previous.target[2]
+      );
+
+    if (motion < epsilon) {
+      stableSamples += 1;
+      if (stableSamples >= 3) return;
+    } else {
+      stableSamples = 0;
+    }
+    previous = current;
+  }
+
+  throw new Error('Trackball camera did not settle within the expected damping window');
+}
+
 // Installs an incremental swing-twist accumulator that observes the real,
 // displayed camera eye/up after every _rotateCamera call (whatever the
 // active control scheme actually produced) and returns a getter for the
@@ -156,7 +198,7 @@ async function dragCircular(page: Page, cx: number, cy: number, totalDegrees: nu
     await page.waitForTimeout(8);
   }
   await page.mouse.up();
-  await page.waitForTimeout(150);
+  await waitForCameraSettled(page);
 }
 
 const rollSweeps = [90, 180, 270, 370];
