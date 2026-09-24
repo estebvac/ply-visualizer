@@ -160,6 +160,30 @@ suite('Progressive PLY remote loading', () => {
     );
   });
 
+  test('rejects non-finite coordinates before building LOD bounds', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ply-progressive-nonfinite-'));
+    const filePath = path.join(dir, 'nonfinite.ply');
+    const bytes = makeBinaryPly(4);
+    const header = parseProgressivePlyHeader(bytes);
+    bytes.writeFloatLE(Number.NaN, header.headerBytes);
+    fs.writeFileSync(filePath, bytes);
+    try {
+      await assert.rejects(
+        () =>
+          buildProgressivePreview(filePath, header, {
+            previewPoints: 4,
+            tilePoints: 4,
+            lodSamplePoints: 2,
+            maxDepth: 2,
+            chunkBytes: 64,
+          }),
+        /non-finite x\/y\/z coordinate/
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('decodes big-endian fixed-stride PLY previews correctly', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ply-progressive-be-'));
     const filePath = path.join(dir, 'big-endian.ply');
