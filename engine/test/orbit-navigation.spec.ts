@@ -248,6 +248,32 @@ test.describe('Standard Orbit navigation', () => {
     expect(afterMeasure.target).toEqual(beforeMeasure.target);
   });
 
+
+  test('legacy mode shortcuts do not replace Standard Orbit', async ({ page }) => {
+    for (const key of ['t', 'i', 'k', 'o']) {
+      await page.keyboard.press(key);
+      expect(
+        await page.evaluate(() => (window as any).visualizer.controlType)
+      ).toBe('orbit');
+    }
+  });
+
+  test('Fit and Reset shortcuts are ignored while a camera input has focus', async ({ page }) => {
+    await loadSampleMesh(page);
+    await page.click('[data-tab="camera"]');
+
+    const input = page.locator('#fov-input');
+    await input.focus();
+    const before = await cameraState(page);
+
+    await page.keyboard.press('F');
+    await page.keyboard.press('R');
+
+    const after = await cameraState(page);
+    expect(delta3(after.position, before.position)).toBeLessThan(1e-6);
+    expect(delta3(after.target, before.target)).toBeLessThan(1e-6);
+  });
+
   test('suppresses the context menu only on the navigation canvas', async ({ page }) => {
     await loadSampleMesh(page);
 
