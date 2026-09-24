@@ -429,9 +429,9 @@ export class ProgressivePlyManager {
   ): void {
     const node = manifest.nodes[nodeId];
     if (!node || budget.remaining <= 0) return;
-    if (!root && !this.nodeVisible(mesh, node)) return;
+    if (!root && !this.nodeVisible(session, mesh, node)) return;
 
-    const diameter = this.projectedDiameter(mesh, node);
+    const diameter = this.projectedDiameter(session, mesh, node);
     if (node.children.length > 0 && diameter > 180) {
       const minimumChildCost = node.children.reduce(
         (sum, childId) => sum + Math.max(1, manifest.nodes[childId]?.sampleCount ?? 0),
@@ -439,8 +439,8 @@ export class ProgressivePlyManager {
       );
       if (minimumChildCost <= budget.remaining) {
         const ordered = [...node.children].sort(
-          (a, b) => this.projectedDiameter(mesh, manifest.nodes[b]) -
-                    this.projectedDiameter(mesh, manifest.nodes[a])
+          (a, b) => this.projectedDiameter(session, mesh, manifest.nodes[b]) -
+                    this.projectedDiameter(session, mesh, manifest.nodes[a])
         );
         for (const childId of ordered) {
           this.selectNode(session, manifest, mesh, childId, budget, selected);
@@ -470,22 +470,32 @@ export class ProgressivePlyManager {
     }
   }
 
-  private nodeVisible(mesh: THREE.Object3D, node: ProgressiveNode): boolean {
+  private nodeVisible(
+    session: ProgressiveSession,
+    mesh: THREE.Object3D,
+    node: ProgressiveNode
+  ): boolean {
     const bounds = node.bounds;
+    const [dx, dy, dz] = session.positionOffset;
     const box = new THREE.Box3(
-      new THREE.Vector3(bounds[0], bounds[1], bounds[2]),
-      new THREE.Vector3(bounds[3], bounds[4], bounds[5])
+      new THREE.Vector3(bounds[0] + dx, bounds[1] + dy, bounds[2] + dz),
+      new THREE.Vector3(bounds[3] + dx, bounds[4] + dy, bounds[5] + dz)
     );
     box.applyMatrix4(mesh.matrixWorld);
     return this.frustum.intersectsBox(box);
   }
 
-  private projectedDiameter(mesh: THREE.Object3D, node: ProgressiveNode): number {
+  private projectedDiameter(
+    session: ProgressiveSession,
+    mesh: THREE.Object3D,
+    node: ProgressiveNode
+  ): number {
     const b = node.bounds;
+    const [dx, dy, dz] = session.positionOffset;
     const center = new THREE.Vector3(
-      (b[0] + b[3]) / 2,
-      (b[1] + b[4]) / 2,
-      (b[2] + b[5]) / 2
+      (b[0] + b[3]) / 2 + dx,
+      (b[1] + b[4]) / 2 + dy,
+      (b[2] + b[5]) / 2 + dz
     ).applyMatrix4(mesh.matrixWorld);
     const localSize = Math.max(b[3] - b[0], b[4] - b[1], b[5] - b[2]);
     const scale = new THREE.Vector3();
