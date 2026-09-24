@@ -515,7 +515,7 @@ class PointCloudVisualizer {
     }
 
     this.camera = new THREE.PerspectiveCamera(
-      75,
+      60,
       container.clientWidth / container.clientHeight,
       0.001,
       1000000 // Further increased far plane for disparity files
@@ -1613,6 +1613,12 @@ class PointCloudVisualizer {
         e.target instanceof HTMLTextAreaElement ||
         e.target instanceof HTMLSelectElement
       ) {
+        // OrbitControls listens on window like the official Three.js example.
+        // Keep arrow keys local to editable controls instead of panning/rotating
+        // the 3D camera while the user edits a value.
+        if (e.key.startsWith('Arrow')) {
+          e.stopPropagation();
+        }
         return;
       }
 
