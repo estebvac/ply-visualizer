@@ -81,7 +81,10 @@ function routingConfig(): ProgressivePlyRoutingConfig {
 
 function buildOptions(header: ProgressivePlyHeader): ProgressivePlyBuildOptions {
   const config = vscode.workspace.getConfiguration('plyViewer.largePly');
-  const previewPoints = Math.max(10_000, config.get<number>('previewPoints', 500_000));
+  const configuredPreviewPoints = Math.max(
+    10_000,
+    config.get<number>('previewPoints', 500_000)
+  );
   const configuredTilePoints = Math.max(10_000, config.get<number>('tilePoints', 200_000));
   const lodSamplePoints = Math.max(5_000, config.get<number>('lodSamplePoints', 50_000));
   const normalizedBytesPerPoint =
@@ -90,6 +93,18 @@ function buildOptions(header: ProgressivePlyHeader): ProgressivePlyBuildOptions 
     (header.hasNormals ? 12 : 0) +
     (header.hasIntensity ? 4 : 0) +
     header.scalarFieldNames.length * 4;
+  const localBudgetBytes =
+    Math.max(64, config.get<number>('localMemoryBudgetMiB', 256)) * 1024 * 1024;
+  // Keep the initial preview well below the resident-memory budget even for
+  // clouds with many scalar fields. The viewer still needs room for geometry,
+  // colors, tile cache, and Three.js overhead.
+  const previewPoints = Math.max(
+    10_000,
+    Math.min(
+      configuredPreviewPoints,
+      Math.floor(localBudgetBytes / Math.max(1, normalizedBytesPerPoint * 4))
+    )
+  );
   const boundedTilePoints = Math.max(
     10_000,
     Math.min(configuredTilePoints, Math.floor(TILE_MESSAGE_BYTES / normalizedBytesPerPoint))
