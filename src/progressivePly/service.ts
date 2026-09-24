@@ -17,6 +17,7 @@ import { parseProgressivePlyHeader, type ProgressivePlyHeader } from './header';
 import {
   DEFAULT_PROGRESSIVE_PLY_ROUTING,
   shouldUseProgressivePly,
+  supportsProgressivePlyUri,
   type ProgressivePlyRoutingConfig,
 } from './routing';
 
@@ -41,12 +42,6 @@ export interface ProgressivePlyOpenMetadata {
 const MAX_HEADER_BYTES = 1024 * 1024;
 const TILE_MESSAGE_BYTES = 24 * 1024 * 1024;
 
-export function supportsProgressivePlyUri(uri: { scheme: string; fsPath: string }): boolean {
-  return (
-    (uri.scheme === 'file' || uri.scheme === 'vscode-remote') &&
-    path.extname(uri.fsPath).toLowerCase() === '.ply'
-  );
-}
 
 async function readHeaderProbe(filePath: string): Promise<Uint8Array> {
   const handle = await fs.promises.open(filePath, 'r');
