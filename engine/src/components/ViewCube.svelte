@@ -295,8 +295,8 @@
   .face-pos-x { transform: rotateY(90deg) translateZ(38px); }
   .face-neg-z { transform: rotateY(180deg) translateZ(38px); }
   .face-neg-x { transform: rotateY(-90deg) translateZ(38px); }
-  .face-neg-y { transform: rotateX(90deg) translateZ(38px); }
-  .face-pos-y { transform: rotateX(-90deg) translateZ(38px); }
+  .face-pos-y { transform: rotateX(90deg) translateZ(38px); }
+  .face-neg-y { transform: rotateX(-90deg) translateZ(38px); }
 
   .face-label {
     pointer-events: none;
