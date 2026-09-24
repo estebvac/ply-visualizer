@@ -1651,41 +1651,19 @@ class PointCloudVisualizer {
           }
           e.preventDefault();
           break;
-        case 't':
-          this.switchToTrackballControls();
-          e.preventDefault();
-          break;
-        case 'o':
-          this.switchToOrbitControls();
-          e.preventDefault();
-          break;
-        case 'i':
-          this.switchToInverseTrackballControls();
-          e.preventDefault();
-          break;
-        case 'k':
-          this.switchToArcballControls();
-          e.preventDefault();
-          break;
-
-        // Arcball settings bindings
+        // Legacy navigation settings bindings
         case 'x':
-          this.setUpVector(new THREE.Vector3(1, 0, 0));
-          e.preventDefault();
-          break;
         case 'y':
-          this.setUpVector(new THREE.Vector3(0, 1, 0));
-          e.preventDefault();
-          break;
         case 'z':
-          this.setUpVector(new THREE.Vector3(0, 0, 1));
-          e.preventDefault();
-          break;
-        case 'w':
-          // debug
-          this.setRotationCenterToOrigin();
-          this.updateRotationOriginButtonState();
-          e.preventDefault();
+          if (this.controlType !== 'orbit') {
+            const axes: Record<string, THREE.Vector3> = {
+              x: new THREE.Vector3(1, 0, 0),
+              y: new THREE.Vector3(0, 1, 0),
+              z: new THREE.Vector3(0, 0, 1),
+            };
+            this.setUpVector(axes[e.key.toLowerCase()]);
+            e.preventDefault();
+          }
           break;
         case 'g':
           this.toggleGammaCorrection();
@@ -1704,17 +1682,17 @@ class PointCloudVisualizer {
           e.preventDefault();
           break;
         case 'l':
-          this.arcballInvertRotation = !this.arcballInvertRotation;
           if (this.controlType === 'arcball') {
+            this.arcballInvertRotation = !this.arcballInvertRotation;
             const arc = this.controls as any;
             if (arc && typeof arc.invertRotation === 'boolean') {
               arc.invertRotation = this.arcballInvertRotation;
             }
+            this.showStatus(
+              `Arcball handedness: ${this.arcballInvertRotation ? 'Inverted' : 'Normal'}`
+            );
+            e.preventDefault();
           }
-          this.showStatus(
-            `Arcball handedness: ${this.arcballInvertRotation ? 'Inverted' : 'Normal'}`
-          );
-          e.preventDefault();
           break;
       }
     });

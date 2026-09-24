@@ -324,7 +324,7 @@
       onclick={onToggleCameras}>Show Cameras</button
     >
     <button id="set-rotation-origin" class="control-button" onclick={onSetRotationOrigin}>
-      Set Rotation Center to Origin <span class="button-shortcut">W</span>
+      Set Rotation Center to Origin
     </button>
   </div>
 </div>
@@ -364,23 +364,38 @@
   </div>
 </div>
 <div class="panel-section">
-  <h4>Control Type</h4>
+  <h4>Navigation</h4>
+  <div id="navigation-help" class="setting-description">
+    <div><strong>Left drag</strong> — Orbit</div>
+    <div><strong>Middle drag / Wheel</strong> — Zoom</div>
+    <div><strong>Right drag</strong> — Pan</div>
+    <div><strong>Double-click</strong> — Set pivot</div>
+    <div><strong>Shift + Double-click</strong> — Measure</div>
+    <div><strong>F</strong> — Fit to View</div>
+    <div><strong>R</strong> — Reset Camera</div>
+  </div>
+</div>
+<details id="advanced-navigation" class="panel-section">
+  <summary>Advanced Navigation</summary>
+  <p class="setting-description">
+    Legacy navigation modes and alternative pivot behaviors.
+  </p>
   <div class="control-buttons">
-    <button
-      id="trackball-controls"
-      class="control-button"
-      class:active={viewerState.controlScheme === 'trackball'}
-      onclick={onTrackball}
-    >
-      Trackball <span class="button-shortcut">T</span>
-    </button>
     <button
       id="orbit-controls"
       class="control-button"
       class:active={viewerState.controlScheme === 'orbit'}
       onclick={onOrbit}
     >
-      Orbit <span class="button-shortcut">O</span>
+      Standard Orbit
+    </button>
+    <button
+      id="trackball-controls"
+      class="control-button"
+      class:active={viewerState.controlScheme === 'trackball'}
+      onclick={onTrackball}
+    >
+      Trackball
     </button>
     <button
       id="inverse-trackball-controls"
@@ -388,7 +403,7 @@
       class:active={viewerState.controlScheme === 'inverse-trackball'}
       onclick={onInverseTrackball}
     >
-      Inverse Rotation <span class="button-shortcut">I</span>
+      Inverse Trackball
     </button>
     <button
       id="arcball-controls"
@@ -396,45 +411,45 @@
       class:active={viewerState.controlScheme === 'arcball'}
       onclick={onArcball}
     >
-      Arcball <span class="button-shortcut">K</span>
+      Arcball
     </button>
   </div>
-</div>
-<div class="panel-section">
-  <h4>Rotation Center Behavior</h4>
-  <p class="setting-description">When double-clicking to set rotation center:</p>
-  <div class="control-buttons">
-    <button
-      id="rotation-center-move-camera"
-      class="control-button"
-      class:active={rotationCenterMode === 'move-camera'}
-      onclick={() => setRotationCenterMode('move-camera')}
-    >
-      Move Camera (Lateral)
-    </button>
-    <button
-      id="rotation-center-keep-camera"
-      class="control-button"
-      class:active={rotationCenterMode === 'keep-camera'}
-      onclick={() => setRotationCenterMode('keep-camera')}
-    >
-      Keep Camera Position
-    </button>
-    <button
-      id="rotation-center-keep-distance"
-      class="control-button"
-      class:active={rotationCenterMode === 'keep-distance'}
-      onclick={() => setRotationCenterMode('keep-distance')}
-    >
-      Keep Distance
-    </button>
+
+  <div style="margin-top: 10px;">
+    <strong style="font-size: 11px;">Rotation Center Behavior</strong>
+    <p class="setting-description">When double-clicking to set rotation center:</p>
+    <div class="control-buttons">
+      <button
+        id="rotation-center-move-camera"
+        class="control-button"
+        class:active={rotationCenterMode === 'move-camera'}
+        onclick={() => setRotationCenterMode('move-camera')}
+      >
+        Move Camera (Lateral)
+      </button>
+      <button
+        id="rotation-center-keep-camera"
+        class="control-button"
+        class:active={rotationCenterMode === 'keep-camera'}
+        onclick={() => setRotationCenterMode('keep-camera')}
+      >
+        Keep Camera Position
+      </button>
+      <button
+        id="rotation-center-keep-distance"
+        class="control-button"
+        class:active={rotationCenterMode === 'keep-distance'}
+        onclick={() => setRotationCenterMode('keep-distance')}
+      >
+        Keep Distance
+      </button>
+    </div>
+    <p class="setting-description">
+      Move Camera slides the camera on the view plane. Keep Camera changes only the pivot.
+      Keep Distance moves the camera to preserve its distance from the new pivot.
+    </p>
   </div>
-  <p class="setting-description">
-    Move Camera: Camera slides on view plane to center clicked point. Keep Camera: Only rotation
-    target changes, camera stays in place. Keep Distance: Camera moves to maintain same distance
-    from new center.
-  </p>
-</div>
+</details>
 <div class="panel-section">
   <h4>Color &amp; Lighting</h4>
   <div class="control-buttons">

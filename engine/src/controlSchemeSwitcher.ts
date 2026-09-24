@@ -26,11 +26,11 @@ export function switchToOrbitControls(host: ControlSchemeHost): void {
     return;
   }
 
-  console.log('🔄 Switching to OrbitControls');
+  console.log('🔄 Switching to Standard OrbitControls');
   host.controlType = 'orbit';
   host.initializeControls();
   host.updateControlStatus();
-  host.showStatus('Switched to Orbit controls');
+  host.showStatus('Switched to Standard Orbit');
 }
 
 export function switchToInverseTrackballControls(host: ControlSchemeHost): void {
