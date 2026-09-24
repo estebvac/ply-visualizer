@@ -15,6 +15,10 @@ import {
 } from './cache';
 import { parseProgressivePlyHeader, type ProgressivePlyHeader } from './header';
 import {
+  acceptProgressiveGeneration,
+  isCurrentProgressiveGeneration,
+} from './generation';
+import {
   DEFAULT_PROGRESSIVE_PLY_ROUTING,
   shouldUseProgressivePly,
   supportsProgressivePlyUri,
@@ -325,23 +329,20 @@ export class ProgressivePlyService {
     if (!manifest || session.cancelled) return true;
 
     const generation = Number(message.generation ?? 0);
-    if (!Number.isFinite(generation) || generation < session.latestGeneration) {
+    if (!acceptProgressiveGeneration(session, generation)) {
       return true;
-    }
-    if (generation > session.latestGeneration) {
-      session.latestGeneration = generation;
     }
 
     const tileIds = Array.isArray(message.tileIds)
       ? message.tileIds.slice(0, 32).map(String)
       : [];
     for (const tileId of tileIds) {
-      if (session.cancelled || generation !== session.latestGeneration) break;
+      if (session.cancelled || !isCurrentProgressiveGeneration(session, generation)) break;
       try {
         const payload = await readProgressiveTile(session.cacheDirectory, manifest, tileId);
         // A newer camera selection may arrive while the remote disk read is in
         // flight. Do not ship an obsolete multi-megabyte tile over Remote-SSH.
-        if (session.cancelled || generation !== session.latestGeneration) break;
+        if (session.cancelled || !isCurrentProgressiveGeneration(session, generation)) break;
         await panel.webview.postMessage({
           type: 'progressivePly:tile',
           sessionId: session.id,
@@ -350,6 +351,7 @@ export class ProgressivePlyService {
           payload: payloadMessage(payload),
         });
       } catch (error) {
+        if (session.cancelled || !isCurrentProgressiveGeneration(session, generation)) break;
         await panel.webview.postMessage({
           type: 'progressivePly:tileError',
           sessionId: session.id,
