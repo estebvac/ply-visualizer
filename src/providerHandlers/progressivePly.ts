@@ -91,7 +91,7 @@ export interface ProgressivePlyManifest {
   bbox: [number, number, number, number, number, number];
 }
 
-interface ProgressiveConfig extends ProgressivePlyDecisionOptions {
+export interface ProgressiveConfig extends ProgressivePlyDecisionOptions {
   previewPoints: number;
   tileTargetPoints: number;
   localPointBudget: number;
@@ -593,7 +593,8 @@ export class ProgressivePlySessionManager {
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly log: (line: string) => void
+    private readonly log: (line: string) => void,
+    private readonly configOverride: Partial<ProgressiveConfig> = {}
   ) {}
 
   async startIfLarge(
@@ -602,7 +603,7 @@ export class ProgressivePlySessionManager {
     shortPath: string
   ): Promise<boolean> {
     if (path.extname(uri.fsPath).toLowerCase() !== '.ply') return false;
-    const config = configFromWorkspace();
+    const config = { ...configFromWorkspace(), ...this.configOverride };
     if (!config.enabled) return false;
 
     let stat: vscode.FileStat;
