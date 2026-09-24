@@ -43,6 +43,35 @@ function writeBinaryPly(filePath: string, vertexCount = 4, faceCount = 0): void 
   fs.writeFileSync(filePath, Buffer.concat([Buffer.from(header, 'latin1'), body]));
 }
 
+
+function writeBinaryBigEndianPly(filePath: string): void {
+  const header = [
+    'ply',
+    'format binary_big_endian 1.0',
+    'element vertex 2',
+    'property float x',
+    'property float y',
+    'property float z',
+    'property uchar red',
+    'property uchar green',
+    'property uchar blue',
+    'end_header',
+    '',
+  ].join('\n');
+  const stride = 15;
+  const body = Buffer.alloc(2 * stride);
+  for (let i = 0; i < 2; i++) {
+    const offset = i * stride;
+    body.writeFloatBE(i + 1, offset);
+    body.writeFloatBE(i + 2, offset + 4);
+    body.writeFloatBE(i + 3, offset + 8);
+    body[offset + 12] = 10 + i;
+    body[offset + 13] = 20 + i;
+    body[offset + 14] = 30 + i;
+  }
+  fs.writeFileSync(filePath, Buffer.concat([Buffer.from(header, 'latin1'), body]));
+}
+
 suite('Progressive PLY routing', () => {
   test('probes fixed-width binary PLY without reading the body into memory', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ply-progressive-probe-'));
@@ -188,7 +217,7 @@ suite('Progressive PLY routing', () => {
         tileTargetPoints: 128,
         localPointBudget: 512,
         localMemoryBudgetBytes: 8 * 1024 * 1024,
-        maxTileMessageBytes: 1024 * 1024,
+        maxTileMessageBytes: 512,
       }
     );
 
@@ -214,7 +243,13 @@ suite('Progressive PLY routing', () => {
         ),
       ]);
       const manifestMessage = messages.find(message => message.type === 'progressivePly:manifest');
-      assert.ok(manifestMessage.manifest.nodes.length > 1);
+      assert.ok(manifestMessage.manifest.nodes.length > 8);
+      assert.ok(
+        manifestMessage.manifest.nodes
+          .filter((node: any) => node.id !== manifestMessage.manifest.rootId)
+          .every((node: any) => node.byteLength <= 512),
+        'every dense-cell segment must respect the transfer cap'
+      );
       const leaf = manifestMessage.manifest.nodes.find(
         (node: any) => node.id !== manifestMessage.manifest.rootId
       );
@@ -228,8 +263,64 @@ suite('Progressive PLY routing', () => {
       });
       const tile = messages.slice(beforeTiles).find(message => message.type === 'progressivePly:tile');
       assert.ok(tile, 'requested remote tile should be returned');
-      assert.ok(tile.byteLength <= 1024 * 1024, 'tile transfer must stay bounded');
+      assert.ok(tile.byteLength <= 512, 'tile transfer must stay bounded');
       assert.ok(tile.buffer instanceof ArrayBuffer);
+    } finally {
+      manager.disposePanel(panel);
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+
+  test('decodes a big-endian binary preview on the remote side', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ply-progressive-be-'));
+    const cache = path.join(dir, 'cache');
+    const file = path.join(dir, 'cloud-be.ply');
+    writeBinaryBigEndianPly(file);
+    const messages: any[] = [];
+    const panel = {
+      webview: {
+        postMessage: async (message: any) => {
+          messages.push(message);
+          return true;
+        },
+      },
+    } as unknown as vscode.WebviewPanel;
+    const context = {
+      globalStorageUri: vscode.Uri.file(cache),
+    } as unknown as vscode.ExtensionContext;
+    const manager = new ProgressivePlySessionManager(
+      context,
+      () => undefined,
+      {
+        enabled: true,
+        fileSizeThresholdBytes: 1,
+        decodedMemoryThresholdBytes: 1,
+        previewPoints: 8,
+        tileTargetPoints: 8,
+        localPointBudget: 100,
+        localMemoryBudgetBytes: 1024 * 1024,
+        maxTileMessageBytes: 1024 * 1024,
+      }
+    );
+
+    try {
+      const probe = await probeProgressivePly(vscode.Uri.file(file));
+      assert.strictEqual(probe.encoding, 'binary_big_endian');
+      assert.strictEqual(
+        await manager.startIfLarge(vscode.Uri.file(file), panel, 'cloud-be.ply'),
+        true
+      );
+      const start = messages.find(message => message.type === 'progressivePly:start');
+      assert.ok(start);
+      assert.deepStrictEqual(
+        Array.from(start.data.positionsArray as Float32Array),
+        [1, 2, 3, 2, 3, 4]
+      );
+      assert.deepStrictEqual(
+        Array.from(start.data.colorsArray as Uint8Array),
+        [10, 20, 30, 11, 21, 31]
+      );
     } finally {
       manager.disposePanel(panel);
       fs.rmSync(dir, { recursive: true, force: true });
