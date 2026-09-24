@@ -1643,6 +1643,10 @@ class PointCloudVisualizer {
         return;
       }
 
+      if (this.controlType === 'orbit' && e.key.startsWith('Arrow')) {
+        this.cameraViewAnimator.cancel();
+      }
+
       switch (e.key.toLowerCase()) {
         case 'h':
           this.showKeyboardShortcuts();
