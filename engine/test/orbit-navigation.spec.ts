@@ -44,6 +44,22 @@ function delta3(a: number[], b: number[]) {
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 }
 
+async function targetScreenOffset(page: Page) {
+  return page.evaluate(() => {
+    const v: any = (window as any).visualizer;
+    const canvas = document.getElementById('three-canvas') as HTMLCanvasElement;
+    const rect = canvas.getBoundingClientRect();
+
+    v.camera.updateMatrixWorld(true);
+    const p = v.controls.target.clone().project(v.camera);
+
+    return {
+      dx: ((p.x + 1) * 0.5) * rect.width - rect.width / 2,
+      dy: ((1 - p.y) * 0.5) * rect.height - rect.height / 2,
+    };
+  });
+}
+
 async function projectWorldPointToCanvas(
   page: Page,
   world: [number, number, number]
@@ -130,6 +146,28 @@ test.describe('Standard Orbit navigation', () => {
     expect(state.mouseButtons).toEqual({ LEFT: 0, MIDDLE: 1, RIGHT: 2 });
     expect(state.minDistance).toBeCloseTo(0.001);
     expect(state.maxDistance).toBe(50000);
+  });
+
+  test('Standard Orbit keeps one +Z world-up across camera interaction', async ({ page }) => {
+    await loadSampleMesh(page);
+
+    await page.evaluate(() => {
+      const v: any = (window as any).visualizer;
+      v.camera.up.set(0.3, 0.4, 0.5).normalize();
+      v.initializeControls();
+    });
+
+    const up = await page.evaluate(() => (window as any).visualizer.camera.up.toArray());
+    expect(up[0]).toBeCloseTo(0, 8);
+    expect(up[1]).toBeCloseTo(0, 8);
+    expect(up[2]).toBeCloseTo(1, 8);
+  });
+
+  test('Orbit target stays at the visual center after Fit', async ({ page }) => {
+    await loadSampleMesh(page);
+
+    const center = await targetScreenOffset(page);
+    expect(Math.hypot(center.dx, center.dy)).toBeLessThan(1);
   });
 
   test('uses LMB orbit, MMB dolly, RMB pan, wheel dolly, and damped inertia', async ({ page }) => {
@@ -275,6 +313,8 @@ test.describe('Standard Orbit navigation', () => {
     const afterPivot = await cameraState(page);
     expect(delta3(afterPivot.position, before.position)).toBeLessThan(1e-6);
     expect(delta3(afterPivot.target, before.target)).toBeGreaterThan(1e-3);
+    const pivotCenter = await targetScreenOffset(page);
+    expect(Math.hypot(pivotCenter.dx, pivotCenter.dy)).toBeLessThan(1);
 
     const beforeMeasure = await page.evaluate(() => {
       const v: any = (window as any).visualizer;
