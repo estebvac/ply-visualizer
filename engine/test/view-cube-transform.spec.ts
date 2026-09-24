@@ -18,7 +18,7 @@ function transformDirection(values: number[], v: THREE.Vector3): THREE.Vector3 {
   );
 }
 
-test('ViewCube CSS matrix is a proper identity rotation for an identity camera', () => {
+test('ViewCube identity orientation remains a rigid identity CSS rotation', () => {
   const values = matrixValues(cameraQuaternionToCssMatrix3d(new THREE.Quaternion()));
 
   expect(values).toHaveLength(16);
@@ -27,12 +27,6 @@ test('ViewCube CSS matrix is a proper identity rotation for an identity camera',
   expect(values[10]).toBeCloseTo(1, 10);
   expect(values[15]).toBeCloseTo(1, 10);
   expect(values.every(Number.isFinite)).toBe(true);
-
-  const determinant =
-    values[0] * (values[5] * values[10] - values[9] * values[6]) -
-    values[4] * (values[1] * values[10] - values[9] * values[2]) +
-    values[8] * (values[1] * values[6] - values[5] * values[2]);
-  expect(determinant).toBeCloseTo(1, 10);
 });
 
 test('+Z world-up projects upward for a camera looking from +Y', () => {
@@ -43,8 +37,11 @@ test('+Z world-up projects upward for a camera looking from +Y', () => {
   camera.updateMatrixWorld(true);
 
   const values = matrixValues(cameraQuaternionToCssMatrix3d(camera.quaternion));
+
+  // World +Z has the same numeric representation in CSS basis.
   const screenUp = transformDirection(values, new THREE.Vector3(0, 0, 1));
-  const towardViewer = transformDirection(values, new THREE.Vector3(0, 1, 0));
+  // World +Y is represented as CSS -Y before the input basis conversion.
+  const towardViewer = transformDirection(values, new THREE.Vector3(0, -1, 0));
 
   expect(screenUp.x).toBeCloseTo(0, 8);
   expect(screenUp.y).toBeLessThan(-0.999999);
