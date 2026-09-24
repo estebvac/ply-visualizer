@@ -232,13 +232,10 @@ export class ProgressivePlyManager {
     // point budget to one quarter of the configured local budget so that
     // replacement does not require a source-sized transient allocation.
     const memoryBoundPoints = Math.max(
-      50_000,
+      1,
       Math.floor(memoryBudgetBytes / Math.max(1, bytesPerPoint * 4))
     );
-    const requestedPointBudget = Math.max(
-      50_000,
-      Number(message.pointBudget ?? 4_000_000)
-    );
+    const requestedPointBudget = Math.max(1, Number(message.pointBudget ?? 4_000_000));
 
     this.sessions.set(String(message.sessionId), {
       id: String(message.sessionId),
