@@ -123,7 +123,7 @@ test.describe('Standard Orbit navigation', () => {
     expect(state.screenSpacePanning).toBe(false);
     expect(state.zoomToCursor).toBe(false);
     expect(state.cursorStyle).toBe('grab');
-    expect(state.maxPolarAngle).toBeCloseTo(Math.PI / 2);
+    expect(state.maxPolarAngle).toBeCloseTo(Math.PI);
     expect(state.keyPanSpeed).toBe(7);
     expect(state.keyRotateSpeed).toBe(1);
     expect(state.fov).toBe(60);
