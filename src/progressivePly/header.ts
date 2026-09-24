@@ -57,7 +57,14 @@ function findHeaderEnd(bytes: Uint8Array): number {
       if (bytes[i + j] !== marker[j]) continue outer;
     }
     let end = i + marker.length;
-    while (end < bytes.length && (bytes[end] === 13 || bytes[end] === 10)) end++;
+    // Consume exactly the header line ending. Do not skip arbitrary CR/LF
+    // bytes: the first binary vertex byte is allowed to be 0x0a/0x0d.
+    if (end < bytes.length && bytes[end] === 13) {
+      end++;
+      if (end < bytes.length && bytes[end] === 10) end++;
+    } else if (end < bytes.length && bytes[end] === 10) {
+      end++;
+    }
     return end;
   }
   return -1;
