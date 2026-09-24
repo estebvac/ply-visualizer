@@ -83,6 +83,7 @@ export interface ProgressivePlyViewerHost {
   addNewFiles(dataArray: SpatialData[]): void;
   onFileColorModeChange(fileIndex: number, value: string): void;
   requestRender(): void;
+  showError(message: string): void;
 }
 
 function asFloat32(value: unknown): Float32Array {
@@ -152,9 +153,14 @@ export class ProgressivePlyManager {
       case 'progressivePly:panelVisibility':
         this.handlePanelVisibility(!!message.visible);
         return true;
-      case 'progressivePly:error':
-        console.error('Progressive PLY error:', message.error);
+      case 'progressivePly:error': {
+        const detail = String(message.error ?? 'unknown remote indexing error');
+        console.error('Progressive PLY error:', detail);
+        this.host.showError(
+          `Progressive PLY refinement stopped: ${detail}. The coarse preview remains available.`
+        );
         return true;
+      }
       default:
         return false;
     }
