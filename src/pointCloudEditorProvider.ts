@@ -38,6 +38,7 @@ import { handleRegistrationRequest } from './providerHandlers/registration';
 import { loadDocumentContent, type DocumentLoaderHost } from './providerHandlers/documentLoader';
 import { createWebviewReadyGate, type WebviewReadyGate } from './providerHandlers/webviewReadyGate';
 import { clearVolume, reextractVolume } from './providerHandlers/volumeSessions';
+import { ProgressivePlySessionManager } from './providerHandlers/progressivePly';
 
 // Shared file handling functionality
 import { detectFileType, detectFileTypeWithContent, isPlyBinary } from '../engine/src/fileHandler';
@@ -50,6 +51,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
   private panelVolumeSessions = new Map<vscode.WebviewPanel, Set<string>>();
   private datasetManager: DatasetManager;
   private readonly perfChannel: vscode.OutputChannel;
+  private readonly progressivePly: ProgressivePlySessionManager;
   // Wall-clock epoch (Date.now) when the current file's load began. Stamped onto
   // every outgoing *Data message so the webview can report one consistent
   // end-to-end timing line (read+parse / transfer / build / total).
@@ -73,11 +75,14 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
     tryAutoLoadMtl: (webviewPanel, objUri, parsedObjData, fileIndex) =>
       this.tryAutoLoadMtl(webviewPanel, objUri, parsedObjData, fileIndex),
     getSceneMetadata: fsPath => this.datasetManager.getSceneMetadata(fsPath),
+    startProgressivePly: (documentUri, webviewPanel, shortPath) =>
+      this.progressivePly.startIfLarge(documentUri, webviewPanel, shortPath),
   };
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.datasetManager = new DatasetManager(context);
     this.perfChannel = vscode.window.createOutputChannel('3D Visualizer');
+    this.progressivePly = new ProgressivePlySessionManager(context, line => this.logPerf(line));
     context.subscriptions.push(this.perfChannel);
     PointCloudEditorProvider.timingChannel = this.perfChannel;
   }
@@ -239,6 +244,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
         clearVolume(key);
       }
       this.panelVolumeSessions.delete(webviewPanel);
+      this.progressivePly.disposePanel(webviewPanel);
     });
     webviewPanel.webview.options = {
       enableScripts: true,
@@ -337,6 +343,14 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
           break;
         case 'plyFetchFailed':
           await this.handlePlyFetchFallback(message);
+          break;
+        case 'progressivePly:requestTiles':
+          await this.progressivePly.handleTileRequest(webviewPanel, message);
+          break;
+        case 'progressivePly:cancel':
+          if (typeof message.sessionId === 'string') {
+            this.progressivePly.cancelSession(message.sessionId);
+          }
           break;
         case 'modelResourceRequest':
           await handleModelResourceRequest(webviewPanel, message);
