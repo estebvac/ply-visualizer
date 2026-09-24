@@ -69,13 +69,13 @@ test('Camera tab renders one six-plane CSS 3D cube with invisible edge/corner hi
 
     return {
       scene: {
-        width: scene.getBoundingClientRect().width,
-        height: scene.getBoundingClientRect().height,
+        width: parseFloat(sceneStyle.width),
+        height: parseFloat(sceneStyle.height),
         perspective: sceneStyle.perspective,
       },
       cube: {
-        width: cube.getBoundingClientRect().width,
-        height: cube.getBoundingClientRect().height,
+        width: parseFloat(cubeStyle.width),
+        height: parseFloat(cubeStyle.height),
         transformStyle: cubeStyle.transformStyle,
       },
       faces: faces.map(face => {
