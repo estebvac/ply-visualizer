@@ -53,6 +53,7 @@ interface ProgressiveSession {
   scalarFieldNames: string[];
   memoryBudgetBytes: number;
   pointBudget: number;
+  bytesPerPoint: number;
   manifest: ProgressiveManifest | null;
   tileCache: Map<string, CachedTile>;
   selected: string[];
@@ -60,6 +61,7 @@ interface ProgressiveSession {
   generation: number;
   selectionTimer: number | null;
   previewCreated: boolean;
+  previewPayload: PointPayload | null;
   isAddFile: boolean;
 }
 
@@ -173,14 +175,19 @@ export class ProgressivePlyManager {
       session.selected = ['node:'];
       session.generation++;
       session.pending.clear();
+
+      // Hidden retained webviews should not keep a full fine-LOD cache alive.
+      // Preserve at most the tiny root tile and the bounded preview.
       const root = session.tileCache.get('node:');
+      session.tileCache.clear();
       if (root) {
         root.lastUsed = performance.now();
+        session.tileCache.set('node:', root);
         this.applySelectedTiles(session);
       } else {
+        if (session.previewPayload) this.applyPayload(session, session.previewPayload);
         this.requestMissing(session);
       }
-      this.evictTiles(session);
     }
   }
 
@@ -192,6 +199,33 @@ export class ProgressivePlyManager {
   }
 
   private handleStart(message: any): void {
+    const hasColors = !!message.hasColors;
+    const hasNormals = !!message.hasNormals;
+    const hasIntensity = !!message.hasIntensity;
+    const scalarFieldNames = Array.isArray(message.scalarFieldNames)
+      ? message.scalarFieldNames.map(String)
+      : [];
+    const bytesPerPoint =
+      12 +
+      (hasColors ? 3 : 0) +
+      (hasNormals ? 12 : 0) +
+      (hasIntensity ? 4 : 0) +
+      scalarFieldNames.length * 4;
+    const memoryBudgetBytes =
+      Math.max(64, Number(message.localMemoryBudgetMiB ?? 256)) * 1024 * 1024;
+    // Resident tile payloads and the merged render payload coexist. Leave a
+    // third share for color-mode attributes, transient replacement geometry,
+    // and JS/Three.js overhead so the configured budget remains a real bound
+    // rather than just an LRU target.
+    const memoryBoundPoints = Math.max(
+      50_000,
+      Math.floor(memoryBudgetBytes / Math.max(1, bytesPerPoint * 3))
+    );
+    const requestedPointBudget = Math.max(
+      50_000,
+      Number(message.pointBudget ?? 4_000_000)
+    );
+
     this.sessions.set(String(message.sessionId), {
       id: String(message.sessionId),
       fileName: String(message.fileName ?? 'large.ply'),
@@ -200,14 +234,13 @@ export class ProgressivePlyManager {
       sourcePointCount: Number(message.sourcePointCount ?? 0),
       format: message.format === 'binary_big_endian' ? 'binary_big_endian' : 'binary_little_endian',
       comments: Array.isArray(message.comments) ? message.comments.map(String) : [],
-      hasColors: !!message.hasColors,
-      hasNormals: !!message.hasNormals,
-      hasIntensity: !!message.hasIntensity,
-      scalarFieldNames: Array.isArray(message.scalarFieldNames)
-        ? message.scalarFieldNames.map(String)
-        : [],
-      memoryBudgetBytes: Math.max(64, Number(message.localMemoryBudgetMiB ?? 256)) * 1024 * 1024,
-      pointBudget: Math.max(100_000, Number(message.pointBudget ?? 4_000_000)),
+      hasColors,
+      hasNormals,
+      hasIntensity,
+      scalarFieldNames,
+      memoryBudgetBytes,
+      pointBudget: Math.min(requestedPointBudget, memoryBoundPoints),
+      bytesPerPoint,
       manifest: null,
       tileCache: new Map(),
       selected: [],
@@ -215,6 +248,7 @@ export class ProgressivePlyManager {
       generation: 0,
       selectionTimer: null,
       previewCreated: false,
+      previewPayload: null,
       isAddFile: !!message.isAddFile,
     });
   }
@@ -223,6 +257,7 @@ export class ProgressivePlyManager {
     const session = this.sessions.get(String(message.sessionId));
     if (!session) return;
     const payload = payloadFromMessage(message.payload);
+    session.previewPayload = payload;
     if (!session.previewCreated) {
       const data: SpatialData = {
         vertices: [],
