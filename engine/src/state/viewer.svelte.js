@@ -25,9 +25,15 @@ export const viewerState = $state(
    *   cameraPositionText: string;
    *   cameraRotationText: string;
    *   cameraTargetText: string;
+   *   cameraPositionX: number;
+   *   cameraPositionY: number;
+   *   cameraPositionZ: number;
+   *   cameraTargetX: number;
+   *   cameraTargetY: number;
+   *   cameraTargetZ: number;
    * }}
    */ ({
-    controlScheme: 'legacy-trackball',
+    controlScheme: 'orbit',
     cameraConvention: 'opengl',
     edlEnabled: true,
     edlMode: 'auto',
@@ -45,5 +51,11 @@ export const viewerState = $state(
     cameraPositionText: '(0.000, 0.000, 0.000)',
     cameraRotationText: '(0.0°, 0.0°, 0.0°)',
     cameraTargetText: '(0.000, 0.000, 0.000)',
+    cameraPositionX: 0,
+    cameraPositionY: 0,
+    cameraPositionZ: 0,
+    cameraTargetX: 0,
+    cameraTargetY: 0,
+    cameraTargetZ: 0,
   })
 );
