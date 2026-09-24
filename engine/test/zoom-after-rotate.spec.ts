@@ -11,6 +11,7 @@ test('inverse-trackball: zoom still works correctly after rotating', async ({ pa
   await page.waitForTimeout(1500);
   await page.click('[data-tab="controls"]');
   await page.waitForTimeout(300);
+  await page.locator('#advanced-navigation > summary').click();
   await page.click('#inverse-trackball-controls');
   await page.waitForTimeout(300);
 
