@@ -763,6 +763,7 @@ function safeCell(value: number, min: number, max: number, resolution: number): 
 export class ProgressivePlySessionManager {
   private readonly sessions = new Map<string, Session>();
   private readonly panelSessions = new Map<vscode.WebviewPanel, Set<string>>();
+  private readonly cacheBuilds = new Map<string, Promise<void>>();
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -819,30 +820,68 @@ export class ProgressivePlySessionManager {
 
     await fs.promises.mkdir(cacheDir, { recursive: true });
     const manifestPath = path.join(cacheDir, 'manifest.json');
-    try {
-      const cached = JSON.parse(await fs.promises.readFile(manifestPath, 'utf8')) as ProgressivePlyManifest;
-      if (
-        cached.complete &&
-        cached.version === 1 &&
-        cached.source.size === stat.size &&
-        cached.source.mtime === stat.mtime &&
-        cached.source.headerHash === probe.headerHash
-      ) {
-        session.manifest = cached;
-        const root = cached.nodes.find(node => node.id === cached.rootId);
-        if (!root) throw new Error('Progressive cache manifest has no root node');
-        const rootBytes = await fs.promises.readFile(path.join(cacheDir, root.tileFile));
-        await this.postStart(session, shortPath, stat.size, cached.bbox, rootBytes, cached);
-        this.log(`Progressive PLY cache hit: ${path.basename(uri.fsPath)} (${probe.vertexCount} pts)`);
-        return true;
+
+    const tryUseCached = async (): Promise<boolean> => {
+      try {
+        const cached = JSON.parse(
+          await fs.promises.readFile(manifestPath, 'utf8')
+        ) as ProgressivePlyManifest;
+        if (
+          cached.complete &&
+          cached.version === 1 &&
+          cached.source.size === stat.size &&
+          cached.source.mtime === stat.mtime &&
+          cached.source.headerHash === probe.headerHash
+        ) {
+          session.manifest = cached;
+          const root = cached.nodes.find(node => node.id === cached.rootId);
+          if (!root) throw new Error('Progressive cache manifest has no root node');
+          const rootBytes = await fs.promises.readFile(path.join(cacheDir, root.tileFile));
+          await this.postStart(session, shortPath, stat.size, cached.bbox, rootBytes, cached);
+          this.log(
+            `Progressive PLY cache hit: ${path.basename(uri.fsPath)} (${probe.vertexCount} pts)`
+          );
+          return true;
+        }
+      } catch {
+        // Missing, stale, or incomplete cache.
       }
-    } catch {
-      // Missing, stale, or incomplete cache: rebuild below.
+      return false;
+    };
+
+    for (;;) {
+      if (await tryUseCached()) return true;
+      const existingBuild = this.cacheBuilds.get(key);
+      if (!existingBuild) break;
+      this.log(`Waiting for existing progressive PLY cache build: ${path.basename(uri.fsPath)}`);
+      await existingBuild;
+      if (session.cancelled) return true;
     }
 
+    let finishBuild!: () => void;
+    const buildDone = new Promise<void>(resolve => {
+      finishBuild = resolve;
+    });
+    this.cacheBuilds.set(key, buildDone);
+    const releaseBuildLock = () => {
+      finishBuild();
+      if (this.cacheBuilds.get(key) === buildDone) this.cacheBuilds.delete(key);
+    };
+
     const started = performance.now();
-    const { bbox, previewBuffer, validCount } = await this.buildPreview(session);
-    if (session.cancelled) return true;
+    let previewResult: Awaited<ReturnType<ProgressivePlySessionManager['buildPreview']>>;
+    try {
+      previewResult = await this.buildPreview(session);
+    } catch (error) {
+      releaseBuildLock();
+      if (session.cancelled) return true;
+      throw error;
+    }
+    const { bbox, previewBuffer, validCount } = previewResult;
+    if (session.cancelled) {
+      releaseBuildLock();
+      return true;
+    }
     const rootFile = 'root.tile';
     await fs.promises.writeFile(path.join(cacheDir, rootFile), previewBuffer);
     const rootNode: ProgressivePlyNodeManifest = {
@@ -883,16 +922,18 @@ export class ProgressivePlySessionManager {
       `Progressive PLY preview ready in ${(performance.now() - started).toFixed(0)}ms: ${path.basename(uri.fsPath)}`
     );
 
-    void this.buildLeaves(session, stat, bbox, validCount, rootNode).catch(async error => {
-      if (!session.cancelled) {
-        this.log(`Progressive PLY cache build failed: ${String(error)}`);
-        await panel.webview.postMessage({
-          type: 'progressivePly:error',
-          sessionId: id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    });
+    void this.buildLeaves(session, stat, bbox, validCount, rootNode)
+      .catch(async error => {
+        if (!session.cancelled) {
+          this.log(`Progressive PLY cache build failed: ${String(error)}`);
+          await panel.webview.postMessage({
+            type: 'progressivePly:error',
+            sessionId: id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })
+      .finally(releaseBuildLock);
     return true;
   }
 
