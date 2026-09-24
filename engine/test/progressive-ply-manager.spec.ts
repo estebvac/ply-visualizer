@@ -111,6 +111,33 @@ test('progressive PLY manager bounds point residency and request bursts', async 
     });
     expect(session.activePayloadBytes).toBe(previewCount * 39);
 
+    const offsetNode = {
+      id: 'offset',
+      level: 1,
+      bounds: [-1, -1, -1, 1, 1, 1] as [number, number, number, number, number, number],
+      sourceCount: 1,
+      sampleCount: 1,
+      children: [],
+      leafPageCount: 0,
+    };
+    camera.position.set(1_000, -20, 10);
+    camera.lookAt(1_000, 0, 0);
+    camera.updateMatrixWorld(true);
+    session.positionOffset = [1_000, 0, 0];
+    const alignedDiameter = (manager as any).projectedDiameter(
+      session,
+      meshes[0],
+      offsetNode
+    );
+    session.positionOffset = [0, 0, 0];
+    const unalignedDiameter = (manager as any).projectedDiameter(
+      session,
+      meshes[0],
+      offsetNode
+    );
+    expect(alignedDiameter).toBeGreaterThan(unalignedDiameter * 10);
+    session.positionOffset = [0, 0, 0];
+
     session.manifest = {
       sourceOrigin: [0, 0, 0],
       bounds: [-10, -10, -10, 10, 10, 10],
