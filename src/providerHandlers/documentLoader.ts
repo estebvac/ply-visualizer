@@ -47,6 +47,11 @@ export interface DocumentLoaderHost {
     fileIndex: number
   ): Promise<void>;
   getSceneMetadata(fsPath: string): Promise<any>;
+  tryOpenProgressivePly(
+    documentUri: vscode.Uri,
+    panel: vscode.WebviewPanel,
+    metadata: { fileName: string; shortPath: string; loadStartedAt: number }
+  ): Promise<boolean>;
 }
 
 export interface DocumentFileTypeFlags {
@@ -1088,7 +1093,19 @@ export async function loadDocumentContent(
     const isBinary = isPlyBinary(prefix);
 
     if (isBinary) {
-      // Binary PLY - use ULTIMATE parsing. The prefix covers any realistic
+      // Large binary point clouds stay on the extension host (remote under
+      // Remote-SSH). Never hand their complete URI to the local webview.
+      if (
+        await host.tryOpenProgressivePly(documentUri, webviewPanel, {
+          fileName: path.basename(documentUri.fsPath),
+          shortPath: host.getShortPath(documentUri.fsPath),
+          loadStartedAt: host.getCurrentLoadStartedAt(),
+        })
+      ) {
+        return;
+      }
+
+      // Normal-size binary PLY - use ULTIMATE parsing. The prefix covers any realistic
       // header; if end_header lies beyond it, retry on the full bytes.
       let headerResult;
       try {
