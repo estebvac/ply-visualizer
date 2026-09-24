@@ -103,8 +103,16 @@ async function loadSampleMesh(page: Page) {
   await page.waitForTimeout(500);
 }
 
+function viewDirectionFromName(name: string): string {
+  return name
+    .replace(/^View from\s+/, '')
+    .replace(/\s+(edge|corner)$/, '')
+    .replace(/−/g, '-');
+}
+
 async function clickView(page: Page, name: string) {
-  const button = page.getByRole('button', { name, exact: true });
+  const direction = viewDirectionFromName(name);
+  const button = page.locator(`[data-view-direction="${direction}"]`).first();
   await button.evaluate((el: HTMLButtonElement) => el.click());
   await page.waitForFunction(() => !(window as any).visualizer.cameraViewAnimator?.isAnimating);
 }
