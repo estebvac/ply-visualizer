@@ -1,7 +1,7 @@
 # View Cube Rendering Fix
 
-**Date:** 2026-09-24  
-**Branch:** `feature/orbit-pivot-view-cube`  
+**Date:** 2026-09-24
+**Branch:** `feature/orbit-pivot-view-cube`
 **Scope:** Fix the malformed ViewCube rendering in the VS Code sidebar while preserving the now-correct Standard Orbit interaction behavior.
 
 ## Context
