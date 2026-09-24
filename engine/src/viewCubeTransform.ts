@@ -1,34 +1,32 @@
 import * as THREE from 'three';
 
-const CSS_Y_BASIS = new THREE.Matrix4().makeScale(1, -1, 1);
-
 function epsilon(value: number): number {
   return Math.abs(value) < 1e-10 ? 0 : value;
 }
 
 /**
- * Convert the Three.js camera orientation into a proper CSS 3D rotation.
+ * Convert the Three.js camera orientation into a rigid CSS-space rotation for
+ * the DOM ViewCube.
  *
- * CSS3DRenderer flips Y when moving between Three.js and CSS coordinates. Its
- * camera matrix is only one half of that renderer's camera/object conversion,
- * so applying getCameraCSSMatrix() directly to a hand-built CSS cube introduces
- * a reflection (determinant -1) and collapses the six-plane cube visually.
+ * Three.js camera/world coordinates use +Y up while CSS 3D uses +Y down.
+ * CSS3DRenderer handles this with a Y basis change on both sides of the camera
+ * rotation: object CSS conversion supplies one basis flip and the camera CSS
+ * matrix supplies the other. Because the ViewCube is native CSS geometry (not
+ * a CSS3DObject), we perform both here:
  *
- * Our cube already lives directly in CSS coordinates. Convert both the source
- * and destination bases instead:
+ *     M_css = S * R_camera^-1 * S,   S = diag(1, -1, 1)
  *
- *   cssRotation = F * inverse(cameraRotation) * F
- *
- * where F = diag(1, -1, 1). The two reflections cancel, leaving a proper
- * determinant +1 rotation that preserves the DeSandro cube geometry.
+ * This conjugation has determinant +1, so the cube stays a rigid six-plane
+ * object instead of entering a reflected CSS coordinate system.
  */
 export function cameraQuaternionToCssMatrix3d(quaternion: THREE.Quaternion): string {
   const inverseRotation = new THREE.Matrix4().makeRotationFromQuaternion(
     quaternion.clone().normalize().invert()
   );
+  const cssBasis = new THREE.Matrix4().makeScale(1, -1, 1);
 
-  const cssRotation = CSS_Y_BASIS.clone().multiply(inverseRotation).multiply(CSS_Y_BASIS);
-  const values = cssRotation.elements.map(epsilon);
+  inverseRotation.premultiply(cssBasis).multiply(cssBasis);
 
+  const values = inverseRotation.elements.map(epsilon);
   return `matrix3d(${values.join(',')})`;
 }
