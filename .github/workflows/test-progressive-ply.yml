@@ -1,0 +1,50 @@
+name: Progressive PLY focused gate
+
+on:
+  push:
+    branches:
+      - feature/remote-large-ply-progressive-lod
+  workflow_dispatch:
+
+concurrency:
+  group: progressive-ply-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  progressive-ply:
+    name: Remote progressive PLY
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Compile extension tests
+        run: npm run compile:tests
+
+      - name: Remote parser, routing, cache, and cancellation tests
+        run: npm exec -- mocha --ui tdd "out/src/test/suite/progressivePly.test.js"
+
+      - name: Check webview types
+        run: npm run check --workspace=engine
+
+      - name: Progressive LOD residency and request-budget test
+        working-directory: engine
+        run: npm exec -- playwright test test/progressive-ply-manager.spec.ts --workers=1 --retries=0
+
+      - name: Build extension
+        run: npm run compile
+
+      - name: Package verification VSIX
+        run: npm exec -- vsce package --no-dependencies -o ply-visualizer-progressive-ply.vsix
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: progressive-ply-vsix
+          path: ply-visualizer-progressive-ply.vsix
