@@ -194,6 +194,16 @@ export class ProgressivePlyManager {
     }
   }
 
+  removeSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    if (session.selectionTimer !== null) window.clearTimeout(session.selectionTimer);
+    session.pending.clear();
+    session.tileCache.clear();
+    session.previewPayload = null;
+    this.sessions.delete(sessionId);
+  }
+
   dispose(): void {
     for (const session of this.sessions.values()) {
       if (session.selectionTimer !== null) window.clearTimeout(session.selectionTimer);
