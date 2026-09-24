@@ -269,7 +269,8 @@ export async function buildProgressivePreview(
   header: ProgressivePlyHeader,
   options: ProgressivePlyBuildOptions = DEFAULT_PROGRESSIVE_BUILD_OPTIONS,
   onProgress?: (fraction: number) => void,
-  onEarlyPreview?: (preview: ProgressivePointPayload) => Promise<void> | void
+  onEarlyPreview?: (preview: ProgressivePointPayload) => Promise<void> | void,
+  isCancelled?: () => boolean
 ): Promise<ProgressivePlyPreviewResult> {
   if (!header.vertexStride) throw new Error('Progressive PLY requires a fixed vertex stride');
   const props = propertyMap(header);
@@ -291,6 +292,7 @@ export async function buildProgressivePreview(
   let earlySent = false;
 
   for await (const chunk of vertexChunks(filePath, header, options.chunkBytes)) {
+    if (isCancelled?.()) throw new Error('Progressive PLY load cancelled');
     const records = chunk.bytes.length / header.vertexStride;
     for (let local = 0; local < records; local++) {
       const sourceIndex = chunk.startVertex + local;
@@ -533,14 +535,29 @@ async function sampleRecordFile(
   const step = Math.max(1, Math.ceil(recordCount / maxSamples));
   const sourceHandle = await fs.promises.open(source, 'r');
   const destinationHandle = await fs.promises.open(destination, 'w');
-  const record = Buffer.allocUnsafe(recordStride);
+  const chunkRecords = Math.min(8192, recordCount);
+  const buffer = Buffer.allocUnsafe(chunkRecords * recordStride);
+  let sourceIndex = 0;
   let written = 0;
   try {
-    for (let i = 0; i < recordCount; i += step) {
-      const result = await sourceHandle.read(record, 0, recordStride, i * recordStride);
-      if (result.bytesRead !== recordStride) break;
-      await destinationHandle.write(record, 0, recordStride);
-      written++;
+    while (sourceIndex < recordCount) {
+      const requested = Math.min(chunkRecords, recordCount - sourceIndex);
+      const { bytesRead } = await sourceHandle.read(
+        buffer,
+        0,
+        requested * recordStride,
+        sourceIndex * recordStride
+      );
+      const got = Math.floor(bytesRead / recordStride);
+      if (got <= 0) break;
+      for (let local = 0; local < got; local++) {
+        const absolute = sourceIndex + local;
+        if (absolute % step === 0 && written < maxSamples) {
+          await destinationHandle.write(buffer, local * recordStride, recordStride);
+          written++;
+        }
+      }
+      sourceIndex += got;
     }
   } finally {
     await sourceHandle.close();
@@ -636,7 +653,8 @@ export async function buildProgressiveCache(
   stat: { size: number; mtime: number },
   previewResult: ProgressivePlyPreviewResult,
   options: ProgressivePlyBuildOptions = DEFAULT_PROGRESSIVE_BUILD_OPTIONS,
-  onProgress?: (phase: string, fraction: number) => void
+  onProgress?: (phase: string, fraction: number) => void,
+  isCancelled?: () => boolean
 ): Promise<ProgressivePlyManifest> {
   if (!header.vertexStride) throw new Error('Progressive PLY requires fixed-width vertices');
   const depth = Math.max(
@@ -659,6 +677,7 @@ export async function buildProgressiveCache(
   let processed = 0;
 
   for await (const chunk of vertexChunks(filePath, header, options.chunkBytes)) {
+    if (isCancelled?.()) throw new Error('Progressive PLY load cancelled');
     const records = chunk.bytes.length / header.vertexStride;
     for (let local = 0; local < records; local++) {
       const base = local * header.vertexStride;
@@ -703,6 +722,7 @@ export async function buildProgressiveCache(
 
   let leafDone = 0;
   for (const [id, state] of leaves) {
+    if (isCancelled?.()) throw new Error('Progressive PLY load cancelled');
     const leaf = ensureNode(id);
     leaf.sourceCount = state.count;
     leaf.leafPageCount = Math.ceil(state.count / options.tilePoints);
@@ -730,6 +750,7 @@ export async function buildProgressiveCache(
   for (let level = depth - 1; level >= 0; level--) {
     const levelNodes = [...nodes.values()].filter(node => node.level === level);
     for (const node of levelNodes) {
+      if (isCancelled?.()) throw new Error('Progressive PLY load cancelled');
       const children = node.children
         .map(id => nodes.get(id))
         .filter((child): child is ProgressivePlyNode & { sampleFile?: string } => !!child);
