@@ -353,6 +353,15 @@ suite('Progressive PLY remote loading', () => {
       assert.ok(page.count <= options.tilePoints);
       assert.strictEqual(page.colors?.length, page.count * 3);
       assert.strictEqual(page.intensity?.length, page.count);
+
+      await assert.rejects(
+        () => readProgressiveTile(cacheDir, manifest, 'node:../../outside'),
+        /Unknown progressive PLY node tile/
+      );
+      await assert.rejects(
+        () => readProgressiveTile(cacheDir, manifest, 'leaf:../../outside:0'),
+        /Unknown leaf tile/
+      );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
