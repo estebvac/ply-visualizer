@@ -79,9 +79,10 @@ interface LeafState {
   id: string;
   filePath: string;
   count: number;
-  buffer: Buffer;
+  buffer: Buffer | null;
   offset: number;
   writeChain: Promise<void>;
+  lastUsed: number;
 }
 
 function scalarReader(
@@ -427,11 +428,14 @@ function nodeBounds(
 class LeafSpooler {
   private states = new Map<string, LeafState>();
   private pendingBytes = 0;
+  private activeBuffers = 0;
+  private useCounter = 0;
 
   constructor(
     private readonly directory: string,
     private readonly recordStride: number,
-    private readonly bufferBytes = 32 * 1024
+    private readonly bufferBytes = 32 * 1024,
+    private readonly maxActiveBuffers = 128
   ) {}
 
   state(id: string): LeafState {
@@ -441,40 +445,76 @@ class LeafSpooler {
         id,
         filePath: path.join(this.directory, `${id || 'root'}.bin`),
         count: 0,
-        buffer: Buffer.allocUnsafe(Math.max(this.bufferBytes, this.recordStride * 4)),
+        buffer: null,
         offset: 0,
         writeChain: Promise.resolve(),
+        lastUsed: 0,
       };
       this.states.set(id, state);
     }
     return state;
   }
 
+  private ensureBuffer(state: LeafState): Buffer {
+    state.lastUsed = ++this.useCounter;
+    if (state.buffer) return state.buffer;
+
+    if (this.activeBuffers >= this.maxActiveBuffers) {
+      let victim: LeafState | undefined;
+      for (const candidate of this.states.values()) {
+        if (
+          candidate.buffer &&
+          candidate !== state &&
+          (!victim || candidate.lastUsed < victim.lastUsed)
+        ) {
+          victim = candidate;
+        }
+      }
+      if (victim) this.queueFlush(victim, true);
+    }
+
+    state.buffer = Buffer.allocUnsafe(Math.max(this.bufferBytes, this.recordStride * 4));
+    this.activeBuffers++;
+    return state.buffer;
+  }
+
   /**
    * Hot-path append is intentionally synchronous. Awaiting one Promise per
-   * point made a 1 GB cloud create tens of millions of microtasks. Flushes
-   * copy only a small leaf buffer and are serialized per leaf in the
-   * background; callers periodically apply bounded backpressure per source
-   * chunk.
+   * point made a 1 GB cloud create tens of millions of microtasks. Only a
+   * bounded LRU set of leaf buffers is resident; evicted buffers are flushed
+   * through per-leaf write chains.
    */
   append(id: string, writer: (buffer: Buffer, offset: number) => void): void {
     const state = this.state(id);
-    if (state.offset + this.recordStride > state.buffer.length) this.queueFlush(state);
-    writer(state.buffer, state.offset);
+    let buffer = this.ensureBuffer(state);
+    if (state.offset + this.recordStride > buffer.length) {
+      this.queueFlush(state, false);
+      buffer = this.ensureBuffer(state);
+    }
+    writer(buffer, state.offset);
     state.offset += this.recordStride;
     state.count++;
   }
 
-  private queueFlush(state: LeafState): void {
-    if (state.offset === 0) return;
-    const chunk = Buffer.from(state.buffer.subarray(0, state.offset));
-    state.offset = 0;
-    this.pendingBytes += chunk.byteLength;
-    state.writeChain = state.writeChain
-      .then(() => fs.promises.appendFile(state.filePath, chunk))
-      .finally(() => {
-        this.pendingBytes -= chunk.byteLength;
-      });
+  private queueFlush(state: LeafState, releaseBuffer: boolean): void {
+    const buffer = state.buffer;
+    if (!buffer) return;
+
+    if (state.offset > 0) {
+      const chunk = Buffer.from(buffer.subarray(0, state.offset));
+      state.offset = 0;
+      this.pendingBytes += chunk.byteLength;
+      state.writeChain = state.writeChain
+        .then(() => fs.promises.appendFile(state.filePath, chunk))
+        .finally(() => {
+          this.pendingBytes -= chunk.byteLength;
+        });
+    }
+
+    if (releaseBuffer) {
+      state.buffer = null;
+      this.activeBuffers = Math.max(0, this.activeBuffers - 1);
+    }
   }
 
   async drainIfNeeded(limitBytes = 32 * 1024 * 1024): Promise<void> {
@@ -483,7 +523,7 @@ class LeafSpooler {
   }
 
   async finish(): Promise<Map<string, LeafState>> {
-    for (const state of this.states.values()) this.queueFlush(state);
+    for (const state of this.states.values()) this.queueFlush(state, true);
     await Promise.all([...this.states.values()].map(state => state.writeChain));
     return this.states;
   }
