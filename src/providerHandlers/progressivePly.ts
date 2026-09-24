@@ -784,9 +784,23 @@ export class ProgressivePlySessionManager {
     }
     if (!shouldUseProgressivePly(probe, stat.size, config)) return false;
 
+    this.log(
+      `Progressive PLY selected: ${path.basename(uri.fsPath)} · ${(stat.size / (1024 * 1024)).toFixed(1)} MiB source · ${(estimateProgressiveDecodedBytes(probe) / (1024 * 1024)).toFixed(1)} MiB decoded estimate`
+    );
     const key = crypto
       .createHash('sha1')
-      .update(`${uri.toString()}|${stat.size}|${stat.mtime}|${probe.headerHash}`)
+      .update(
+        [
+          'progressive-ply-v1',
+          uri.toString(),
+          stat.size,
+          stat.mtime,
+          probe.headerHash,
+          config.previewPoints,
+          config.tileTargetPoints,
+          config.maxTileMessageBytes,
+        ].join('|')
+      )
       .digest('hex');
     const id = `ply-${key.slice(0, 16)}-${Date.now().toString(36)}`;
     const cacheDir = path.join(this.context.globalStorageUri.fsPath, 'progressive-ply', key);
@@ -906,6 +920,14 @@ export class ProgressivePlySessionManager {
         if (sourceIndex % stride === 0 && previewCount < capacity) {
           writeCanonical(preview, previewCount * recordStride, point, probe);
           previewCount++;
+        }
+        if (sourceIndex > 0 && sourceIndex % 1_000_000 === 0) {
+          void session.panel.webview.postMessage({
+            type: 'progressivePly:progress',
+            sessionId: session.id,
+            phase: 'preview',
+            fraction: Math.min(1, sourceIndex / Math.max(1, probe.vertexCount)),
+          });
         }
       },
       () => session.cancelled
