@@ -38,6 +38,7 @@ import { handleRegistrationRequest } from './providerHandlers/registration';
 import { loadDocumentContent, type DocumentLoaderHost } from './providerHandlers/documentLoader';
 import { createWebviewReadyGate, type WebviewReadyGate } from './providerHandlers/webviewReadyGate';
 import { clearVolume, reextractVolume } from './providerHandlers/volumeSessions';
+import { ProgressivePlyService } from './progressivePly/service';
 
 // Shared file handling functionality
 import { detectFileType, detectFileTypeWithContent, isPlyBinary } from '../engine/src/fileHandler';
@@ -50,6 +51,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
   private panelVolumeSessions = new Map<vscode.WebviewPanel, Set<string>>();
   private datasetManager: DatasetManager;
   private readonly perfChannel: vscode.OutputChannel;
+  private readonly progressivePlyService: ProgressivePlyService;
   // Wall-clock epoch (Date.now) when the current file's load began. Stamped onto
   // every outgoing *Data message so the webview can report one consistent
   // end-to-end timing line (read+parse / transfer / build / total).
@@ -73,11 +75,14 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
     tryAutoLoadMtl: (webviewPanel, objUri, parsedObjData, fileIndex) =>
       this.tryAutoLoadMtl(webviewPanel, objUri, parsedObjData, fileIndex),
     getSceneMetadata: fsPath => this.datasetManager.getSceneMetadata(fsPath),
+    tryOpenProgressivePly: (documentUri, panel, metadata) =>
+      this.progressivePlyService.maybeOpen(documentUri, panel, metadata),
   };
 
   constructor(private readonly context: vscode.ExtensionContext) {
     this.datasetManager = new DatasetManager(context);
     this.perfChannel = vscode.window.createOutputChannel('3D Visualizer');
+    this.progressivePlyService = new ProgressivePlyService(context, line => this.logPerf(line));
     context.subscriptions.push(this.perfChannel);
     PointCloudEditorProvider.timingChannel = this.perfChannel;
   }
@@ -239,6 +244,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
         clearVolume(key);
       }
       this.panelVolumeSessions.delete(webviewPanel);
+      this.progressivePlyService.disposePanel(webviewPanel);
     });
     webviewPanel.webview.options = {
       enableScripts: true,
@@ -304,6 +310,9 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
     // Register before assigning HTML. Restored webviews can initialize very
     // quickly, and their ready signal must never race this subscription.
     webviewPanel.webview.onDidReceiveMessage(async message => {
+      if (await this.progressivePlyService.handleMessage(webviewPanel, message)) {
+        return;
+      }
       switch (message.type) {
         case 'webviewReady':
           readyGate.markReady();
