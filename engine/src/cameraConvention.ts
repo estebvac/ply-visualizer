@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { viewerState } from './state/viewer.svelte';
-import { NAVIGATION_UP } from './cameraOrientation';
+import { NAVIGATION_UP, poleSafeDirection } from './cameraOrientation';
 
 export interface CameraConventionHost {
   camera: THREE.PerspectiveCamera;
@@ -34,7 +34,11 @@ export function setOpenCVCameraConvention(host: CameraConventionHost): void {
 
   // Position camera to look along +Z axis while maintaining focus on current target
   // Move camera to negative Z relative to target so it looks toward positive Z
-  host.camera.position.copy(currentTarget).add(new THREE.Vector3(0, 0, -distance));
+  const cameraOffset =
+    host.controlType === 'orbit'
+      ? poleSafeDirection(new THREE.Vector3(0, 0, -1)).multiplyScalar(distance)
+      : new THREE.Vector3(0, 0, -distance);
+  host.camera.position.copy(currentTarget).add(cameraOffset);
 
   // Keep the same target (don't reset to origin)
   host.controls.target.copy(currentTarget);
@@ -73,7 +77,11 @@ export function setOpenGLCameraConvention(host: CameraConventionHost): void {
 
   // Position camera to look along -Z axis while maintaining focus on current target
   // Move camera to positive Z relative to target so it looks toward negative Z
-  host.camera.position.copy(currentTarget).add(new THREE.Vector3(0, 0, distance));
+  const cameraOffset =
+    host.controlType === 'orbit'
+      ? poleSafeDirection(new THREE.Vector3(0, 0, 1)).multiplyScalar(distance)
+      : new THREE.Vector3(0, 0, distance);
+  host.camera.position.copy(currentTarget).add(cameraOffset);
 
   // Keep the same target (don't reset to origin)
   host.controls.target.copy(currentTarget);
