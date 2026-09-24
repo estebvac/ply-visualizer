@@ -350,6 +350,16 @@ export class ProgressivePlyService {
     return true;
   }
 
+  cancelSession(panel: vscode.WebviewPanel, sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.panel !== panel) return;
+    session.cancelled = true;
+    this.sessions.delete(sessionId);
+    const panelSet = this.panelSessions.get(panel);
+    panelSet?.delete(sessionId);
+    if (panelSet?.size === 0) this.panelSessions.delete(panel);
+  }
+
   disposePanel(panel: vscode.WebviewPanel): void {
     for (const id of this.panelSessions.get(panel) ?? []) {
       const session = this.sessions.get(id);
