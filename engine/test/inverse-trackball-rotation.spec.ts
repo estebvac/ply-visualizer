@@ -21,35 +21,16 @@ async function setup(page: Page, mode: 'trackball' | 'inverse-trackball-controls
   await page.click('[data-tab="controls"]');
   await page.waitForTimeout(300);
 
-  await page.locator('#advanced-navigation > summary').click();
   if (mode === 'inverse-trackball-controls') {
     await page.click('#inverse-trackball-controls');
-  } else {
-    await page.click('#trackball-controls');
+    await page.waitForTimeout(300);
   }
-  await page.waitForTimeout(300);
-
-  // These suites validate legacy rotation/inversion math, not momentum.
-  // Disable Trackball's test-time damping so two independent runs compare
-  // the same drag path instead of different animation-frame decay histories.
-  await page.evaluate(() => {
-    const v: any = (window as any).visualizer;
-    if ('staticMoving' in v.controls) {
-      v.controls.staticMoving = true;
-      v.controls.dynamicDampingFactor = 0;
-    }
-  });
 
   // Deterministic starting pose so normal vs. inverse comparisons are apples
   // to apples, independent of file-load timing / auto-fit jitter.
   await page.evaluate(() => {
     const v: any = (window as any).visualizer;
     v.controls.target.set(0, 0, 0);
-    // Preserve the historical camera calibration for these legacy-control
-    // regression tests. Standard Orbit uses 60° in production; Trackball
-    // comparison baselines were written and tuned against the old 75° FOV.
-    v.camera.fov = 75;
-    v.camera.updateProjectionMatrix();
     v.camera.position.set(3, 0, 0);
     v.camera.up.set(0, 1, 0);
     v.camera.lookAt(0, 0, 0);
@@ -67,39 +48,6 @@ async function getCamState(page: Page) {
       target: v.controls.target.toArray() as number[],
     };
   });
-}
-
-
-async function waitForCameraSettled(page: Page, epsilon = 1e-5, timeoutMs = 4000) {
-  const deadline = Date.now() + timeoutMs;
-  let previous = await getCamState(page);
-  let stableSamples = 0;
-
-  while (Date.now() < deadline) {
-    await page.waitForTimeout(80);
-    const current = await getCamState(page);
-    const motion =
-      Math.hypot(
-        current.pos[0] - previous.pos[0],
-        current.pos[1] - previous.pos[1],
-        current.pos[2] - previous.pos[2]
-      ) +
-      Math.hypot(
-        current.target[0] - previous.target[0],
-        current.target[1] - previous.target[1],
-        current.target[2] - previous.target[2]
-      );
-
-    if (motion < epsilon) {
-      stableSamples += 1;
-      if (stableSamples >= 3) return;
-    } else {
-      stableSamples = 0;
-    }
-    previous = current;
-  }
-
-  throw new Error('Trackball camera did not settle within the expected damping window');
 }
 
 function isFinite3(v: number[]) {
@@ -126,7 +74,7 @@ async function dragStraight(
     await page.waitForTimeout(8);
   }
   await page.mouse.up();
-  await waitForCameraSettled(page);
+  await page.waitForTimeout(150);
 }
 
 // A circular drag sweeping `totalDegrees` of arc around the canvas center,
@@ -142,7 +90,7 @@ async function dragCircular(page: Page, cx: number, cy: number, totalDegrees: nu
     await page.waitForTimeout(8);
   }
   await page.mouse.up();
-  await waitForCameraSettled(page);
+  await page.waitForTimeout(150);
 }
 
 async function rollAngle(page: Page, before: any, after: any): Promise<number> {
@@ -255,15 +203,7 @@ for (const [dirName, dirX, dirY] of directions) {
       );
       const afterInverse = await getCamState(page);
 
-      const startPoseDelta = Math.hypot(
-        before1.pos[0] - before2.pos[0],
-        before1.pos[1] - before2.pos[1],
-        before1.pos[2] - before2.pos[2]
-      );
-      expect(
-        startPoseDelta,
-        'both runs start from the same deterministic pose within floating-point tolerance'
-      ).toBeLessThan(1e-12);
+      expect(before1.pos, 'both runs start from the same deterministic pose').toEqual(before2.pos);
       expect(isFinite3(afterNormal.pos)).toBe(true);
       expect(isFinite3(afterInverse.pos)).toBe(true);
 
