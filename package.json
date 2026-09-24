@@ -77,6 +77,54 @@
           "type": "boolean",
           "default": false,
           "description": "Render with WebGPU instead of WebGL. Experimental and slower on large point clouds; points are drawn at 1 pixel, and Eye Dome Lighting and gaussian splat rendering are unavailable. Falls back to WebGL when WebGPU cannot start. Reopen the viewer to apply."
+        },
+        "plyViewer.progressivePly.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use remote, bounded-memory progressive LOD loading for large ordinary PLY point clouds."
+        },
+        "plyViewer.progressivePly.fileSizeThresholdMB": {
+          "type": "number",
+          "default": 256,
+          "minimum": 32,
+          "description": "Source PLY size above which progressive remote loading is used."
+        },
+        "plyViewer.progressivePly.decodedMemoryThresholdMB": {
+          "type": "number",
+          "default": 512,
+          "minimum": 64,
+          "description": "Estimated decoded point-cloud memory above which progressive remote loading is used."
+        },
+        "plyViewer.progressivePly.previewPoints": {
+          "type": "number",
+          "default": 250000,
+          "minimum": 10000,
+          "description": "Maximum points in the initial bounded-memory preview."
+        },
+        "plyViewer.progressivePly.tileTargetPoints": {
+          "type": "number",
+          "default": 150000,
+          "minimum": 10000,
+          "description": "Target point count for each remote spatial LOD tile."
+        },
+        "plyViewer.progressivePly.localPointBudget": {
+          "type": "number",
+          "default": 4000000,
+          "minimum": 100000,
+          "description": "Maximum fine-LOD points requested for the local webview at once."
+        },
+        "plyViewer.progressivePly.localMemoryBudgetMB": {
+          "type": "number",
+          "default": 256,
+          "minimum": 64,
+          "description": "Approximate local decoded tile memory budget. Non-selected LOD tiles are evicted with LRU."
+        },
+        "plyViewer.progressivePly.maxTileMessageMB": {
+          "type": "number",
+          "default": 16,
+          "minimum": 4,
+          "maximum": 64,
+          "description": "Maximum remote-to-webview payload size for a single progressive PLY tile."
         }
       }
     },
@@ -450,12 +498,12 @@
                   "type": "string"
                 },
                 "value_scale": {
-                  "default": 1.0,
+                  "default": 1,
                   "title": "Value Scale",
                   "type": "number"
                 },
                 "value_offset": {
-                  "default": 0.0,
+                  "default": 0,
                   "title": "Value Offset",
                   "type": "number"
                 },
@@ -472,7 +520,7 @@
                   "title": "Baseline"
                 },
                 "disparity_offset": {
-                  "default": 0.0,
+                  "default": 0,
                   "title": "Disparity Offset",
                   "type": "number"
                 },
@@ -797,7 +845,7 @@
               "title": "Vectors"
             },
             "vector_scale": {
-              "default": 1.0,
+              "default": 1,
               "title": "Vector Scale",
               "type": "number"
             }
@@ -1001,7 +1049,7 @@
               "title": "Vectors"
             },
             "vector_scale": {
-              "default": 1.0,
+              "default": 1,
               "title": "Vector Scale",
               "type": "number"
             }
@@ -2935,5 +2983,8 @@
     "*.{js,ts,tsx}": [
       "eslint --fix"
     ]
-  }
+  },
+  "extensionKind": [
+    "workspace"
+  ]
 }
