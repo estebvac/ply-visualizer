@@ -8,12 +8,17 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
  * The viewer only defines the interaction contract and distance limits.
  */
 export function configureStandardOrbitControls(controls: OrbitControls): void {
-  controls.enableDamping = false;
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.05;
   controls.enableRotate = true;
   controls.enablePan = true;
   controls.enableZoom = true;
-  controls.screenSpacePanning = true;
+  controls.screenSpacePanning = false;
   controls.zoomToCursor = false;
+  controls.cursorStyle = 'grab';
+  controls.maxPolarAngle = Math.PI / 2;
+  controls.keyPanSpeed = 7;
+  controls.keyRotateSpeed = 1;
   controls.minDistance = 0.001;
   controls.maxDistance = 50000;
   controls.mouseButtons = {
@@ -21,4 +26,8 @@ export function configureStandardOrbitControls(controls: OrbitControls): void {
     MIDDLE: THREE.MOUSE.DOLLY,
     RIGHT: THREE.MOUSE.PAN,
   };
+
+  // Match the official Three.js OrbitControls example: plain arrows pan,
+  // Shift/Ctrl/Meta + arrows rotate. dispose() removes this listener.
+  controls.listenToKeyEvents(window as unknown as HTMLElement);
 }
