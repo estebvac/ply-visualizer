@@ -237,7 +237,11 @@ export class ProgressivePlyClient {
 
   handleProgress(message: any): void {
     const fraction = Math.max(0, Math.min(1, Number(message.fraction) || 0));
-    if (message.phase === 'index') {
+    if (message.phase === 'preview') {
+      this.host.setLoadingDetail?.(
+        `Scanning remote PLY for preview (${Math.round(fraction * 100)}%)…`
+      );
+    } else if (message.phase === 'index') {
       this.host.setLoadingDetail?.(`Building remote LOD cache (${Math.round(fraction * 100)}%)…`);
     } else if (message.phase === 'ready') {
       this.host.showStatus?.('Remote PLY LOD cache ready');
