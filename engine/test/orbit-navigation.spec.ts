@@ -130,6 +130,73 @@ test.describe('Standard Orbit navigation', () => {
     expect(delta3(later.up, before.up)).toBeLessThan(1e-6);
   });
 
+  test('double-click sets pivot without moving camera and Shift + double-click measures', async ({
+    page,
+  }) => {
+    await loadSampleMesh(page);
+
+    const canvas = page.locator('#three-canvas');
+    const box = await canvas.boundingBox();
+    expect(box).not.toBeNull();
+    const clientX = box!.x + box!.width / 2;
+    const clientY = box!.y + box!.height / 2;
+
+    const before = await cameraState(page);
+    await page.evaluate(
+      ({ clientX, clientY }) => {
+        const canvas = document.getElementById('three-canvas') as HTMLCanvasElement;
+        canvas.dispatchEvent(
+          new MouseEvent('dblclick', {
+            bubbles: true,
+            clientX,
+            clientY,
+          })
+        );
+      },
+      { clientX, clientY }
+    );
+    await page.waitForTimeout(100);
+
+    const afterPivot = await cameraState(page);
+    expect(delta3(afterPivot.position, before.position)).toBeLessThan(1e-6);
+    expect(delta3(afterPivot.target, before.target)).toBeGreaterThan(1e-5);
+
+    const beforeMeasure = await page.evaluate(() => {
+      const v: any = (window as any).visualizer;
+      return {
+        target: v.controls.target.toArray(),
+        count: v.measurementManager?.getMeasurements().length ?? 0,
+      };
+    });
+
+    await page.evaluate(
+      ({ clientX, clientY }) => {
+        const canvas = document.getElementById('three-canvas') as HTMLCanvasElement;
+        canvas.dispatchEvent(
+          new MouseEvent('dblclick', {
+            bubbles: true,
+            clientX,
+            clientY,
+            shiftKey: true,
+          })
+        );
+      },
+      { clientX, clientY }
+    );
+    await page.waitForTimeout(100);
+
+    const afterMeasure = await page.evaluate(() => {
+      const v: any = (window as any).visualizer;
+      return {
+        target: v.controls.target.toArray(),
+        count: v.measurementManager?.getMeasurements().length ?? 0,
+      };
+    });
+
+    expect(afterMeasure.count).toBe(beforeMeasure.count + 1);
+    expect(afterMeasure.target).toEqual(beforeMeasure.target);
+  });
+
   test('suppresses the context menu only on the navigation canvas', async ({ page }) => {
     await loadSampleMesh(page);
 
