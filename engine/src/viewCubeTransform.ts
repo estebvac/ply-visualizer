@@ -1,32 +1,34 @@
 import * as THREE from 'three';
 
-const CAMERA_CSS_MULTIPLIERS = [
-  1, -1, 1, 1,
-  1, -1, 1, 1,
-  1, -1, 1, 1,
-  1, -1, 1, 1,
-] as const;
+const CSS_Y_BASIS = new THREE.Matrix4().makeScale(1, -1, 1);
 
 function epsilon(value: number): number {
   return Math.abs(value) < 1e-10 ? 0 : value;
 }
 
 /**
- * Convert the camera orientation to the CSS camera-matrix convention used by
- * Three.js CSS3DRenderer. Only rotation is included: the ViewCube is an
- * orientation gizmo, not a miniature camera/frustum.
+ * Convert the Three.js camera orientation into a proper CSS 3D rotation.
  *
- * The camera quaternion maps camera-local coordinates to world coordinates.
- * The inverse therefore maps world axes into camera space. CSS3DRenderer then
- * flips the Y output row because CSS has Y-down screen coordinates.
+ * CSS3DRenderer flips Y when moving between Three.js and CSS coordinates. Its
+ * camera matrix is only one half of that renderer's camera/object conversion,
+ * so applying getCameraCSSMatrix() directly to a hand-built CSS cube introduces
+ * a reflection (determinant -1) and collapses the six-plane cube visually.
+ *
+ * Our cube already lives directly in CSS coordinates. Convert both the source
+ * and destination bases instead:
+ *
+ *   cssRotation = F * inverse(cameraRotation) * F
+ *
+ * where F = diag(1, -1, 1). The two reflections cancel, leaving a proper
+ * determinant +1 rotation that preserves the DeSandro cube geometry.
  */
 export function cameraQuaternionToCssMatrix3d(quaternion: THREE.Quaternion): string {
-  const inverse = quaternion.clone().normalize().invert();
-  const matrix = new THREE.Matrix4().makeRotationFromQuaternion(inverse);
-
-  const values = matrix.elements.map((value, index) =>
-    epsilon(value * CAMERA_CSS_MULTIPLIERS[index])
+  const inverseRotation = new THREE.Matrix4().makeRotationFromQuaternion(
+    quaternion.clone().normalize().invert()
   );
+
+  const cssRotation = CSS_Y_BASIS.clone().multiply(inverseRotation).multiply(CSS_Y_BASIS);
+  const values = cssRotation.elements.map(epsilon);
 
   return `matrix3d(${values.join(',')})`;
 }
