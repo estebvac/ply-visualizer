@@ -27,7 +27,10 @@ test('verified Orbit/ViewCube baseline renders and snaps around the current targ
   expect(before.up[2]).toBeCloseTo(1, 8);
 
   await page.locator('[data-view-kind="face"][data-view-direction="+X"]').first().click();
-  await page.waitForFunction(() => !(window as any).visualizer.cameraViewAnimator.isAnimating);
+  await page.waitForTimeout(500);
+  expect(
+    await page.evaluate(() => (window as any).visualizer.cameraViewAnimator.isAnimating)
+  ).toBe(false);
 
   const after = await page.evaluate(() => {
     const v: any = (window as any).visualizer;
