@@ -5,7 +5,7 @@ import {
   updateVoxelSize,
 } from './visualization/VoxelRenderer';
 
-interface ProgressiveNode {
+export interface ProgressiveNode {
   id: string;
   level: number;
   bbox: [number, number, number, number, number, number];
@@ -15,7 +15,7 @@ interface ProgressiveNode {
   tileFile: string;
 }
 
-interface ProgressiveManifest {
+export interface ProgressiveManifest {
   version: 1;
   complete: true;
   rootId: string;
@@ -64,7 +64,7 @@ function asArrayBuffer(value: unknown): ArrayBuffer | null {
   return null;
 }
 
-function decodeTile(
+export function decodeProgressiveTile(
   buffer: ArrayBuffer,
   manifest: ProgressiveManifest
 ): {
@@ -220,7 +220,7 @@ export class ProgressivePlyClient {
       return;
     }
 
-    const decoded = decodeTile(raw, session.manifest);
+    const decoded = decodeProgressiveTile(raw, session.manifest);
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(decoded.positions, 3));
     if (decoded.colors) {
