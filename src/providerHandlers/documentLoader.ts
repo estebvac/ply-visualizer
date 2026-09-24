@@ -1050,8 +1050,12 @@ export async function loadDocumentContent(
     // rare over-long headers) lazily fall back to the full read below.
     let fullBytes: Uint8Array | null = null;
     let prefix: Uint8Array | null = null;
-    if (documentUri.scheme === 'file') {
+    if (documentUri.scheme === 'file' || documentUri.scheme === 'vscode-remote') {
       try {
+        // For Remote-SSH this executes in the workspace extension host and
+        // reads only the remote prefix through Node fs. Never materialize the
+        // complete multi-GB PLY just to decide whether progressive loading is
+        // required.
         prefix = await readFileHead(documentUri, 65536);
       } catch {
         prefix = null;
