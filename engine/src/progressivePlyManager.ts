@@ -178,6 +178,7 @@ export class ProgressivePlyManager {
       session.selected = ['node:'];
       session.generation++;
       session.pending.clear();
+      this.announceGeneration(session);
 
       // Hidden retained webviews should not keep a full fine-LOD cache alive.
       // Preserve at most the tiny root tile and the bounded preview.
@@ -411,6 +412,7 @@ export class ProgressivePlyManager {
     session.selected = selected;
     session.generation++;
     session.pending.clear();
+    this.announceGeneration(session);
     this.evictTiles(session);
     this.requestMissing(session);
     if (selected.every(id => session.tileCache.has(id))) this.applySelectedTiles(session);
@@ -515,6 +517,18 @@ export class ProgressivePlyManager {
       }
     }
     return Math.max(session.bytesPerPoint, points * session.bytesPerPoint);
+  }
+
+  private announceGeneration(session: ProgressiveSession): void {
+    // An empty request is a cheap cancellation fence for the remote host. It
+    // lets a newer camera generation stop an older tile read even when every
+    // tile for the new view is already cached locally.
+    this.host.vscode.postMessage({
+      type: 'progressivePly:requestTiles',
+      sessionId: session.id,
+      generation: session.generation,
+      tileIds: [],
+    });
   }
 
   private requestMissing(session: ProgressiveSession): void {
