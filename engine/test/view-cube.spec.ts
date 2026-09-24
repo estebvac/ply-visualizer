@@ -197,7 +197,7 @@ test('a visible front cube face accepts a real pointer click', async ({ page }) 
 
   const face = page.getByRole('button', { name: 'View from +Z', exact: true });
   await expect(face).toBeVisible();
-  await face.click({ position: { x: 38, y: 38 } });
+  await face.click();
   await page.waitForFunction(() => !(window as any).visualizer.cameraViewAnimator.isAnimating);
 
   const state = await cameraState(page);
