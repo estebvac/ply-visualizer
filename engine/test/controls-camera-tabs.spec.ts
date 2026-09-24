@@ -18,9 +18,24 @@ test('Phase 4: controls tab, camera tab, and stats render and respond', async ({
   const edlSettings = page.locator('#edl-settings');
   await expect(edlSettings).toBeVisible();
 
-  const trackballBtn = page.locator('#trackball-controls');
-  await expect(trackballBtn).toHaveClass(/active/);
   const orbitBtn = page.locator('#orbit-controls');
+  await expect(orbitBtn).toHaveClass(/active/);
+
+  const navigationHelp = page.locator('#navigation-help');
+  await expect(navigationHelp).toContainText('Left drag');
+  await expect(navigationHelp).toContainText('Middle drag / Wheel');
+  await expect(navigationHelp).toContainText('Right drag');
+  await expect(navigationHelp).toContainText('Double-click');
+
+  const advanced = page.locator('#advanced-navigation');
+  await expect(advanced).not.toHaveAttribute('open', '');
+  await advanced.locator('summary').click();
+
+  const trackballBtn = page.locator('#trackball-controls');
+  await trackballBtn.click();
+  await expect(trackballBtn).toHaveClass(/active/);
+  await expect(orbitBtn).not.toHaveClass(/active/);
+
   await orbitBtn.click();
   await expect(orbitBtn).toHaveClass(/active/);
   await expect(trackballBtn).not.toHaveClass(/active/);
