@@ -49,3 +49,11 @@ export function shouldUseProgressivePly(
     estimateDecodedPlyBytes(header) >= config.decodedBytesThresholdBytes
   );
 }
+
+
+export function supportsProgressivePlyUri(uri: { scheme: string; fsPath: string }): boolean {
+  return (
+    (uri.scheme === 'file' || uri.scheme === 'vscode-remote') &&
+    /\.ply$/i.test(uri.fsPath)
+  );
+}
