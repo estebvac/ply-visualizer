@@ -32,7 +32,7 @@ export const viewerState = $state(
    *   cameraTargetZ: number;
    * }}
    */ ({
-    controlScheme: 'trackball',
+    controlScheme: 'orbit',
     cameraConvention: 'opengl',
     edlEnabled: false,
     edlStrength: 1.0,
