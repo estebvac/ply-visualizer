@@ -26,6 +26,7 @@ async function setup(page: Page, mode: 'trackball' | 'inverse-trackball-controls
   await page.click('[data-tab="controls"]');
   await page.waitForTimeout(300);
   if (mode === 'inverse-trackball-controls') {
+    await page.locator('#advanced-navigation > summary').click();
     await page.click('#inverse-trackball-controls');
     await page.waitForTimeout(300);
   }
