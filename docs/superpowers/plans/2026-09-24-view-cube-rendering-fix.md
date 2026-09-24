@@ -15,6 +15,27 @@ The desired behavior is based on:
 
 The LMB Orbit behavior is now correct and must not be altered by this work.
 
+## Reference Fidelity Contract
+
+The implementation must follow the references structurally, not merely produce a vaguely cube-like widget.
+
+The two references provide complementary requirements:
+
+- The DeSandro example is the **visual/geometry ground truth** for constructing the cube: one `scene`, one `cube`, exactly six full-size face planes, `transform-style: preserve-3d`, a perspective camera, each face rotated and then translated outward by half the cube size, and the whole cube translated backward by half its size before rotation.
+- Three.js forum post **#5** is the **interaction ground truth**: an HTML orientation box overlay whose sides can be clicked to snap the main camera, with perspective or orthographic presentation.
+- The immediately following forum post **#6** is the technical bridge for the CSS implementation: it explicitly says its CSS 3D cube is taken from DeSandro and its transform matrix is derived from `THREE.CSS3DRenderer()`. The implementation should use this same approach rather than inventing another matrix convention.
+
+For the visible object, there must be **exactly six cube face planes**. Edge/corner picking helpers must not add visible geometric boxes, borders, backgrounds, or detached elements. They may exist only as invisible hit regions or as logic that highlights the underlying six faces.
+
+The scaled VS Code version must preserve the same proportions as the reference. DeSandro uses a 200 px cube with 600 px perspective, so the starting target should keep approximately the same 1:3 cube-size-to-perspective ratio. For a 72–80 px cube, use a perspective around 216–240 px and tune only if the rendered screenshot shows excessive distortion.
+
+The expected visual states are:
+
+- **isometric/arbitrary orbit:** one coherent cube with 2–3 joined visible faces;
+- **axis-aligned view:** one square front-facing face with side faces naturally edge-on/hidden;
+- **during manual orbit:** the entire cube rotates rigidly as one object;
+- **never:** a vertical strip, exploded faces, floating squares, detached edge/corner controls, or rear-face bleed-through.
+
 ## Diagnosis
 
 The current implementation has four structural issues:
@@ -69,14 +90,38 @@ scene
     └── -Z face
 ```
 
-Use a fixed cube size around 70–80 px inside a fixed scene around 120–140 px.
+Use a fixed cube size around 72–80 px inside a fixed scene around 120–140 px.
 
-Each face must use a canonical transform of the form:
+Use the DeSandro construction literally, scaled down for the VS Code sidebar:
 
-- rotate to its axis
-- then `translateZ(CUBE_SIZE / 2)`
+```css
+.scene {
+  perspective: calc(var(--cube-size) * 3);
+  perspective-origin: 50% 50%;
+}
 
-The cube itself must include a base `translateZ(-CUBE_SIZE / 2)` before orientation rotation, matching the DeSandro model.
+.cube {
+  width: var(--cube-size);
+  height: var(--cube-size);
+  position: relative;
+  transform-style: preserve-3d;
+}
+
+.face-front  { transform: rotateY(   0deg) translateZ(var(--cube-half)); }
+.face-right  { transform: rotateY(  90deg) translateZ(var(--cube-half)); }
+.face-back   { transform: rotateY( 180deg) translateZ(var(--cube-half)); }
+.face-left   { transform: rotateY( -90deg) translateZ(var(--cube-half)); }
+.face-top    { transform: rotateX(  90deg) translateZ(var(--cube-half)); }
+.face-bottom { transform: rotateX( -90deg) translateZ(var(--cube-half)); }
+```
+
+Axis labels (+X/-X/+Y/-Y/+Z/-Z) are mapped onto these six physical planes through the shared orientation mapping; do not change the six-plane geometry to encode axes.
+
+The cube transform must keep the DeSandro order:
+
+`translateZ(-CUBE_SIZE / 2) <orientation rotation>`
+
+Do not replace this with six independently positioned buttons or a set of arbitrary `translate3d()` points.
 
 ### 3. Add a Three.js → CSS transform helper
 
@@ -87,10 +132,14 @@ Create a helper such as:
 Responsibilities:
 
 - convert the current camera quaternion into a CSS-compatible rotation transform;
-- follow the same coordinate-sign convention used by Three.js `CSS3DRenderer`;
-- remove tiny floating-point noise;
+- use the **camera CSS matrix convention**, not a raw `Matrix4.elements.join(',')`;
+- follow the sign pattern used by Three.js `CSS3DRenderer.getCameraCSSMatrix()` (notably the Y-related sign inversions);
+- apply the inverse/orientation relationship required for a view gizmo so the cube mirrors camera rotation instead of rotating in the same world direction as the camera;
+- zero values below the same small epsilon used by CSS3DRenderer to avoid unstable `-0`/near-zero CSS transforms;
 - include rotation only;
 - never include camera translation, target position, FOV, dolly distance, or projection.
+
+Add direct tests for this helper before wiring it into Svelte. A matrix that numerically looks valid but produces a mirrored or collapsed cube must be treated as incorrect.
 
 The ViewCube should consume this helper instead of writing raw Three.js matrix elements directly into `matrix3d(...)`.
 
@@ -160,7 +209,11 @@ Interaction regions may be transparent overlays, but they must:
 - share the same transform hierarchy as the cube;
 - never float independently;
 - never protrude beyond the cube;
-- not alter the visible geometry.
+- not alter the visible geometry;
+- have no visible border/background of their own, including hover/active states;
+- express hover/active feedback by styling the underlying face(s), not by drawing a separate square or strip in 3D space.
+
+The rendered ViewCube should therefore still contain only six visible planes even though it supports face, edge, and corner snapping.
 
 ### 9. Camera synchronization
 
@@ -189,13 +242,14 @@ Requirements:
 
 ### 11. Visual styling
 
-Target a CAD-like orientation cube:
+Target the simple solid-box appearance of the references first, then add only minimal CAD-like interaction feedback:
 
-- coherent gray faces
-- clear borders
-- strong edge definition
-- brighter hover face
-- highlighted active face/direction
+- six coherent gray faces forming one cube
+- clear one-pixel borders where faces meet
+- no gaps between faces
+- no bevels or extra decorative geometry in this fix
+- brighter hover on the actual underlying face(s)
+- highlighted active face/direction without adding new 3D shapes
 - readable axis labels
 - no detached white fragments
 - no translucent rear-face bleed-through
@@ -304,13 +358,18 @@ Use actual VS Code sidebar dimensions.
 
 Acceptance criteria:
 
-- the gizmo looks like one solid cube;
-- 2–3 visible faces meet at coherent edges/corners;
+- the gizmo is recognizably the same six-plane CSS cube construction as the DeSandro reference, scaled for the VS Code sidebar;
+- an isometric/arbitrary view shows 2–3 full faces joined along continuous cube edges;
+- an axis-aligned view shows one square face rather than a stack/strip of transformed elements;
+- all six faces have the same projected source size before perspective;
 - rear faces are hidden;
-- there are no floating white squares, slivers, or detached controls;
-- axis labels remain readable;
+- there are no floating white squares, slivers, detached controls, exploded faces, or visible hotspot geometry;
+- axis labels remain readable and attached to their face centers;
 - the cube rotates rigidly as a single object;
-- manual Orbit interaction remains unchanged.
+- manual Orbit interaction remains unchanged;
+- a screenshot at the reported narrow VS Code sidebar width must be visually compared with the DeSandro cube and the Three.js OrientationControls/ViewCube references before acceptance.
+
+A green DOM/unit test suite alone is not sufficient for this task; screenshot inspection is a required acceptance gate.
 
 ## Verification / Packaging
 
