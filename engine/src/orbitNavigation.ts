@@ -16,7 +16,7 @@ export function configureStandardOrbitControls(controls: OrbitControls): void {
   controls.screenSpacePanning = false;
   controls.zoomToCursor = false;
   controls.cursorStyle = 'grab';
-  controls.maxPolarAngle = Math.PI / 2;
+  controls.maxPolarAngle = Math.PI;
   controls.keyPanSpeed = 7;
   controls.keyRotateSpeed = 1;
   controls.minDistance = 0.001;
