@@ -7,6 +7,7 @@ import {
   estimateProgressiveDecodedBytes,
   probeProgressivePly,
   shouldUseProgressivePly,
+  ProgressivePlySessionManager,
 } from '../../providerHandlers/progressivePly';
 import { loadDocumentContent } from '../../providerHandlers/documentLoader';
 
@@ -153,6 +154,84 @@ suite('Progressive PLY routing', () => {
       assert.strictEqual(progressiveCalls, 1);
       assert.strictEqual(messages.some(message => message.type === 'ultimateRawBinaryUri'), false);
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  test('builds a bounded preview and spatial cache without sending the source file', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ply-progressive-build-'));
+    const cache = path.join(dir, 'cache');
+    const file = path.join(dir, 'cloud.ply');
+    writeBinaryPly(file, 2048);
+    const messages: any[] = [];
+    let resolveManifest!: () => void;
+    const manifestReady = new Promise<void>(resolve => (resolveManifest = resolve));
+    const panel = {
+      webview: {
+        postMessage: async (message: any) => {
+          messages.push(message);
+          if (message.type === 'progressivePly:manifest') resolveManifest();
+          return true;
+        },
+      },
+    } as unknown as vscode.WebviewPanel;
+    const context = {
+      globalStorageUri: vscode.Uri.file(cache),
+    } as unknown as vscode.ExtensionContext;
+    const manager = new ProgressivePlySessionManager(
+      context,
+      () => undefined,
+      {
+        enabled: true,
+        fileSizeThresholdBytes: 1,
+        decodedMemoryThresholdBytes: 1,
+        previewPoints: 64,
+        tileTargetPoints: 128,
+        localPointBudget: 512,
+        localMemoryBudgetBytes: 8 * 1024 * 1024,
+        maxTileMessageBytes: 1024 * 1024,
+      }
+    );
+
+    try {
+      assert.strictEqual(
+        await manager.startIfLarge(vscode.Uri.file(file), panel, path.basename(file)),
+        true
+      );
+      const start = messages.find(message => message.type === 'progressivePly:start');
+      assert.ok(start, 'preview should be posted before the full spatial cache is ready');
+      assert.ok(start.data.vertexCount <= 64, 'preview must respect its point budget');
+      assert.strictEqual(start.data.sourcePointCount, 2048);
+      assert.strictEqual(
+        messages.some(message => message.type === 'ultimateRawBinaryUri'),
+        false,
+        'progressive mode must never ask the local webview to fetch the source PLY'
+      );
+
+      await Promise.race([
+        manifestReady,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('progressive manifest timeout')), 10_000)
+        ),
+      ]);
+      const manifestMessage = messages.find(message => message.type === 'progressivePly:manifest');
+      assert.ok(manifestMessage.manifest.nodes.length > 1);
+      const leaf = manifestMessage.manifest.nodes.find(
+        (node: any) => node.id !== manifestMessage.manifest.rootId
+      );
+      assert.ok(leaf);
+
+      const beforeTiles = messages.length;
+      await manager.handleTileRequest(panel, {
+        sessionId: start.sessionId,
+        generation: 1,
+        nodeIds: [leaf.id],
+      });
+      const tile = messages.slice(beforeTiles).find(message => message.type === 'progressivePly:tile');
+      assert.ok(tile, 'requested remote tile should be returned');
+      assert.ok(tile.byteLength <= 1024 * 1024, 'tile transfer must stay bounded');
+      assert.ok(tile.buffer instanceof ArrayBuffer);
+    } finally {
+      manager.disposePanel(panel);
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
