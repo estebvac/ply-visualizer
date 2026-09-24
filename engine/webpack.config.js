@@ -27,12 +27,6 @@ module.exports = {
     alias: {
       // Map webview imports to the actual source files
       '../../src/webview': path.resolve(__dirname, '../src/webview'),
-      // Standalone page: same as the webview, the in-page loader.
-      './wasmLoader$': path.resolve(__dirname, 'src/registration/wasmLoader.browser.ts'),
-      '../registration/wasmLoader$': path.resolve(
-        __dirname,
-        'src/registration/wasmLoader.browser.ts'
-      ),
     },
   },
   module: {
@@ -64,14 +58,6 @@ module.exports = {
         test: /\.css$/,
         use: [MiniCssExtractPlugin.loader, 'css-loader'],
       },
-      {
-        test: /\.png$/,
-        type: 'asset/inline',
-      },
-      {
-        test: /\.svg$/,
-        type: 'asset/inline',
-      },
     ],
   },
   externals: {
@@ -84,30 +70,64 @@ module.exports = {
     }),
     new CopyWebpackPlugin({
       patterns: [
-        // The standalone application is the root of its own deployment.
+        // 3D Visualizer goes to /3d-visualizer/ path
         {
           from: 'index.html',
+          to: '3d-visualizer/index.html',
+          transform(content) {
+            return (
+              content
+                .toString()
+                // Update paths to be relative from 3d-visualizer subdirectory
+                .replace(/src="bundle\.js"/g, 'src="../bundle.js"')
+                .replace(/href="bundle\.css"/g, 'href="../bundle.css"')
+                .replace(/src="media\//g, 'src="../media/')
+                .replace(/href="media\//g, 'href="../media/')
+                // Update navigation: About button goes to root (about page is now at root)
+                .replace(
+                  /<a href="about\/" class="nav-button">About<\/a>/g,
+                  '<a href="../" class="nav-button">About</a>'
+                )
+                // Impressum and Datenschutz are at root level, need ../ from 3d-visualizer/
+                .replace(/href="impressum\.html"/g, 'href="../impressum.html"')
+                .replace(/href="datenschutz\.html"/g, 'href="../datenschutz.html"')
+            );
+          },
+        },
+        // About page becomes the root index
+        {
+          from: 'about/index.html',
           to: 'index.html',
+          transform(content) {
+            return (
+              content
+                .toString()
+                // Update link back to 3D visualizer
+                .replace(/href="\.\.\/"/g, 'href="3d-visualizer/"')
+            );
+          },
         },
         {
           from: 'media',
           to: 'media',
         },
+        // Impressum and Datenschutz at root level
         {
-          from: 'examples',
-          to: 'examples',
+          from: 'impressum.html',
+          to: 'impressum.html',
         },
         {
-          from: 'manifest.webmanifest',
-          to: 'manifest.webmanifest',
-        },
-        {
-          from: '../icon.png',
-          to: 'apple-touch-icon.png',
+          from: 'datenschutz.html',
+          to: 'datenschutz.html',
         },
         {
           from: 'src/themes',
           to: 'src/themes',
+        },
+        // Also copy themes for 3d-visualizer subdirectory (themes are fetched relative to HTML location)
+        {
+          from: 'src/themes',
+          to: '3d-visualizer/src/themes',
         },
       ],
     }),

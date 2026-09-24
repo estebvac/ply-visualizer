@@ -90,34 +90,13 @@ suite('PointCloudVisualizer Interaction Test Suite', () => {
   });
 
   suite('Keyboard Shortcuts', () => {
-    test('Should handle key press events for camera controls', () => {
-      const keyboardShortcuts = {
+    test('Should expose only primary Fit and Reset navigation shortcuts', () => {
+      const navigationShortcuts = {
         KeyF: 'fitCamera',
         KeyR: 'resetCamera',
-        KeyA: 'toggleAxes',
-        KeyN: 'toggleNormals',
-        KeyC: 'toggleCameras',
-        KeyO: 'setRotationOrigin',
-        KeyV: 'setOpenCVConvention',
-        KeyG: 'setOpenGLConvention',
-        Digit1: 'trackballControls',
-        Digit2: 'orbitControls',
-        Digit3: 'inverseTrackball',
-        Digit4: 'arcballControls',
-        KeyT: 'toggleGamma',
-        KeyU: 'toggleUnlit',
-        KeyL: 'toggleLighting',
-        Space: 'sequenceToggle',
       };
 
-      for (const [key, action] of Object.entries(keyboardShortcuts)) {
-        assert.ok(typeof key === 'string');
-        assert.ok(typeof action === 'string');
-        assert.ok(key.length > 0);
-        assert.ok(action.length > 0);
-      }
-
-      assert.strictEqual(Object.keys(keyboardShortcuts).length, 16);
+      assert.deepStrictEqual(Object.keys(navigationShortcuts).sort(), ['KeyF', 'KeyR']);
     });
 
     test('Should handle sequence navigation keys', () => {

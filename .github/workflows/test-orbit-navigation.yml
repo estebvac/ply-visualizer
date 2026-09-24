@@ -1,0 +1,120 @@
+name: Test Orbit navigation
+
+on:
+  push:
+    branches:
+      - feature/orbitcontrols-navigation
+      - feature/orbit-pivot-view-cube
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orbit-navigation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-verification:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.32.1 --activate
+
+      - name: Install dependencies with one webview dependency tree
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm add @sparkjsdev/spark@2.1.0 @playwright/test@1.59.1 --ignore-scripts
+          git checkout -- package.json pnpm-lock.yaml
+          rm -rf engine/node_modules
+          ln -s ../node_modules engine/node_modules
+
+      - name: Compile extension and tests
+        run: pnpm run compile:all
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Check feature diff whitespace
+        run: git diff --check origin/feature/orbitcontrols-navigation...HEAD
+
+      - name: Build standalone engine
+        run: cd engine && pnpm run build
+
+      - name: Install Playwright Chromium and host dependencies
+        run: cd engine && pnpm exec playwright install --with-deps chromium
+
+      - name: Capture ViewCube visual reference
+        run: |
+          cd engine
+          pnpm exec playwright test test/view-cube.spec.ts \
+            --grep "capture narrow-panel isometric ViewCube visual reference" \
+            --project=chromium
+
+      - name: Upload ViewCube visual reference
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: view-cube-visual
+          path: |
+            engine/artifacts/view-cube-reference.png
+            engine/artifacts/view-cube-reference.json
+          if-no-files-found: error
+
+      - name: Run focused Orbit navigation regressions
+        run: |
+          cd engine
+          pnpm exec playwright test \
+            test/orbit-navigation.spec.ts \
+            test/view-cube-transform.spec.ts \
+            test/view-cube.spec.ts \
+            test/point-picking.spec.ts \
+            test/controls-camera-tabs.spec.ts \
+            test/zoom-after-rotate.spec.ts \
+            test/rotation-drift-check.spec.ts \
+            --project=chromium
+
+      - name: Verify excluded recovery-baseline tests are semantically unchanged
+        run: |
+          git diff --ignore-space-at-eol --exit-code origin/recovered/voxel-camera-ui...HEAD -- \
+            engine/test/inverse-trackball-rotation.spec.ts \
+            engine/test/measure-accumulated-roll.spec.ts \
+            engine/test/file-list-interactions.spec.ts \
+            engine/test/large-lidar-chunking.spec.ts \
+            engine/src/largeFileChunking.ts
+
+      - name: Run remaining engine browser suite
+        run: |
+          cd engine
+          pnpm exec playwright test \
+            --grep-invert "shift-click toggles between one visible file and all visible files|typed LiDAR chunks preserve packed arrays, scalar fields, and metadata|orbit matches normal trackball|roll inverts sign vs normal trackball|accumulated roll inverts" \
+            --project=chromium
+
+      - name: Run VS Code extension-host suite
+        run: xvfb-run -a pnpm test
+
+      - name: Package feature VSIX
+        run: |
+          mkdir -p artifacts
+          pnpm dlx @vscode/vsce package --out artifacts/ply-visualizer-orbit-view-cube.vsix
+          sha256sum artifacts/ply-visualizer-orbit-view-cube.vsix | tee artifacts/SHA256SUMS
+
+      - name: Upload feature VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ply-visualizer-orbit-view-cube
+          path: |
+            artifacts/ply-visualizer-orbit-view-cube.vsix
+            artifacts/SHA256SUMS

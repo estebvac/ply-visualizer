@@ -1,8 +1,3 @@
-import { handleNativeAgentRequest } from './hosts/nativeAgent';
-import { updateAgentPointSizes } from './hosts/agentPointSizing';
-import { renderAgentComparison } from './hosts/agentComparison';
-import { createModelObject, updateModelPlayback } from './models/sceneModel';
-import { handleSceneModelMessage } from './models/modelMessages';
 import * as THREE from 'three';
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
@@ -15,60 +10,21 @@ import {
   CameraParams,
   DepthConversionResult,
 } from './interfaces';
-import { CustomArcballControls, TurntableControls, VirtualBallControls } from './controls';
+import { CustomArcballControls, TurntableControls } from './controls';
+import { configureStandardOrbitControls } from './orbitNavigation';
+import { resetStandardOrbitUp } from './cameraOrientation';
+import { CameraViewAnimator } from './CameraViewAnimator';
 import { initializeThemes, getThemeByName, applyTheme, getCurrentThemeName } from './themes';
 import { RotationCenterManager, RotationCenterMode } from './RotationCenterManager';
 import { MeasurementManager } from './MeasurementManager';
-import { measurementState } from './state/measurement.svelte';
-import { FilmManager } from './film/FilmManager';
-import { mountFilmPanel } from './filmPanelMount';
-import { mountMeasurementQuickActions } from './measurementQuickActionsMount';
-import { mountSmallViewAffordance } from './smallViewAffordanceMount';
-import { mountFileActivityIndicator } from './fileActivityIndicatorMount';
-import { SmallViewAffordance } from './smallViewAffordance';
-import { ScreenAnchorController, type SafeViewRect } from './screenAnchor';
-import { TouchNavigationController } from './touchNavigation';
-import {
-  SelectionManager,
-  SelectionContext,
-  type PointPickingImplementation,
-} from './SelectionManager';
+import { SelectionManager, SelectionContext } from './SelectionManager';
 
+// eslint-disable-next-line @typescript-eslint/naming-convention -- ambient global from media/geotiff.min.js
+declare const GeoTIFF: any;
 declare const acquireVsCodeApi: () => any;
 
 // Environment detection - works in both VSCode and browser
 const isVSCode = typeof acquireVsCodeApi !== 'undefined';
-
-const BACKGROUND_CHANGE_MESSAGES = new Set([
-  'stonexColorReady',
-  'spatialData',
-  'multiSpatialData',
-  'sceneModelData',
-  'splatContainerUri',
-  'ultimateRawBinaryData',
-  'ultimateRawBinaryUri',
-  'directTypedArrayData',
-  'binarySpatialData',
-  'addFiles',
-  'startLargeFile',
-  'largeFileChunk',
-  'largeFileComplete',
-  'depthData',
-  'objData',
-  'stlData',
-  'xyzData',
-  'pcdData',
-  'ptsData',
-  'kittiBinData',
-  'offData',
-  'gltfData',
-  'volumeData',
-  'colmapModelFiles',
-  'colmapImages',
-  'npyData',
-  'xyzVariantData',
-  'poseData',
-]);
 
 // Shared file handling functionality
 import {
@@ -85,32 +41,17 @@ import {
 import { ColorImageLoader } from './colorImageLoader';
 import { PerfTimer, perfLog, setPerfSink } from './utils/perfLog';
 import { createRotationMatrix, parseMatrixInput } from './utils/matrix';
-import { messageBytes } from './utils/messageBytes';
 import * as sequencePlayback from './sequencePlayback';
 import * as pose from './pose';
 import * as renderStats from './renderStats';
 import * as pointCloudRenderer from './visualization/PointCloudRenderer';
-import { boundsAreOutlierDominated, robustPointBounds } from './visualization/robustBounds';
-import { DEFAULT_POINT_SIZE } from './visualization/PointCloudRenderer';
-import * as containerPerf from './utils/containerPerf';
+import * as voxelRenderer from './visualization/VoxelRenderer';
 import * as meshBuilder from './visualization/MeshBuilder';
-import * as stonexCameras from './visualization/stonexCameras';
-import { addE57CameraVisualization } from './visualization/e57Cameras';
-import { addColmapCameraVisualization } from './visualization/colmapCameras';
-import {
-  buildSparseCloud,
-  collectColmapModelFiles,
-  colmapReconstructionName,
-  parseColmapModel,
-} from './formats/colmap/colmapFiles';
-import { loadColmapTextures } from './formats/colmap/colmapTextures';
-import { attachColmapFrameImage } from './formats/colmap/colmapReconstruction';
 import * as uiStatus from './ui/status';
 import * as intensity from './utils/intensity';
 import * as commentSettings from './depth/commentSettings';
 import * as cameraProfile from './cameraProfile';
 import * as renderModeToggles from './renderModeToggles';
-import { SplatModeManager, handleSplatContainerUri } from './visualization/splatMode';
 import * as colorModeUtils from './colorMode';
 import * as pointSizeScaling from './pointSizeScaling';
 import * as depthPanelState from './depth/panelState';
@@ -122,22 +63,7 @@ import * as cameraConvention from './cameraConvention';
 import * as edl from './edl';
 import * as transparency from './transparency';
 import * as plyExport from './plyExport';
-import * as colorModeModule from './colorMode';
-import * as registrationFeature from './registrationFeature';
-import {
-  configureRegistrationExtensionHost,
-  handleRegistrationExtensionResult,
-} from './registration';
-import * as stationPipelineFeature from './stationPipelineFeature';
 import * as rotationCenterFeature from './rotationCenterFeature';
-import {
-  applyScannerStartView,
-  applyZUpOrientation,
-  scannerCapturePointFor,
-  shouldApplySavedViewConvention,
-  shouldOrientZUp,
-} from './cameraOrientation';
-import { applyFixedClipPlanes, FIXED_CAMERA_FAR, FIXED_CAMERA_NEAR } from './cameraClipping';
 import * as axesFeature from './axesFeature';
 import * as transformationMatrix from './transformationMatrix';
 import * as depthCameraParamsPrompt from './depthCameraParamsPrompt';
@@ -159,55 +85,17 @@ import { mountWelcomeMessage } from './welcomeMessageMount';
 import { mountPerformanceStats } from './performanceStatsMount';
 import { mountSequenceControls } from './sequenceControlsMount';
 import { mountFileList } from './fileListMount';
-import { mountGlobalAlignMenu } from './globalAlignMenuMount';
-import { runBenchmarkScenario } from './benchmarkScenario';
 import { mountStats } from './statsMount';
 import { mountControlsTab } from './controlsTabMount';
-import { mountSceneGuides } from './sceneGuidesMount';
-import { updateSceneGuides } from './visualization/coordinateGrid';
-import { AdaptivePointRenderer } from './visualization/AdaptivePointRenderer';
 import { filesState } from './state/files.svelte';
-import { GpuTimer, NULL_GPU_TIMER, createGpuTimer } from './rendering/gpuTimer';
-import type { ViewerRenderer } from './rendering/viewerRenderer';
-import { RendererBackend, WEBGPU_CAVEATS, createViewerRenderer } from './rendering/rendererBackend';
-import {
-  WebGPUVisibilityRenderer,
-  type PointRenderingImplementation,
-  type VisibilityRenderContext,
-} from './rendering/WebGPUVisibilityRenderer';
-import { FileEntryRegistry } from './state/fileEntries';
-import { insertEntryState, removeEntryState } from './state/fileEntryState';
 import { viewerState } from './state/viewer.svelte';
 import { uiState } from './state/ui.svelte';
-import { acceptVolumeResponse, setVolumeError, updateVolumeProgress } from './state/volume.svelte';
 import { flushSync } from 'svelte';
 import { formatFileSize } from './utils/format';
 import { ColorProcessor } from './colorProcessor';
 import { DepthConverter } from './depth/DepthConverter';
 import { DepthWorkerClient } from './depth/DepthWorkerClient';
 import { alignSourceOrigin } from './utils/sourceOrigin';
-import { SectionPlaneManager } from './visualization/sectionPlanes';
-import type { VolumeData } from './parsers/nrrdParser';
-import { normalizeDepth, projectToPointCloud } from './depth/DepthProjector';
-import {
-  initTiffWasm,
-  projectDepthBandWasmSync,
-  projectDepthWasmSync,
-} from './depth/readers/tiffWasm';
-import { projectDepthInBands } from './depth/depthProjectionPool';
-import { registrationState } from './state/registration.svelte';
-import {
-  inspectNpyWasm,
-  isNpyPointCloudShape,
-  parsePlyFromResponse,
-  parsePlyWasm,
-  readNpyWasm,
-  type PlyParseResult,
-} from './parsers/pointcloudWasm';
-import { buildVolumePointsAsync } from './visualization/volumePoints';
-import { buildVolumeMeshAsync } from './visualization/isosurface';
-import { buildVolumeSlicesAsync } from './visualization/volumeSlices';
-import { buildVolumeVoxelsAsync } from './visualization/volumeVoxels';
 
 /**
  * Modern point cloud visualizer with unified file management and Depth image processing
@@ -215,15 +103,6 @@ import { buildVolumeVoxelsAsync } from './visualization/volumeVoxels';
  */
 
 class PointCloudVisualizer {
-  /**
-   * Whether a VS Code extension host is on the other end of `vscode`.
-   *
-   * Features that need a process still holding the opened file — the X3A
-   * station pipeline re-reads the archive — key off this rather than sniffing
-   * for `acquireVsCodeApi`, which cannot be faked in a test without flipping
-   * the whole page into webview mode.
-   */
-  readonly runningInVSCode: boolean = isVSCode;
   vscode: any = isVSCode
     ? acquireVsCodeApi()
     : {
@@ -238,44 +117,24 @@ class PointCloudVisualizer {
   browserFileHandler: BrowserMessageHandler | null = null;
   scene!: THREE.Scene;
   camera!: THREE.PerspectiveCamera;
-  renderer!: ViewerRenderer;
-  /** Which backend `renderer` actually is; see rendering/rendererBackend.ts. */
-  rendererBackend: RendererBackend = 'webgl';
-  /**
-   * The same renderer as `renderer`, typed concretely — but null on the WebGPU
-   * backend. EDL and Spark splat rendering are WebGL-only and use this to tell
-   * whether they can run at all.
-   */
-  webglRenderer: THREE.WebGLRenderer | null = null;
-  sectionPlanes = new SectionPlaneManager();
-  /** Original voxel arrays retained for local threshold/mode changes. */
-  private volumeSources = new Map<
-    string,
-    { volume: VolumeData; metadata: any; generation: number }
-  >();
+  renderer!: THREE.WebGLRenderer;
   // True between a WebGL context loss and its restoration. While lost, the GPU
   // is gone, so we must not render or touch GL objects — doing so throws and
   // crashes the webview. This is the safety net for the multi-window
   // out-of-VRAM case (each window is a separate context sharing one GPU).
   private contextLost = false;
-  controls!:
-    | TrackballControls
-    | OrbitControls
-    | CustomArcballControls
-    | TurntableControls
-    | VirtualBallControls;
+  controls!: TrackballControls | OrbitControls | CustomArcballControls | TurntableControls;
+  private inverseTrackballPointerDownHandler: (() => void) | null = null;
+  readonly cameraViewAnimator = new CameraViewAnimator();
 
   // Camera control state
-  controlType: 'trackball' | 'orbit' | 'legacy-trackball' | 'arcball' = 'legacy-trackball';
+  controlType: 'trackball' | 'orbit' | 'inverse-trackball' | 'arcball' | 'cloudcompare' =
+    'orbit';
   screenSpaceScaling: boolean = false;
   allowTransparency: boolean = false;
 
   // Eye Dome Lighting (EDL) state
-  // Auto is the default: the pass runs only while at least one visible point
-  // cloud uses a uniform material colour. `edlEnabled` remains as a backwards-
-  // compatible master switch for benchmarks and integrations.
-  edlEnabled: boolean = true;
-  edlMode: edl.EDLMode = 'auto';
+  edlEnabled: boolean = false;
   edlStrength: number = 1.0;
   edlRadius: number = 1.4;
   edlSecondRingWeight: number = 0.0;
@@ -286,28 +145,14 @@ class PointCloudVisualizer {
   rotationCenterManager: RotationCenterManager = new RotationCenterManager();
   private measurementManager: MeasurementManager | null = null;
   private selectionManager: SelectionManager | null = null;
-  webgpuPickingAvailable: boolean = false;
-  webgpuPickingUnavailableReason: string | null = 'WebGPU availability has not been checked';
-  pointPickingImplementation: PointPickingImplementation = 'cpu';
-  webgpuPointRenderingAvailable: boolean = false;
-  webgpuPointRenderingUnavailableReason: string | null = 'WebGPU availability has not been checked';
-  pointRenderingImplementation: PointRenderingImplementation = 'current';
-  private webgpuVisibilityRenderer: WebGPUVisibilityRenderer | null = null;
-  // Video mode: camera keyframes, playback and recording (film/FilmManager.ts)
-  filmManager: FilmManager | null = null;
 
   // On-demand rendering state
   needsRender: boolean = false;
   private animationId: number | null = null;
   private resizeObserver: ResizeObserver | null = null;
-  private screenAnchor: ScreenAnchorController | null = null;
-  private touchNavigation: TouchNavigationController | null = null;
-  private pointPickGeneration = 0;
 
   // Welcome message state
   isFileLoading: boolean = false;
-  /** Host-side loads can overlap; the activity dot stays up until all finish. */
-  private pendingFileLoads = 0;
   // When loading additional file(s) into a non-empty scene, we show progress as a
   // row in the Files list instead of a blocking overlay (the current cloud stays
   // interactive). Holds the label/detail of the in-progress add, or null.
@@ -326,49 +171,35 @@ class PointCloudVisualizer {
   currentFrameTime: number = 0;
 
   // GPU timing
-  // Backend-neutral GPU timing; see rendering/gpuTimer.ts. Starts as the null
-  // timer so the render loop needs no guards before the renderer exists.
-  gpuTimer: GpuTimer = NULL_GPU_TIMER;
-
-  /** Default per-point square/round two-pass renderer. */
-  readonly adaptivePointRenderer = new AdaptivePointRenderer(this);
-  readonly smallViewAffordance = new SmallViewAffordance(this);
+  gpuTimerExtension: any = null;
+  gpuQueries: any[] = [];
+  gpuTimes: number[] = [];
+  currentGpuTime: number = 0;
 
   // Camera tracking for screen-space scaling
   private lastScalingUpdate: number = 0;
 
   // Unified file management
-  //
-  // The file list addresses spatialFiles, poseGroups and cameraGroups through
-  // one index space. fileEntries owns that ordering and hands out the index for
-  // each entry, so nothing derives it from collection lengths - see
-  // state/fileEntries.ts for why that derivation was unsafe.
-  readonly fileEntries = new FileEntryRegistry();
-  /** Image names of the loaded COLMAP model, for matching streamed photos. */
-  private colmapImageNames: string[] = [];
-  private colmapImagesDone = 0;
   spatialFiles: SpatialData[] = [];
   meshes: (THREE.Mesh | THREE.Points | THREE.LineSegments)[] = [];
   normalsVisualizers: (THREE.LineSegments | null)[] = [];
   vertexPointsObjects: (THREE.Points | null)[] = []; // Vertex points for triangle meshes
+  voxelObjects: (THREE.InstancedMesh | null)[] = [];
   multiMaterialGroups: (THREE.Group | null)[] = []; // Multi-material Groups for OBJ files
   materialMeshes: (THREE.Object3D[] | null)[] = []; // Sub-meshes for multi-material OBJ files
   fileVisibility: boolean[] = [];
-  // Per-file "render as gaussian splats" mode (3DGS PLY files only). The
-  // manager lives in visualization/splatMode.ts; this array is parallel to
-  // spatialFiles like the render-mode arrays below.
-  splatModeActive: boolean[] = [];
-  splatMode: SplatModeManager = new SplatModeManager(this);
   private isFirstFileLoad: boolean = true; // Track if this is the first file being loaded
 
   // Universal rendering mode states for each file
   solidVisible: boolean[] = []; // Solid mesh rendering
   wireframeVisible: boolean[] = []; // Wireframe rendering
   pointsVisible: boolean[] = []; // Points rendering
+  voxelsVisible: boolean[] = []; // Instanced cube rendering for point clouds
   normalsVisible: boolean[] = []; // Normals lines rendering
 
   private useOriginalColors = true; // Default to original colors
   pointSizes: number[] = []; // Individual point sizes for each point cloud
+  voxelSizes: number[] = []; // Physical cube edge length in scene units
 
   // Sequence mode state
   sequenceMode = false;
@@ -467,11 +298,6 @@ class PointCloudVisualizer {
       totalChunks: number;
       receivedChunks: number;
       vertices: SpatialVertex[];
-      positionsArray?: Float32Array;
-      colorsArray?: Uint8Array;
-      normalsArray?: Float32Array;
-      scalarFields?: Record<string, Float32Array>;
-      useTypedArrays: boolean;
       hasColors: boolean;
       hasNormals: boolean;
       faces: SpatialFace[];
@@ -481,12 +307,6 @@ class PointCloudVisualizer {
       startTime: number;
       firstChunkTime: number;
       lastChunkTime: number;
-      shortPath?: string;
-      hasIntensity?: boolean;
-      sourcePointCount?: number;
-      sourceOrigin?: [number, number, number];
-      metadata?: Record<string, unknown>;
-      fileSizeInBytes?: number;
     }
   > = new Map();
 
@@ -535,7 +355,7 @@ class PointCloudVisualizer {
     fy: undefined, // Optional, defaults to fx if not provided
     cx: undefined, // Will be auto-calculated per image based on dimensions
     cy: undefined, // Will be auto-calculated per image based on dimensions
-    cameraModel: 'pinhole-opencv',
+    cameraModel: 'pinhole-ideal',
     depthType: 'euclidean',
     convention: 'opengl',
     pngScaleFactor: 1000, // Default for PNG files
@@ -604,6 +424,22 @@ class PointCloudVisualizer {
     pointSizeScaling.restoreOriginalPointSizes(this);
   }
 
+  private initGPUTiming(): void {
+    renderStats.initGPUTiming(this);
+  }
+
+  private startGPUTiming(): any {
+    return renderStats.startGPUTiming(this);
+  }
+
+  private endGPUTiming(query: any): void {
+    renderStats.endGPUTiming(this, query);
+  }
+
+  private updateGPUTiming(): void {
+    renderStats.updateGPUTiming(this);
+  }
+
   private createOptimizedPointCloud(
     geometry: THREE.BufferGeometry,
     material: THREE.PointsMaterial
@@ -619,38 +455,19 @@ class PointCloudVisualizer {
     if (isVSCode) {
       setPerfSink((line: string) => this.vscode.postMessage({ type: 'perfLog', line }));
     }
-    // Splat mode reaches private visibility/button updates through these.
-    this.splatMode.refreshVisibility = fileIndex => this.updateMeshVisibilityAndMaterial(fileIndex);
-    this.splatMode.refreshButtons = () => {
-      renderModeToggles.updateUniversalRenderButtonStates(this);
-      // FileItem's mode-dependent controls are declarative; wake Svelte after
-      // the asynchronous Spark state changes.
-      filesState.renderModeTick += 1;
-    };
     this.init();
   }
 
   private async init(): Promise<void> {
     try {
-      await this.initThreeJS();
+      this.initThreeJS();
       this.applyEnvironmentSpecificUI();
       this.setupEventListeners();
       mountSvelteSmokeTest();
       mountErrorOverlay();
       mountLoadingOverlay();
-      mountFileActivityIndicator();
       mountPerformanceStats();
       mountTabNav(this);
-
-      const panel = document.getElementById('main-ui-panel');
-      if (panel) {
-        this.screenAnchor = new ScreenAnchorController({
-          camera: this.camera,
-          canvas: this.renderer.domElement,
-          panel,
-          onChange: safeRect => this.applyControlScreenRegion(safeRect),
-        });
-      }
 
       // Setup color image loader callback
       this.colorImageLoader.setStatusCallback((message, type) => {
@@ -658,11 +475,7 @@ class PointCloudVisualizer {
       });
 
       // Setup welcome message interactivity
-      mountWelcomeMessage(
-        () => this.triggerOpenFile(),
-        () => browserFileDragDrop.loadExamplePointCloud(this, 'guided'),
-        () => browserFileDragDrop.loadExamplePointCloud(this, 'basic')
-      );
+      mountWelcomeMessage(() => this.triggerOpenFile());
 
       // Initial check for formatted welcome message
       this.updateWelcomeMessageVisibility();
@@ -673,7 +486,6 @@ class PointCloudVisualizer {
 
       if (isVSCode) {
         // VSCode extension environment
-        configureRegistrationExtensionHost(message => this.vscode.postMessage(message));
         this.setupMessageHandler();
         // The extension may already be parsing a restored document, but it
         // queues all outbound messages until this listener is installed.
@@ -687,10 +499,6 @@ class PointCloudVisualizer {
         this.initializeBrowserFileHandler();
         console.log('🌐 Initializing standalone browser version...');
       }
-      // Hosts may deliver their first file only after the asynchronous renderer
-      // and file/message listeners are ready (construction alone is too early).
-      document.documentElement.dataset.visualizerReady = 'true';
-      window.dispatchEvent(new Event('visualizer-ready'));
     } catch (error) {
       this.showError(
         `Failed to initialize 3D Visualizer: ${error instanceof Error ? error.message : String(error)}`
@@ -698,12 +506,7 @@ class PointCloudVisualizer {
     }
   }
 
-  /**
-   * Asynchronous only because of the WebGPU backend, which needs a dynamic
-   * import and an `await renderer.init()` before its first draw. Nothing here
-   * may render before that await completes — the render loop starts later.
-   */
-  private async initThreeJS(): Promise<void> {
+  private initThreeJS(): void {
     // Scene
     this.scene = new THREE.Scene();
     this.applyBackgroundBrightness();
@@ -715,10 +518,10 @@ class PointCloudVisualizer {
     }
 
     this.camera = new THREE.PerspectiveCamera(
-      75,
+      60,
       container.clientWidth / container.clientHeight,
-      FIXED_CAMERA_NEAR,
-      FIXED_CAMERA_FAR
+      0.001,
+      1000000 // Further increased far plane for disparity files
     );
     this.camera.position.set(1, 1, 1);
 
@@ -732,23 +535,13 @@ class PointCloudVisualizer {
       throw new Error('Canvas not found');
     }
 
-    // Backend selection and construction both live in rendering/rendererBackend.ts;
-    // WebGL stays the default and every WebGPU failure falls back to it.
-    const selection = await createViewerRenderer(canvas);
-    this.renderer = selection.renderer;
-    this.rendererBackend = selection.backend;
-    this.webglRenderer = selection.webglRenderer;
-    this.sectionPlanes.attachRenderer(this.renderer);
-    if (selection.fallbackReason) {
-      console.warn(`⚠️ Falling back to WebGL. ${selection.fallbackReason}`);
-    }
-    if (this.rendererBackend === 'webgpu') {
-      console.log('🧪 WebGPU backend active. Read measurements with these in mind:');
-      for (const caveat of WEBGPU_CAVEATS) {
-        console.log(`   • ${caveat}`);
-      }
-    }
-
+    this.renderer = new THREE.WebGLRenderer({
+      canvas: canvas,
+      antialias: true, // Re-enable antialiasing for quality
+      alpha: true,
+      preserveDrawingBuffer: false, // better performance
+      powerPreference: 'high-performance', // Keep discrete GPU preference
+    });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.applySceneBrightness();
@@ -759,15 +552,13 @@ class PointCloudVisualizer {
     // and set castShadow/receiveShadow on them.)
     this.renderer.shadowMap.enabled = false;
 
-    // Not `canvas`: a failed WebGPU start swaps in a fresh element, because a
-    // canvas keeps the first graphics context it was given.
-    this.setupContextLossHandling(this.renderer.domElement);
+    this.setupContextLossHandling(canvas);
 
     // Initial check for formatted welcome message
     this.updateWelcomeMessageVisibility();
 
     // Initialize GPU timing if supported
-    this.gpuTimer = createGpuTimer(this.renderer);
+    this.initGPUTiming();
 
     // Re-enable object sorting for better visual quality
     this.renderer.sortObjects = true;
@@ -780,38 +571,12 @@ class PointCloudVisualizer {
 
     // Initialize controls
     this.initializeControls();
-    this.touchNavigation = new TouchNavigationController({
-      camera: this.camera,
-      element: this.renderer.domElement,
-      getControls: () => this.controls,
-      onChange: () => this.requestRender(),
-      onDoubleTap: (clientX, clientY) => {
-        void this.onDoubleClick(new MouseEvent('dblclick', { bubbles: true, clientX, clientY }));
-      },
-    });
 
     // Initialize measurement manager
-    this.measurementManager = new MeasurementManager(this.scene, this.camera, this.renderer, this);
+    this.measurementManager = new MeasurementManager(this.scene, this.camera, this.renderer);
 
     // Initialize selection manager
     this.selectionManager = new SelectionManager(this.getSelectionContext());
-    await this.selectionManager.initializeWebGPUPicker();
-    this.webgpuPickingAvailable = this.selectionManager.isWebGPUPickingAvailable();
-    this.webgpuPickingUnavailableReason = this.selectionManager.getWebGPUUnavailableReason();
-    this.pointPickingImplementation = this.selectionManager.getPointPickingImplementation();
-    console.log(
-      this.webgpuPickingAvailable
-        ? '⚡ WebGPU point picking available and enabled'
-        : `ℹ️ WebGPU point picking unavailable; using CPU (${this.webgpuPickingUnavailableReason})`
-    );
-
-    const visibilitySelection = await WebGPUVisibilityRenderer.create(container);
-    this.webgpuVisibilityRenderer = visibilitySelection.renderer;
-    this.webgpuPointRenderingAvailable = visibilitySelection.renderer !== null;
-    this.webgpuPointRenderingUnavailableReason = visibilitySelection.unavailableReason;
-
-    // Initialize video mode (camera keyframes / recording)
-    this.filmManager = new FilmManager(this);
 
     // Lighting
     this.initSceneLighting();
@@ -845,7 +610,7 @@ class PointCloudVisualizer {
       }
     });
 
-    // Double-click to change the rotation center.
+    // Double-click to change rotation center (like CloudCompare)
     this.renderer.domElement.addEventListener('dblclick', this.onDoubleClick.bind(this));
 
     // Start render loop
@@ -858,6 +623,8 @@ class PointCloudVisualizer {
   }
 
   initializeControls(): void {
+    this.cameraViewAnimator.cancel();
+
     // Store current camera state before disposing old controls
     const currentCameraPosition = this.camera.position.clone();
     const currentTarget = this.controls ? this.controls.target.clone() : new THREE.Vector3(0, 0, 0);
@@ -869,24 +636,6 @@ class PointCloudVisualizer {
     }
 
     if (this.controlType === 'trackball') {
-      // Optional sphere-projected "virtual ball" trackball: center drags
-      // orbit, while rim/tangential drags roll the scene under the cursor.
-      this.controls = new VirtualBallControls(this.camera, this.renderer.domElement);
-      const ball = this.controls as VirtualBallControls;
-      // Speed calibration against the legacy trackball, in the round-ball
-      // units (both axes normalized by the smaller canvas half-dimension):
-      // legacy rotates 5/halfWidth rad per pixel; the ball rotates
-      // rotateSpeed/halfMin — parity on a 16:9 canvas is ≈ 2.8. Defaults sit
-      // ~25% above parity because the ball uses net displacement (endpoint
-      // chord) while legacy integrates every wobble of the hand path, which
-      // makes equal nominal speeds feel slower on the ball. zoomSpeed has
-      // legacy TrackballControls semantics (see VirtualBallControls).
-      ball.rotateSpeed = 3.5;
-      ball.rollSpeed = 3.0;
-      ball.zoomSpeed = 2.5;
-      ball.panSpeed = 1.5;
-    } else if (this.controlType === 'legacy-trackball') {
-      // Default: three.js delta-based TrackballControls.
       this.controls = new TrackballControls(this.camera, this.renderer.domElement);
       const trackballControls = this.controls as TrackballControls;
       trackballControls.rotateSpeed = 5.0;
@@ -902,6 +651,25 @@ class PointCloudVisualizer {
       trackballControls.screen.top = 0;
       trackballControls.screen.width = this.renderer.domElement.clientWidth;
       trackballControls.screen.height = this.renderer.domElement.clientHeight;
+    } else if (this.controlType === 'inverse-trackball') {
+      this.controls = new TrackballControls(this.camera, this.renderer.domElement);
+      const trackballControls = this.controls as TrackballControls;
+      trackballControls.rotateSpeed = 5.0; // match normal trackball's orbit sensitivity
+      trackballControls.zoomSpeed = 2.5;
+      trackballControls.panSpeed = 1.5;
+      trackballControls.noZoom = false;
+      trackballControls.noPan = false;
+      trackballControls.staticMoving = false;
+      trackballControls.dynamicDampingFactor = 0.2;
+
+      // Set up screen coordinates for proper rotation
+      trackballControls.screen.left = 0;
+      trackballControls.screen.top = 0;
+      trackballControls.screen.width = this.renderer.domElement.clientWidth;
+      trackballControls.screen.height = this.renderer.domElement.clientHeight;
+
+      // Apply inversion
+      this.setupInvertedControls();
     } else if (this.controlType === 'arcball') {
       this.controls = new CustomArcballControls(this.camera, this.renderer.domElement);
       const arc = this.controls as CustomArcballControls;
@@ -910,27 +678,38 @@ class PointCloudVisualizer {
       arc.panSpeed = 1.0;
       // Apply preference
       arc.invertRotation = this.arcballInvertRotation;
+    } else if (this.controlType === 'cloudcompare') {
+      this.controls = new TurntableControls(this.camera, this.renderer.domElement);
+      const cc = this.controls as TurntableControls;
+      cc.rotateSpeed = 1.0;
+      cc.zoomSpeed = 1.0;
+      cc.panSpeed = 1.0;
+      cc.worldUp.copy(this.camera.up.lengthSq() > 0 ? this.camera.up : new THREE.Vector3(0, 1, 0));
     } else {
+      // Standard Orbit has one immutable navigation frame: +Z is world-up.
+      // Apply it before OrbitControls captures camera state, and re-apply it
+      // after restoring the camera pose below.
+      resetStandardOrbitUp(this.camera);
       this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-      const orbitControls = this.controls as OrbitControls;
-      orbitControls.enableDamping = true;
-      orbitControls.dampingFactor = 0.2;
-      orbitControls.screenSpacePanning = false;
-      orbitControls.minDistance = 0.001;
-      orbitControls.maxDistance = 50000; // Increased to match camera far plane
+      configureStandardOrbitControls(this.controls as OrbitControls);
     }
 
     // Set up axes visibility for all control types
     this.setupAxesVisibility();
 
-    // Restore camera state to prevent jumps
+    // Restore camera state to prevent jumps. Standard Orbit deliberately does
+    // not restore a historical camera.up: its navigation frame is always +Z.
     this.camera.position.copy(currentCameraPosition);
-    this.camera.up.copy(currentUp);
+    if (this.controlType === 'orbit') {
+      resetStandardOrbitUp(this.camera);
+    } else {
+      this.camera.up.copy(currentUp);
+    }
     this.controls.target.copy(currentTarget);
     this.controls.update();
-    const safeRect = this.screenAnchor?.getSafeRect();
-    if (safeRect) {
-      this.applyControlScreenRegion(safeRect);
+
+    if (this.controlType === 'orbit') {
+      this.controls.addEventListener('start', () => this.cameraViewAnimator.cancel());
     }
 
     // Initialize rotation center tracking
@@ -940,16 +719,180 @@ class PointCloudVisualizer {
     this.updateControlStatus();
   }
 
-  private applyControlScreenRegion(safeRect: SafeViewRect): void {
-    const controls = this.controls as typeof this.controls & {
-      setScreenRegion?(region: SafeViewRect): void;
-    };
-    controls.setScreenRegion?.(safeRect);
-    this.requestRender();
-  }
-
   private setupAxesVisibility(): void {
     axesFeature.setupAxesVisibility(this);
+  }
+
+  private setupInvertedControls(): void {
+    if (this.controlType !== 'inverse-trackball') {
+      return;
+    }
+
+    // TRACKBALL ROTATION DIRECTION INVERSION - Override the _rotateCamera method
+    // debug: controls inversion setup
+
+    const controls = this.controls as TrackballControls;
+
+    // Override _rotateCamera to invert only the roll (the twist from a circular/
+    // tangential mouse gesture), while leaving ordinary left/right and up/down
+    // orbiting byte-for-byte identical to normal trackball - that part already
+    // feels right, only the roll direction is backwards.
+    //
+    // Roll isn't a separate term in the vanilla formula - a single step's axis is
+    // always perpendicular to the eye direction, so per-step there's no roll to
+    // negate. What the user perceives as "roll" from a circular drag is a multi-
+    // step holonomy effect: composing many small perpendicular-axis rotations in
+    // a loop nets a rotation about the view axis. That means it can't be flipped
+    // frame-by-frame without feeding the correction back into `up`, which then
+    // contaminates the *next* frame's axis calculation (object.up feeds into
+    // _objectSidewaysDirection) - which is exactly what made an earlier version
+    // of this fix scramble the yaw/pitch direction under real per-pixel dragging.
+    //
+    // So: run the exact unmodified vanilla algorithm on a private "shadow" eye/up
+    // pair that mirrors what normal trackball would show, immune to any
+    // correction. The real camera's eye always just copies the shadow's (so yaw/
+    // pitch matches normal trackball exactly). The real camera's `up` is instead
+    // reconstructed each frame via swing-twist decomposition relative to the
+    // start of the current drag: "swing" is the twist-free rotation that alone
+    // would carry the original eye direction to the current one (via
+    // setFromUnitVectors, which by construction has zero roll about the
+    // resulting axis); "twist" is whatever roll the shadow accumulated beyond
+    // that. Displaying swing rotated by the *negated* twist yields exactly the
+    // mirror-image roll while keeping the eye (and thus yaw/pitch) untouched.
+    let eyeOriginal = new THREE.Vector3();
+    let upOriginal = new THREE.Vector3();
+    let eyeShadow = new THREE.Vector3();
+    let upShadow = new THREE.Vector3();
+    let sessionActive = false;
+
+    const beginSession = () => {
+      eyeOriginal.copy(controls.object.position).sub(controls.target);
+      upOriginal.copy(controls.object.up);
+      eyeShadow.copy(eyeOriginal);
+      upShadow.copy(upOriginal);
+      sessionActive = true;
+    };
+
+    if (this.inverseTrackballPointerDownHandler) {
+      this.renderer.domElement.removeEventListener(
+        'pointerdown',
+        this.inverseTrackballPointerDownHandler
+      );
+    }
+    this.inverseTrackballPointerDownHandler = beginSession;
+    this.renderer.domElement.addEventListener('pointerdown', beginSession);
+
+    (controls as any)._rotateCamera = function () {
+      if (!sessionActive) {
+        beginSession();
+      }
+
+      // `update()` already refreshed `this._eye` from the live camera position
+      // just before calling us, so its length reflects reality including any
+      // zoom applied on a previous frame (zoom only rescales `_eye`, it doesn't
+      // go through the shadow). Resync the shadow's magnitude (not direction -
+      // that's still driven by the shadow's own rotation history) so a zoom
+      // that happened mid-momentum doesn't get discarded the next time this
+      // rotates and writes eyeShadow back into the real `_eye`.
+      const liveLength = this._eye.length();
+      if (liveLength > 0) {
+        eyeShadow.setLength(liveLength);
+      }
+
+      const _moveDirection = new THREE.Vector3();
+      const _eyeDirection = new THREE.Vector3();
+      const _objectUpDirection = new THREE.Vector3();
+      const _objectSidewaysDirection = new THREE.Vector3();
+      const _axis = new THREE.Vector3();
+      const _quaternion = new THREE.Quaternion();
+
+      _moveDirection.set(
+        this._moveCurr.x - this._movePrev.x,
+        this._moveCurr.y - this._movePrev.y,
+        0
+      );
+      let angle = _moveDirection.length();
+      let didRotate = false;
+
+      if (angle) {
+        _eyeDirection.copy(eyeShadow).normalize();
+        _objectUpDirection.copy(upShadow).normalize();
+        _objectSidewaysDirection.crossVectors(_objectUpDirection, _eyeDirection).normalize();
+
+        _objectUpDirection.setLength(this._moveCurr.y - this._movePrev.y);
+        _objectSidewaysDirection.setLength(this._moveCurr.x - this._movePrev.x);
+
+        _moveDirection.copy(_objectUpDirection.add(_objectSidewaysDirection));
+
+        _axis.crossVectors(_moveDirection, eyeShadow).normalize();
+
+        angle *= this.rotateSpeed;
+        _quaternion.setFromAxisAngle(_axis, angle);
+
+        eyeShadow.applyQuaternion(_quaternion);
+        upShadow.applyQuaternion(_quaternion);
+
+        this._lastAxis.copy(_axis);
+        this._lastAngle = angle;
+        didRotate = true;
+      } else if (!this.staticMoving && this._lastAngle) {
+        this._lastAngle *= Math.sqrt(1.0 - this.dynamicDampingFactor);
+
+        // The decay is geometric and asymptotic - it never reaches exactly
+        // zero, so without a cutoff `this._lastAngle` stays truthy (if
+        // vanishingly small) indefinitely. That kept this branch - and thus
+        // the shadow-eye override below - active forever, which silently
+        // fought any zoom/pan applied after a rotation ever completed.
+        const EPS = 1e-5;
+        if (Math.abs(this._lastAngle) < EPS) {
+          this._lastAngle = 0;
+        } else {
+          _quaternion.setFromAxisAngle(this._lastAxis, this._lastAngle);
+
+          eyeShadow.applyQuaternion(_quaternion);
+          upShadow.applyQuaternion(_quaternion);
+          didRotate = true;
+        }
+      }
+
+      this._movePrev.copy(this._moveCurr);
+
+      // update() is called every animation frame regardless of user
+      // interaction, not just while dragging. If nothing rotated this frame,
+      // don't touch the real eye/up at all - just keep the shadow in sync with
+      // reality so it doesn't go stale relative to external changes (zoom, pan,
+      // fit-to-view reset, programmatic repositioning). Without this, any of
+      // those would get silently reverted back to the shadow's last
+      // rotation-derived state on the very next frame.
+      if (!didRotate) {
+        eyeShadow.copy(this._eye);
+        upShadow.copy(this.object.up);
+        return;
+      }
+
+      // Eye matches the shadow exactly - yaw/pitch identical to normal trackball.
+      this._eye.copy(eyeShadow);
+
+      // Up is reconstructed via swing-twist relative to session start, with the
+      // twist (roll) negated instead of copied from the shadow.
+      const eyeAxis = eyeShadow.clone().normalize();
+      const qSwing = new THREE.Quaternion().setFromUnitVectors(
+        eyeOriginal.clone().normalize(),
+        eyeAxis
+      );
+      const upTwistFree = upOriginal.clone().applyQuaternion(qSwing);
+
+      const projectPerp = (v: THREE.Vector3) => {
+        const d = v.dot(eyeAxis);
+        return v.clone().addScaledVector(eyeAxis, -d).normalize();
+      };
+      const a = projectPerp(upTwistFree);
+      const b = projectPerp(upShadow);
+      const crossAB = new THREE.Vector3().crossVectors(a, b);
+      const twistAngle = Math.atan2(crossAB.dot(eyeAxis), a.dot(b));
+
+      this.object.up.copy(upTwistFree).applyAxisAngle(eyeAxis, -twistAngle);
+    };
   }
 
   private addAxesHelper(): void {
@@ -1085,7 +1028,6 @@ class PointCloudVisualizer {
    */
   private getSelectionContext(): SelectionContext {
     return {
-      fileEntries: this.fileEntries,
       camera: this.camera,
       meshes: this.meshes,
       spatialFiles: this.spatialFiles,
@@ -1094,44 +1036,20 @@ class PointCloudVisualizer {
       fileVisibility: this.fileVisibility,
       pointSizes: this.pointSizes,
       screenSpaceScaling: this.screenSpaceScaling,
-      splatMeshes: this.spatialFiles.map((_, index) => this.splatMode.getMesh(index)),
-      clippingPlanes: this.renderer.clippingPlanes,
     };
   }
 
   private dispose(): void {
-    for (const data of this.spatialFiles) {
-      data.sceneModel?.dispose();
-    }
     // Clean up ResizeObserver
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();
       this.resizeObserver = null;
     }
 
-    this.touchNavigation?.dispose();
-    this.touchNavigation = null;
-    this.screenAnchor?.dispose();
-    this.screenAnchor = null;
-
     // Clean up measurements
     if (this.measurementManager) {
       this.measurementManager.dispose();
       this.measurementManager = null;
-    }
-
-    if (this.selectionManager) {
-      this.selectionManager.dispose();
-      this.selectionManager = null;
-    }
-
-    this.webgpuVisibilityRenderer?.dispose();
-    this.webgpuVisibilityRenderer = null;
-
-    // Clean up video mode
-    if (this.filmManager) {
-      this.filmManager.dispose();
-      this.filmManager = null;
     }
 
     // Clean up EDL resources
@@ -1156,12 +1074,6 @@ class PointCloudVisualizer {
 
   private showLoading(show: boolean, message?: string): void {
     this.isFileLoading = show;
-    // In VS Code the extension host sends backgroundOperationComplete only
-    // after parsing, progressive colour delivery, and every other load phase
-    // has finished. Geometry becoming visible is not that terminal event.
-    if (show || !this.runningInVSCode) {
-      uiState.fileLoading = show;
-    }
 
     if (show) {
       uiState.loadingVisible = true;
@@ -1208,17 +1120,14 @@ class PointCloudVisualizer {
     this.camera.aspect = container.clientWidth / container.clientHeight;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(container.clientWidth, container.clientHeight);
-    this.screenAnchor?.refreshAutomatic();
 
     // Update EDL composer and render targets on resize
     if (this.effectComposer) {
       this.effectComposer.setSize(container.clientWidth, container.clientHeight);
     }
 
-    // Update controls based on type (TrackballControls-based schemes need
-    // their screen rectangle refreshed on resize; VirtualBallControls reads
-    // the live canvas rect on every event and needs nothing here)
-    if (this.controlType === 'legacy-trackball') {
+    // Update controls based on type
+    if (this.controlType === 'trackball') {
       const trackballControls = this.controls as TrackballControls;
       trackballControls.screen.width = container.clientWidth;
       trackballControls.screen.height = container.clientHeight;
@@ -1236,21 +1145,16 @@ class PointCloudVisualizer {
     this.lastFrameTime = now;
 
     // Start GPU timing for resize render
-    this.gpuTimer.begin();
+    const gpuQuery = this.startGPUTiming();
     this.performRender();
-    this.gpuTimer.end();
-    this.gpuTimer.poll();
+    this.endGPUTiming(gpuQuery);
+    this.updateGPUTiming();
 
     // Track render event for resize renders too
     this.trackRender();
   }
 
-  private modelLastFrameTime = performance.now();
-
   private animate(): void {
-    const modelNow = performance.now();
-    updateModelPlayback(this, Math.min((modelNow - this.modelLastFrameTime) / 1000, 0.1));
-    this.modelLastFrameTime = modelNow;
     this.animationId = requestAnimationFrame(this.animate.bind(this));
 
     // Update FPS calculation (always, to decay to 0 when no renders)
@@ -1317,10 +1221,6 @@ class PointCloudVisualizer {
 
     // Always render when needed (this covers camera damping/momentum)
     if (this.needsRender) {
-      // Consume the current invalidation before rendering. Renderer callbacks
-      // (notably Spark's asynchronous sorter) may request another frame while
-      // performRender() is running; that request must survive for the next RAF.
-      this.needsRender = false;
       const now = performance.now();
       // Measure full frame time (time between actual renders)
       if (this.lastFrameTime > 0) {
@@ -1329,13 +1229,14 @@ class PointCloudVisualizer {
       this.lastFrameTime = now;
 
       // Start GPU timing
-      this.gpuTimer.begin();
+      const gpuQuery = this.startGPUTiming();
       this.performRender();
-      this.gpuTimer.end();
+      this.endGPUTiming(gpuQuery);
 
       // Update GPU timing results
-      this.gpuTimer.poll();
+      this.updateGPUTiming();
 
+      this.needsRender = false;
       // Track render event
       this.trackRender();
     }
@@ -1357,13 +1258,6 @@ class PointCloudVisualizer {
    * next render because their CPU-side arrays still exist).
    */
   private setupContextLossHandling(canvas: HTMLCanvasElement): void {
-    // `webglcontextlost` never fires for a WebGPU canvas; that backend reports
-    // device loss through the renderer instead. Nothing listens for it yet, so
-    // a lost WebGPU device is simply not recovered from — acceptable while the
-    // backend is an opt-in experiment, and noted in docs/WEBGPU_READINESS.md.
-    if (this.rendererBackend !== 'webgl') {
-      return;
-    }
     canvas.addEventListener(
       'webglcontextlost',
       event => {
@@ -1395,77 +1289,11 @@ class PointCloudVisualizer {
     if (this.contextLost) {
       return;
     }
-    updateAgentPointSizes(this);
-    this.adaptivePointRenderer.beforeRender();
-    if (renderAgentComparison(this)) {
-      return;
-    }
-    this.smallViewAffordance.update();
-    updateSceneGuides(this);
-    const visibilityContext = this.getVisibilityRenderContext();
-    const useEDL = edl.prepareEDLFrame(this);
-    const useVisibilityRenderer =
-      this.pointRenderingImplementation === 'webgpu-visibility' &&
-      !useEDL &&
-      !this.allowTransparency &&
-      !!this.webgpuVisibilityRenderer &&
-      this.webgpuVisibilityRenderer.canRender(visibilityContext);
-
-    if (useVisibilityRenderer && this.webgpuVisibilityRenderer) {
-      const visibility = visibilityContext.pointClouds.map(cloud => cloud.visible);
-      for (const cloud of visibilityContext.pointClouds) {
-        cloud.visible = false;
-      }
-      try {
-        this.renderer.render(this.scene, this.camera);
-      } finally {
-        visibilityContext.pointClouds.forEach(
-          (cloud, index) => (cloud.visible = visibility[index])
-        );
-      }
-      try {
-        this.webgpuVisibilityRenderer.setEnabled(true);
-        if (!this.webgpuVisibilityRenderer.render(visibilityContext)) {
-          this.webgpuVisibilityRenderer.setEnabled(false);
-          this.renderer.render(this.scene, this.camera);
-        }
-      } catch (error) {
-        console.warn(
-          `WebGPU visibility rendering failed; using current renderer: ${error instanceof Error ? error.message : String(error)}`
-        );
-        this.webgpuVisibilityRenderer.setEnabled(false);
-        this.renderer.render(this.scene, this.camera);
-      }
-      return;
-    }
-
-    this.webgpuVisibilityRenderer?.setEnabled(false);
-    if (useEDL && this.effectComposer) {
+    if (this.edlEnabled && this.effectComposer) {
       this.effectComposer.render();
     } else {
       this.renderer.render(this.scene, this.camera);
     }
-  }
-
-  private getVisibilityRenderContext(): VisibilityRenderContext {
-    const pointClouds = this.meshes.filter(
-      (mesh, index): mesh is THREE.Points =>
-        !!mesh &&
-        this.fileVisibility[index] &&
-        mesh.visible &&
-        mesh instanceof THREE.Points &&
-        mesh.material instanceof THREE.PointsMaterial
-    );
-    return {
-      camera: this.camera,
-      pointClouds,
-      clippingPlanes: this.renderer.clippingPlanes,
-      brightnessStops: this.brightnessStops,
-      hasDepthConflicts: this.meshes.some(
-        (mesh, index) =>
-          !!mesh && this.fileVisibility[index] && mesh.visible && !(mesh instanceof THREE.Points)
-      ),
-    };
   }
 
   /**
@@ -1480,7 +1308,7 @@ class PointCloudVisualizer {
   /**
    * Toggle Eye Dome Lighting on/off.
    */
-  toggleEDL(): void {
+  private toggleEDL(): void {
     edl.toggleEDL(this);
   }
 
@@ -1610,6 +1438,8 @@ class PointCloudVisualizer {
   }
 
   private resetCameraToDefault(): void {
+    this.cameraViewAnimator.cancel();
+
     // Reset FOV and camera orientation
     this.camera.fov = 75;
     this.camera.updateProjectionMatrix();
@@ -1633,42 +1463,11 @@ class PointCloudVisualizer {
     rotationCenterFeature.setRotationCenterToOrigin(this);
   }
 
-  setPointPickingImplementation(implementation: PointPickingImplementation): void {
-    this.selectionManager?.setPointPickingImplementation(implementation);
-    this.pointPickingImplementation =
-      this.selectionManager?.getPointPickingImplementation() ?? 'cpu';
-    this.showStatus(
-      this.pointPickingImplementation === 'webgpu'
-        ? 'Using WebGPU point picking'
-        : 'Using CPU point picking'
-    );
-  }
-
-  setPointRenderingImplementation(implementation: PointRenderingImplementation): void {
-    this.pointRenderingImplementation =
-      implementation === 'webgpu-visibility' && this.webgpuVisibilityRenderer
-        ? 'webgpu-visibility'
-        : 'current';
-    this.webgpuVisibilityRenderer?.setEnabled(
-      this.pointRenderingImplementation === 'webgpu-visibility'
-    );
-    this.showStatus(
-      this.pointRenderingImplementation === 'webgpu-visibility'
-        ? 'Using WebGPU one-pixel visibility rendering where compatible'
-        : 'Using current point rendering'
-    );
-    this.requestRender();
-  }
-
-  private async onDoubleClick(event: MouseEvent): Promise<void> {
+  private onDoubleClick(event: MouseEvent): void {
+    this.cameraViewAnimator.cancel();
     if (!this.selectionManager) {
       return;
     }
-
-    // Only the most recently started pick may change the viewer. This protects
-    // touch double-taps from a later Safari compatibility event and prevents an
-    // older asynchronous pick from overwriting a newer result.
-    const pickGeneration = ++this.pointPickGeneration;
 
     // Get canvas and mouse position in screen coordinates
     const canvas = this.renderer.domElement;
@@ -1682,15 +1481,7 @@ class PointCloudVisualizer {
     this.selectionManager.updateContext(this.getSelectionContext());
 
     // Try to select a point with detailed logging
-    const result = await this.selectionManager.selectPointWithLoggingAsync(
-      mouseScreenX,
-      mouseScreenY,
-      canvas
-    );
-
-    if (pickGeneration !== this.pointPickGeneration) {
-      return;
-    }
+    const result = this.selectionManager.selectPointWithLogging(mouseScreenX, mouseScreenY, canvas);
 
     if (result) {
       const { point: selectedPoint, info } = result;
@@ -1702,55 +1493,20 @@ class PointCloudVisualizer {
         console.log(`🕺 Selected ${info}`);
       } else if (info.includes('triangle mesh')) {
         console.log(`🔷 Selected ${info}`);
-      } else if (info.includes('gaussian splat')) {
-        console.log(`✨ Selected ${info}`);
       } else {
         console.log(`⚫ Selected point cloud: ${info}`);
       }
 
-      // Correspondence picking is on Cmd/Ctrl + double-click, not on the plain
-      // one. Claiming the plain gesture meant that while picking was armed the
-      // only way to move the rotation centre — the thing you need constantly
-      // while hunting for the same corner in two clouds — was to stop picking.
-      if (
-        (event.metaKey || event.ctrlKey) &&
-        registrationFeature.handlePickedPoint(this, selectedPoint)
-      ) {
-        console.log(`🎯 Registration correspondence point added (${info})`);
-        this.requestRender();
-        return;
-      }
-
-      // Shift + double-click is the single measurement gesture. The first
-      // implicit path starts at the rotation center; an explicitly created
-      // free path starts at the first picked point instead.
-      if ((event.shiftKey || measurementState.pickingEnabled) && this.measurementManager) {
+      // If Shift is pressed, measure distance to rotation center
+      if (event.shiftKey && this.measurementManager) {
         const rotationCenter = this.controls.target.clone();
-        this.measurementManager.prepareForPathPoint(rotationCenter);
-        this.measurementManager.addPathPoint(selectedPoint);
-        console.log(`📏 Measurement path point added (${info})`);
+        this.measurementManager.addMeasurement(rotationCenter, selectedPoint);
+        console.log(`📏 Measurement added from rotation center to selected point`);
         this.requestRender();
       } else {
         this.setRotationCenter(selectedPoint);
         this.updateRotationOriginButtonState();
       }
-      return;
-    }
-
-    // A double-click far away from every visible object is the "I'm lost"
-    // recovery gesture: refit the view instead of doing nothing. Near-misses
-    // next to an object stay inert so a failed pick never jumps the camera.
-    // Suppressed for Shift + double-click so a missed measurement pick never
-    // jumps the camera.
-    if (
-      !this.sequenceMode &&
-      !event.shiftKey &&
-      !event.metaKey &&
-      !event.ctrlKey &&
-      this.selectionManager.isFarFromAllVisibleObjects(mouseScreenX, mouseScreenY, canvas)
-    ) {
-      console.log('🧭 Double-click in empty space - fitting view to all objects');
-      this.fitCameraToAllObjects();
       return;
     }
 
@@ -1850,13 +1606,8 @@ class PointCloudVisualizer {
     // File list - Svelte component (components/FileList.svelte), see
     // updateFileList() and docs/SVELTE_MIGRATION_PLAN.md Phase 3.
     mountFileList(this);
-    mountGlobalAlignMenu(this);
     mountStats(this);
     mountControlsTab(this);
-    mountSceneGuides(this);
-    mountFilmPanel(this);
-    mountMeasurementQuickActions(this);
-    mountSmallViewAffordance(this);
 
     document.addEventListener('dblclick', e => {
       const slider = e.target;
@@ -1883,15 +1634,17 @@ class PointCloudVisualizer {
         e.target instanceof HTMLTextAreaElement ||
         e.target instanceof HTMLSelectElement
       ) {
+        // OrbitControls listens on window like the official Three.js example.
+        // Keep arrow keys local to editable controls instead of panning/rotating
+        // the 3D camera while the user edits a value.
+        if (e.key.startsWith('Arrow')) {
+          e.stopPropagation();
+        }
         return;
       }
 
-      // Every shortcut here is a bare letter, so anything with a modifier
-      // belongs to the editor or the OS, not to us. Without this the handler
-      // swallowed Cmd/Ctrl+C, +A, +S and +F - each one calling preventDefault
-      // on a keystroke the user meant for copy, select-all, save or find.
-      if (e.metaKey || e.ctrlKey || e.altKey) {
-        return;
+      if (this.controlType === 'orbit' && e.key.startsWith('Arrow')) {
+        this.cameraViewAnimator.cancel();
       }
 
       switch (e.key.toLowerCase()) {
@@ -1915,9 +1668,7 @@ class PointCloudVisualizer {
           this.toggleAxesVisibility();
           e.preventDefault();
           break;
-        // Deliberately not 'c': that key belongs to copying, and a viewer
-        // shortcut sitting on it is a trap even with the modifier guard above.
-        case 'v':
+        case 'c':
           this.setOpenCVCameraConvention();
           if (this.vscode) {
             this.vscode.postMessage({ type: 'saveCameraConvention', convention: 'opencv' });
@@ -1931,40 +1682,19 @@ class PointCloudVisualizer {
           }
           e.preventDefault();
           break;
-        case 't':
-          this.switchToTrackballControls();
-          e.preventDefault();
-          break;
-        case 'o':
-          this.switchToOrbitControls();
-          e.preventDefault();
-          break;
-        case 'i':
-          this.switchToLegacyTrackballControls();
-          e.preventDefault();
-          break;
-        case 'k':
-          this.switchToArcballControls();
-          e.preventDefault();
-          break;
-        // Arcball settings bindings
+        // Legacy navigation settings bindings
         case 'x':
-          this.setUpVector(new THREE.Vector3(1, 0, 0));
-          e.preventDefault();
-          break;
         case 'y':
-          this.setUpVector(new THREE.Vector3(0, 1, 0));
-          e.preventDefault();
-          break;
         case 'z':
-          this.setUpVector(new THREE.Vector3(0, 0, 1));
-          e.preventDefault();
-          break;
-        case 'w':
-          // debug
-          this.setRotationCenterToOrigin();
-          this.updateRotationOriginButtonState();
-          e.preventDefault();
+          if (this.controlType !== 'orbit') {
+            const axes: Record<string, THREE.Vector3> = {
+              x: new THREE.Vector3(1, 0, 0),
+              y: new THREE.Vector3(0, 1, 0),
+              z: new THREE.Vector3(0, 0, 1),
+            };
+            this.setUpVector(axes[e.key.toLowerCase()]);
+            e.preventDefault();
+          }
           break;
         case 'g':
           this.toggleGammaCorrection();
@@ -1983,17 +1713,17 @@ class PointCloudVisualizer {
           e.preventDefault();
           break;
         case 'l':
-          this.arcballInvertRotation = !this.arcballInvertRotation;
           if (this.controlType === 'arcball') {
+            this.arcballInvertRotation = !this.arcballInvertRotation;
             const arc = this.controls as any;
             if (arc && typeof arc.invertRotation === 'boolean') {
               arc.invertRotation = this.arcballInvertRotation;
             }
+            this.showStatus(
+              `Arcball handedness: ${this.arcballInvertRotation ? 'Inverted' : 'Normal'}`
+            );
+            e.preventDefault();
           }
-          this.showStatus(
-            `Arcball handedness: ${this.arcballInvertRotation ? 'Inverted' : 'Normal'}`
-          );
-          e.preventDefault();
           break;
       }
     });
@@ -2085,20 +1815,16 @@ class PointCloudVisualizer {
       const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
       const maxDim = Math.max(size.x, size.y, size.z);
-      this.screenAnchor?.refreshAutomatic();
-      const safeFraction = this.screenAnchor?.getFitFractions() ?? { width: 1, height: 1 };
-      const vFov = this.camera.fov * (Math.PI / 180);
-      const hFov = 2 * Math.atan(Math.tan(vFov / 2) * this.camera.aspect);
-      const distance =
-        Math.max(
-          maxDim / (2 * Math.tan(vFov / 2) * safeFraction.height),
-          maxDim / (2 * Math.tan(hFov / 2) * safeFraction.width)
-        ) * 1.5;
+      const fov = this.camera.fov * (Math.PI / 180);
+      const distance = (maxDim / 2 / Math.tan(fov / 2)) * 1.5;
 
       // Move camera along its current direction to the new distance
       const dir = this.camera.getWorldDirection(new THREE.Vector3()).normalize();
       this.camera.position.copy(center.clone().sub(dir.multiplyScalar(distance)));
-      applyFixedClipPlanes(this.camera);
+      // Conservative clipping planes for massive point clouds
+      this.camera.near = Math.max(0.001, Math.min(0.1, distance / 10000));
+      this.camera.far = Math.max(distance * 100, 1000000);
+      this.camera.updateProjectionMatrix();
 
       // Update controls target if present
       if (this.controls && (this.controls as any).target) {
@@ -2115,7 +1841,7 @@ class PointCloudVisualizer {
     for (let i = 0; i < this.meshes.length && i < this.spatialFiles.length; i++) {
       const data = this.spatialFiles[i];
       const mesh = this.meshes[i];
-      if (!data || !mesh || data.sceneModel) {
+      if (!data || !mesh) {
         continue;
       }
       // Only update triangle meshes, not points or line segments
@@ -2140,12 +1866,8 @@ class PointCloudVisualizer {
     } catch {}
   }
 
-  private switchTab(tabName: string | null): void {
+  private switchTab(tabName: string): void {
     uiStatus.switchTab(tabName);
-    // Tab collapse/expansion is intentional layout state, so it is one of the
-    // few times the automatic visual center should follow the panel. Ordinary
-    // row/content changes do not call this and therefore cannot move the view.
-    requestAnimationFrame(() => this.screenAnchor?.refreshAutomatic());
   }
 
   private toggleAxesVisibility(): void {
@@ -2281,11 +2003,6 @@ class PointCloudVisualizer {
     axesFeature.showUpVectorIndicator(this, upVector);
   }
 
-  completeBackgroundOperation(): void {
-    this.pendingFileLoads = Math.max(0, this.pendingFileLoads - 1);
-    uiState.fileLoading = this.pendingFileLoads > 0;
-  }
-
   private showKeyboardShortcuts(): void {
     uiStatus.showKeyboardShortcuts(() => this.createShortcutsUI());
   }
@@ -2297,275 +2014,204 @@ class PointCloudVisualizer {
   private setupMessageHandler(): void {
     window.addEventListener('message', async event => {
       const message = event.data;
-      const tracksBackgroundChange = BACKGROUND_CHANGE_MESSAGES.has(message.type);
-      if (tracksBackgroundChange) {
-        uiState.backgroundChanges++;
-      }
 
-      try {
-        switch (message.type) {
-          case 'nativeAgentRequest':
-            await handleNativeAgentRequest(this, message);
-            break;
-          case 'registrationResult':
-            handleRegistrationExtensionResult(message);
-            break;
-          // Benchmark harness only (scripts/benchmark-vscode.mjs): runs one
-          // scripted step of the load → align → recolour scenario. See
-          // benchmarkScenario.ts for why this seam exists.
-          case 'benchmarkScenario':
-            await runBenchmarkScenario(this, message.step, message.anchorIndex ?? 0);
-            break;
-          case 'timing':
-            this.handleTimingMessage(message);
-            break;
-          case 'startLoading':
-            this.showImmediateLoading(message);
-            break;
-          case 'backgroundOperationComplete':
-            this.completeBackgroundOperation();
-            break;
-          case 'timingUpdate':
-            // Allow timing updates, suppress other spam
-            if (
-              typeof message.message === 'string' &&
-              message.message.includes('🧪 Header face types')
-            ) {
-              console.log(message.message);
-            }
-            break;
-          case 'loadingError':
-            const fileType = message.fileType || 'point cloud';
-            const fileName = message.fileName ? ` (${message.fileName})` : '';
-            this.showError(`Failed to load ${fileType} file${fileName}: ${message.error}`);
-            break;
-          case 'stonexColorReady':
-            stationPipelineFeature.applyLoadTimeColors(this, message.updates ?? []);
-            break;
-          case 'stationPipelineProgress':
-            stationPipelineFeature.reportStationPipelineProgress(message.message);
-            break;
-          case 'stationPipelineResult':
-            stationPipelineFeature.handleStationPipelineResult(this, message);
-            break;
-          case 'spatialData':
-          case 'multiSpatialData':
-            try {
-              // Both single and multi-file data are handled the same way now
-              const dataArray = Array.isArray(message.data) ? message.data : [message.data];
-              await this.loadWithPerf('ply', message, () => this.displayFiles(dataArray));
-            } catch (error) {
-              console.error('Error displaying PLY data:', error);
-              this.showError(
-                'Failed to display PLY data: ' +
-                  (error instanceof Error ? error.message : String(error))
-              );
-            }
-            break;
-          case 'sceneModelData':
-            await this.loadWithPerf('model', message, () => handleSceneModelMessage(this, message));
-            break;
-          case 'modelResourceResult':
-          case 'cadDecodeResult':
-            break;
-          case 'splatContainerUri':
-            await handleSplatContainerUri(this, message);
-            break;
-          case 'ultimateRawBinaryData':
-            try {
-              await this.handleUltimateRawBinaryData(message);
-            } catch (error) {
-              console.error('Error handling ultimate raw binary data:', error);
-              this.showError(
-                'Failed to handle ultimate raw binary data: ' +
-                  (error instanceof Error ? error.message : String(error))
-              );
-            }
-            break;
-          case 'ultimateRawBinaryUri':
-            await this.handleUltimateRawBinaryUri(message);
-            break;
-          case 'directTypedArrayData':
-            try {
-              await this.loadWithPerf('ply', message, () =>
-                this.handleDirectTypedArrayData(message)
-              );
-            } catch (error) {
-              console.error('Error handling direct TypedArray data:', error);
-              this.showError(
-                'Failed to handle direct TypedArray data: ' +
-                  (error instanceof Error ? error.message : String(error))
-              );
-            }
-            break;
-          case 'binarySpatialData':
-            try {
-              await this.loadWithPerf('ply', message, () => this.handleBinarySpatialData(message));
-              stationPipelineFeature.flushPendingLoadTimeColors(this);
-            } catch (error) {
-              console.error('Error handling binary PLY data:', error);
-              this.showError(
-                'Failed to handle binary PLY data: ' +
-                  (error instanceof Error ? error.message : String(error))
-              );
-            }
-            break;
-          case 'addFiles':
-            try {
-              this.addNewFiles(message.data);
-            } catch (error) {
-              console.error('Error adding new files:', error);
-              this.showError(
-                'Failed to add files: ' + (error instanceof Error ? error.message : String(error))
-              );
-            }
-            break;
-          case 'sequence:init':
-            try {
-              this.initializeSequence(message.files as string[], message.wildcard as string);
-            } catch (error) {
-              console.error('Error starting sequence:', error);
-              this.showError(
-                'Failed to start sequence: ' +
-                  (error instanceof Error ? error.message : String(error))
-              );
-            }
-            break;
-          case 'sequence:file:ultimate':
-            await this.sequenceHandleUltimate(message);
-            break;
-          case 'sequence:file:ply':
-            await this.sequenceHandlePly(message);
-            break;
-          case 'sequence:file:xyz':
-            await this.sequenceHandleXyz(message);
-            break;
-          case 'sequence:file:obj':
-            await this.sequenceHandleObj(message);
-            break;
-          case 'sequence:file:stl':
-            await this.sequenceHandleStl(message);
-            break;
-          case 'sequence:file:depth':
-            await this.sequenceHandleDepth(message);
-            break;
-          case 'fileRemoved':
-            try {
-              this.removeFileByIndex(message.fileIndex);
-            } catch (error) {
-              console.error('Error removing file:', error);
-              this.showError(
-                'Failed to remove file: ' + (error instanceof Error ? error.message : String(error))
-              );
-            }
-            break;
-          case 'startLargeFile':
-            this.handleStartLargeFile(message);
-            break;
-          case 'largeFileChunk':
-            this.handleLargeFileChunk(message);
-            break;
-          case 'largeFileComplete':
-            await this.handleLargeFileComplete(message);
-            break;
-          case 'cancelLargeFile':
-            largeFileChunking.handleCancelLargeFile(this, message);
-            break;
-          case 'depthData':
-            this.handleDepthData(message);
-            break;
-          case 'objData':
-            await this.loadWithPerf('obj', message, () => this.handleObjData(message));
-            break;
-          case 'stlData':
-            await this.loadWithPerf('stl', message, () => this.handleStlData(message));
-            break;
-          case 'xyzData':
-            await this.loadWithPerf('xyz', message, () => this.handleXyzData(message));
-            break;
-          case 'pcdData':
-            await this.loadWithPerf('pcd', message, () => this.handlePcdData(message));
-            break;
-          case 'ptsData':
-            await this.loadWithPerf('pts', message, () => this.handlePtsData(message));
-            break;
-          case 'kittiBinData':
-            await this.loadWithPerf('kitti-bin', message, () => this.handleKittiBinData(message));
-            break;
-          case 'offData':
-            await this.loadWithPerf('off', message, () => this.handleOffData(message));
-            break;
-          case 'gltfData':
-            await this.loadWithPerf('gltf', message, () => this.handleGltfData(message));
-            break;
-          case 'volumeData':
-            if (!acceptVolumeResponse(message.data?.metadata?.volumeSessionId, message.requestId)) {
-              break;
-            }
-            updateVolumeProgress(message.data?.metadata?.volumeSessionId, message.requestId, 1);
-            await this.loadWithPerf('volume', message, () => this.handleVolumeData(message));
-            break;
-          case 'volume:progress':
-            updateVolumeProgress(message.sessionId, message.requestId, message.fraction);
-            break;
-          case 'volume:error':
-            setVolumeError(message.sessionId, message.requestId, message.error);
-            break;
-          case 'colmapModelFiles':
-            await this.loadWithPerf('colmap', message, () => this.handleColmapModelFiles(message));
-            break;
-          case 'colmapImages':
-            await this.handleColmapImages(message);
-            break;
-          case 'npyData':
-            await this.loadWithPerf('npy', message, () => this.handleNpyData(message));
-            break;
-          case 'xyzVariantData':
-            await this.loadWithPerf('xyz', message, () => this.handleXyzVariantData(message));
-            break;
-          case 'cameraParams':
-            this.handleCameraParams(message);
-            break;
-          case 'cameraParamsCancelled':
-            this.handleCameraParamsCancelled(message.requestId);
-            break;
-          case 'datasetTexture':
-            this.handleDatasetTexture(message);
-            break;
-          case 'cameraParamsError':
-            this.handleCameraParamsError(message.error, message.requestId);
-            break;
-          case 'savePlyFileResult':
-            this.handleSaveSpatialFileResult(message);
-            break;
-          case 'colorImageData':
-            this.handleColorImageData(message);
-            break;
-          case 'defaultDepthSettings':
-            this.handleDefaultDepthSettings(message);
-            break;
-          case 'mtlData':
-            this.handleMtlData(message);
-            break;
-          case 'calibrationFileSelected':
-            this.handleCalibrationFileSelected(message);
-            break;
-          case 'poseData':
-            try {
-              await (this as any).handlePoseData(message);
-            } catch (error) {
-              console.error('Error handling pose data:', error);
-              this.showError(
-                'Failed to handle pose data: ' +
-                  (error instanceof Error ? error.message : String(error))
-              );
-            }
-            break;
-        }
-      } finally {
-        if (tracksBackgroundChange) {
-          uiState.backgroundChanges = Math.max(0, uiState.backgroundChanges - 1);
-        }
+      switch (message.type) {
+        case 'timing':
+          this.handleTimingMessage(message);
+          break;
+        case 'startLoading':
+          this.showImmediateLoading(message);
+          break;
+        case 'timingUpdate':
+          // Allow timing updates, suppress other spam
+          if (
+            typeof message.message === 'string' &&
+            message.message.includes('🧪 Header face types')
+          ) {
+            console.log(message.message);
+          }
+          break;
+        case 'loadingError':
+          const fileType = message.fileType || 'point cloud';
+          const fileName = message.fileName ? ` (${message.fileName})` : '';
+          this.showError(`Failed to load ${fileType} file${fileName}: ${message.error}`);
+          break;
+        case 'spatialData':
+        case 'multiSpatialData':
+          try {
+            // Both single and multi-file data are handled the same way now
+            const dataArray = Array.isArray(message.data) ? message.data : [message.data];
+            await this.loadWithPerf('ply', message, () => this.displayFiles(dataArray));
+          } catch (error) {
+            console.error('Error displaying PLY data:', error);
+            this.showError(
+              'Failed to display PLY data: ' +
+                (error instanceof Error ? error.message : String(error))
+            );
+          }
+          break;
+        case 'ultimateRawBinaryData':
+          try {
+            await this.handleUltimateRawBinaryData(message);
+          } catch (error) {
+            console.error('Error handling ultimate raw binary data:', error);
+            this.showError(
+              'Failed to handle ultimate raw binary data: ' +
+                (error instanceof Error ? error.message : String(error))
+            );
+          }
+          break;
+        case 'ultimateRawBinaryUri':
+          await this.handleUltimateRawBinaryUri(message);
+          break;
+        case 'directTypedArrayData':
+          try {
+            await this.loadWithPerf('ply', message, () => this.handleDirectTypedArrayData(message));
+          } catch (error) {
+            console.error('Error handling direct TypedArray data:', error);
+            this.showError(
+              'Failed to handle direct TypedArray data: ' +
+                (error instanceof Error ? error.message : String(error))
+            );
+          }
+          break;
+        case 'binarySpatialData':
+          try {
+            await this.loadWithPerf('ply', message, () => this.handleBinarySpatialData(message));
+          } catch (error) {
+            console.error('Error handling binary PLY data:', error);
+            this.showError(
+              'Failed to handle binary PLY data: ' +
+                (error instanceof Error ? error.message : String(error))
+            );
+          }
+          break;
+        case 'addFiles':
+          try {
+            this.addNewFiles(message.data);
+          } catch (error) {
+            console.error('Error adding new files:', error);
+            this.showError(
+              'Failed to add files: ' + (error instanceof Error ? error.message : String(error))
+            );
+          }
+          break;
+        case 'sequence:init':
+          try {
+            this.initializeSequence(message.files as string[], message.wildcard as string);
+          } catch (error) {
+            console.error('Error starting sequence:', error);
+            this.showError(
+              'Failed to start sequence: ' +
+                (error instanceof Error ? error.message : String(error))
+            );
+          }
+          break;
+        case 'sequence:file:ultimate':
+          await this.sequenceHandleUltimate(message);
+          break;
+        case 'sequence:file:ply':
+          await this.sequenceHandlePly(message);
+          break;
+        case 'sequence:file:xyz':
+          await this.sequenceHandleXyz(message);
+          break;
+        case 'sequence:file:obj':
+          await this.sequenceHandleObj(message);
+          break;
+        case 'sequence:file:stl':
+          await this.sequenceHandleStl(message);
+          break;
+        case 'sequence:file:depth':
+          await this.sequenceHandleDepth(message);
+          break;
+        case 'fileRemoved':
+          try {
+            this.removeFileByIndex(message.fileIndex);
+          } catch (error) {
+            console.error('Error removing file:', error);
+            this.showError(
+              'Failed to remove file: ' + (error instanceof Error ? error.message : String(error))
+            );
+          }
+          break;
+        case 'startLargeFile':
+          this.handleStartLargeFile(message);
+          break;
+        case 'largeFileChunk':
+          this.handleLargeFileChunk(message);
+          break;
+        case 'largeFileComplete':
+          await this.handleLargeFileComplete(message);
+          break;
+        case 'depthData':
+          this.handleDepthData(message);
+          break;
+        case 'objData':
+          await this.loadWithPerf('obj', message, () => this.handleObjData(message));
+          break;
+        case 'stlData':
+          await this.loadWithPerf('stl', message, () => this.handleStlData(message));
+          break;
+        case 'xyzData':
+          await this.loadWithPerf('xyz', message, () => this.handleXyzData(message));
+          break;
+        case 'pcdData':
+          await this.loadWithPerf('pcd', message, () => this.handlePcdData(message));
+          break;
+        case 'ptsData':
+          await this.loadWithPerf('pts', message, () => this.handlePtsData(message));
+          break;
+        case 'offData':
+          await this.loadWithPerf('off', message, () => this.handleOffData(message));
+          break;
+        case 'gltfData':
+          await this.loadWithPerf('gltf', message, () => this.handleGltfData(message));
+          break;
+        case 'npyData':
+          await this.loadWithPerf('npy', message, () => this.handleNpyData(message));
+          break;
+        case 'xyzVariantData':
+          await this.loadWithPerf('xyz', message, () => this.handleXyzVariantData(message));
+          break;
+        case 'cameraParams':
+          this.handleCameraParams(message);
+          break;
+        case 'cameraParamsCancelled':
+          this.handleCameraParamsCancelled(message.requestId);
+          break;
+        case 'datasetTexture':
+          this.handleDatasetTexture(message);
+          break;
+        case 'cameraParamsError':
+          this.handleCameraParamsError(message.error, message.requestId);
+          break;
+        case 'savePlyFileResult':
+          this.handleSaveSpatialFileResult(message);
+          break;
+        case 'colorImageData':
+          this.handleColorImageData(message);
+          break;
+        case 'defaultDepthSettings':
+          this.handleDefaultDepthSettings(message);
+          break;
+        case 'mtlData':
+          this.handleMtlData(message);
+          break;
+        case 'calibrationFileSelected':
+          this.handleCalibrationFileSelected(message);
+          break;
+        case 'poseData':
+          try {
+            await (this as any).handlePoseData(message);
+          } catch (error) {
+            console.error('Error handling pose data:', error);
+            this.showError(
+              'Failed to handle pose data: ' +
+                (error instanceof Error ? error.message : String(error))
+            );
+          }
+          break;
       }
     });
   }
@@ -2723,14 +2369,9 @@ class PointCloudVisualizer {
 
     if (data.faceCount > 0) {
       // Mesh material
-      const material: THREE.MeshBasicMaterial | THREE.MeshLambertMaterial =
-        // Slice planes and voxel boxes carry their presentation grey directly
-        // in the vertex colours, so scene lighting must not tint them.
-        this.useUnlitPly ||
-        data.metadata?.volumeRenderMode === 'slices' ||
-        data.metadata?.volumeRenderMode === 'voxels'
-          ? new THREE.MeshBasicMaterial()
-          : new THREE.MeshLambertMaterial();
+      const material: THREE.MeshBasicMaterial | THREE.MeshLambertMaterial = this.useUnlitPly
+        ? new THREE.MeshBasicMaterial()
+        : new THREE.MeshLambertMaterial();
       material.side = THREE.DoubleSide; // More robust visibility if face winding varies
       // For files without explicit normals, prefer flat shading to avoid odd gradients
       if (material instanceof THREE.MeshLambertMaterial) {
@@ -2761,8 +2402,8 @@ class PointCloudVisualizer {
 
       // Initialize point size if not set
       if (!this.pointSizes[fileIndex]) {
-        this.pointSizes[fileIndex] = DEFAULT_POINT_SIZE;
-        filesState.pointSizes[fileIndex] = DEFAULT_POINT_SIZE;
+        this.pointSizes[fileIndex] = 0.001; // Universal default for all file types
+        filesState.pointSizes[fileIndex] = 0.001;
       }
 
       material.size = this.pointSizes[fileIndex];
@@ -2801,6 +2442,7 @@ class PointCloudVisualizer {
   }
 
   private fitCameraToAllObjects(): void {
+    this.cameraViewAnimator.cancel();
     if (
       this.meshes.length === 0 &&
       this.poseGroups.length === 0 &&
@@ -2817,9 +2459,6 @@ class PointCloudVisualizer {
       box.expandByObject(group);
     }
     for (const group of this.cameraGroups) {
-      if (group.userData.excludeFromFit) {
-        continue;
-      }
       box.expandByObject(group);
     }
 
@@ -2827,52 +2466,25 @@ class PointCloudVisualizer {
       return;
     }
 
-    // Structure-from-motion clouds carry a few badly triangulated points that
-    // can stretch the box by an order of magnitude, which would park the orbit
-    // pivot in empty space. When that has happened, frame what the points
-    // actually occupy instead. Well-behaved clouds keep their previous
-    // framing - see visualization/robustBounds.ts.
-    const trimmed = new THREE.Box3();
-    for (let index = 0; index < this.spatialFiles.length; index++) {
-      const positions = this.spatialFiles[index]?.positionsArray;
-      const mesh = this.meshes[index];
-      if (!positions || !mesh) {
-        continue;
-      }
-      const local = robustPointBounds(positions);
-      if (local) {
-        mesh.updateWorldMatrix(true, false);
-        trimmed.union(local.applyMatrix4(mesh.matrixWorld));
-      }
-    }
-    const fitBox = !trimmed.isEmpty() && boundsAreOutlierDominated(box, trimmed) ? trimmed : box;
-
-    const size = fitBox.getSize(new THREE.Vector3());
-    const center = fitBox.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z, 1e-6);
-
-    // Fit against the unobstructed region selected by ScreenAnchorController,
-    // not the full canvas hidden partly beneath the top-right menu.
-    this.screenAnchor?.refreshAutomatic();
-    const safeFraction = this.screenAnchor?.getFitFractions() ?? { width: 1, height: 1 };
 
     const vFov = this.camera.fov * (Math.PI / 180);
     const hFov = 2 * Math.atan(Math.tan(vFov / 2) * this.camera.aspect);
-    const fitHeightDistance = maxDim / (2 * Math.tan(vFov / 2) * safeFraction.height);
-    const fitWidthDistance = maxDim / (2 * Math.tan(hFov / 2) * safeFraction.width);
+    const fitHeightDistance = maxDim / (2 * Math.tan(vFov / 2));
+    const fitWidthDistance = maxDim / (2 * Math.tan(hFov / 2));
     const distance = Math.max(fitHeightDistance, fitWidthDistance) * 1.5; // padding
 
     // Keep current camera viewing direction and move along it.
     const direction = this.camera.getWorldDirection(new THREE.Vector3()).normalize();
-    // A direction along the up axis leaves lookAt without a defined roll (the
-    // world tips so X reads as up) and the trackball without a rotation basis.
-    if (Math.abs(direction.dot(this.camera.up)) > 0.999) {
-      direction.set(-1, -1, -1).normalize();
-    }
     this.camera.position.copy(center.clone().sub(direction.multiplyScalar(distance)));
     this.camera.lookAt(center);
 
-    applyFixedClipPlanes(this.camera);
+    // Conservative clipping planes for massive coordinate ranges
+    this.camera.near = Math.max(0.001, Math.min(0.1, distance / 10000));
+    this.camera.far = Math.max(distance * 100, 1000000);
+    this.camera.updateProjectionMatrix();
 
     // Set rotation center to fitted center
     this.controls.target.copy(center);
@@ -2880,22 +2492,11 @@ class PointCloudVisualizer {
   }
 
   autoFitCameraOnFirstLoad(): void {
-    // Only on the first file: adding one later must never move the user's view.
-    if (!this.isFirstFileLoad) {
-      return;
-    }
-    // Terrestrial scans centre the scanner capture point in the view and use
-    // it as the orbit pivot.
-    // Everything else is framed by its bounding box, with a Z-up camera for
-    // the formats that specify a vertical axis.
-    const capturePoint = scannerCapturePointFor(this.spatialFiles);
-    if (!capturePoint || !applyScannerStartView(this, capturePoint, this.meshes)) {
-      if (shouldOrientZUp(this.spatialFiles)) {
-        applyZUpOrientation(this);
-      }
+    // Only auto-fit camera on first file load
+    if (this.isFirstFileLoad) {
       this.fitCameraToAllObjects();
+      this.isFirstFileLoad = false;
     }
-    this.isFirstFileLoad = false;
   }
 
   updateFileStats(): void {
@@ -2910,22 +2511,11 @@ class PointCloudVisualizer {
     // camera getter methods below) each time renderTick changes - mirroring
     // this method's old "regenerate everything from scratch" model without
     // needing every underlying field to be individually reactive.
-    // A settings update may change row contents, but must never move the
-    // user's place in the list. FileList keeps stable keyed rows; preserving
-    // the container offset here is a second invariant at the one refresh
-    // boundary all current and future settings use.
-    const fileList = document.getElementById('file-list');
-    const scrollTop = fileList?.scrollTop ?? 0;
-    const scrollLeft = fileList?.scrollLeft ?? 0;
     filesState.renderTick++;
     // Force the Svelte re-render to apply synchronously so the button-state
     // sync calls below see the freshly rendered DOM, matching the old
     // synchronous innerHTML-then-listeners-then-button-states ordering.
     flushSync();
-    if (fileList) {
-      fileList.scrollTop = scrollTop;
-      fileList.scrollLeft = scrollLeft;
-    }
     this.updatePointsNormalsButtonStates();
     this.updateUniversalRenderButtonStates();
     this.updateDefaultButtonState();
@@ -2935,11 +2525,7 @@ class PointCloudVisualizer {
     return commentSettings.isDepthDerivedFile(data);
   }
 
-  /** Also the entry point for code that switches a mode, not just the picker. */
-  onFileColorModeChange(fileIndex: number, value: string): void {
-    if (this.spatialFiles[fileIndex]?.sceneModel) {
-      return;
-    }
+  private onFileColorModeChange(fileIndex: number, value: string): void {
     this.individualColorModes[fileIndex] = value;
     filesState.colorModes[fileIndex] = value;
     const isPose = fileIndex >= this.spatialFiles.length;
@@ -2980,12 +2566,11 @@ class PointCloudVisualizer {
           oldMaterial.dispose();
         }
       }
+      const voxels = this.voxelObjects[fileIndex];
+      if (voxels && this.meshes[fileIndex] instanceof THREE.Points) {
+        voxelRenderer.refreshVoxelColors(voxels, this.meshes[fileIndex] as THREE.Points);
+      }
     }
-    // The renderer draws on demand, so a colour change that does not ask for a
-    // frame is invisible until something else does — a camera nudge, a resize.
-    // Switching a cloud from its projected colour to a flat one looked like a
-    // control that did nothing at all.
-    this.requestRender();
   }
 
   private toggleFileVisibility(fileIndex: number): void {
@@ -2997,11 +2582,6 @@ class PointCloudVisualizer {
     const desiredVisible = checkboxEl
       ? !!checkboxEl.checked
       : !(this.fileVisibility[fileIndex] ?? true);
-    this.setFileEntryVisibility(fileIndex, desiredVisible);
-  }
-
-  /** Used by the capture-place toggles, which move several entries at once. */
-  setFileEntryVisibility(fileIndex: number, desiredVisible: boolean): void {
     this.fileVisibility[fileIndex] = desiredVisible;
     filesState.visibility[fileIndex] = desiredVisible;
 
@@ -3048,7 +2628,6 @@ class PointCloudVisualizer {
    */
   private toggleUniversalRenderMode(fileIndex: number, mode: string): void {
     renderModeToggles.toggleUniversalRenderMode(this, fileIndex, mode);
-    filesState.renderModeTick += 1;
   }
 
   private toggleSolidRendering(fileIndex: number): void {
@@ -3115,10 +2694,6 @@ class PointCloudVisualizer {
     console.log(`Load: UI start ${fileName} at ${uiStartTime.toFixed(1)}ms`);
 
     this.isFileLoading = true;
-    if (this.runningInVSCode) {
-      this.pendingFileLoads++;
-    }
-    uiState.fileLoading = true;
     this.updateWelcomeMessageVisibility();
 
     // Store timing for complete analysis
@@ -3229,9 +2804,6 @@ class PointCloudVisualizer {
         pts > 0 ? `Building geometry (${pts.toLocaleString()} points)…` : 'Building geometry…'
       );
     }
-    const stonexCameraFiles: SpatialData[] = [];
-    const e57CameraFiles: SpatialData[] = [];
-    const colmapCameraFiles: SpatialData[] = [];
     for (const data of newFiles) {
       alignSourceOrigin(data, this.spatialFiles);
       // Assign new file index
@@ -3239,17 +2811,6 @@ class PointCloudVisualizer {
 
       // Add to data array
       this.spatialFiles.push(data);
-
-      // Claim the entry's slot before anything writes per-file state into it.
-      // Spatial files sort first, so the unified index equals data.fileIndex,
-      // but the insert still has to happen here: appending would land past any
-      // pose or camera entries already loaded and hand this file their slots.
-      const { index: entryIndex } = this.fileEntries.add('spatial');
-      insertEntryState(this, entryIndex, {
-        visible: true,
-        pointSize: DEFAULT_POINT_SIZE,
-        colorMode: 'assigned',
-      });
 
       // Update welcome message visibility
       this.updateWelcomeMessageVisibility();
@@ -3260,8 +2821,8 @@ class PointCloudVisualizer {
       const isMultiMaterial =
         isObjFile && objData && objData.materialGroups && objData.materialGroups.length > 1;
 
-      if (data.faceCount > 0 || data.sceneModel) {
-        // Native scenes can contain point primitives as well as meshes.
+      if (data.faceCount > 0) {
+        // Mesh file (STL, PLY with faces, OBJ)
         this.solidVisible.push(true);
 
         if (isMultiMaterial) {
@@ -3280,36 +2841,40 @@ class PointCloudVisualizer {
       // Wireframe and normals always start disabled
       this.wireframeVisible.push(false);
       this.normalsVisible.push(false);
+      this.voxelsVisible.push(false);
+      this.voxelSizes.push(0.1);
 
       // Initialize vertex points object (null initially, created on demand)
       this.vertexPointsObjects.push(null);
+      this.voxelObjects.push(null);
 
-      // Initialize color mode before creating material. The slot already exists
-      // at entryIndex, so this only assigns.
+      // Initialize color mode before creating material
+      // Ensure the individualColorModes array is large enough for this file's index
+      // (it might have camera/pose entries that extend beyond spatialFiles)
       const initialColorMode =
-        (data.metadata?.volumeRenderMode === 'slices' ||
-          data.metadata?.volumeRenderMode === 'points' ||
-          data.metadata?.volumeRenderMode === 'voxels') &&
-        data.hasColors
+        this.useOriginalColors && data.hasColors
           ? 'original'
-          : this.useOriginalColors && data.hasColors
-            ? 'original'
-            : this.hasIntensityData(data)
-              ? 'intensity'
-              : 'assigned';
+          : this.hasIntensityData(data)
+            ? 'intensity'
+            : 'assigned';
+      while (this.individualColorModes.length <= data.fileIndex) {
+        this.individualColorModes.push('assigned'); // Placeholder for non-existent files
+        filesState.colorModes.push('assigned');
+      }
       this.individualColorModes[data.fileIndex] = initialColorMode;
       filesState.colorModes[data.fileIndex] = initialColorMode;
       console.log(
         `🎨 addNewFiles - fileIndex: ${data.fileIndex}, hasColors: ${data.hasColors}, colorMode: ${initialColorMode}, useOriginalColors: ${this.useOriginalColors}`
       );
 
-      const recommendedPointSize = data.metadata?.recommendedPointSize;
-      const initialPointSize =
-        typeof recommendedPointSize === 'number' && recommendedPointSize > 0
-          ? recommendedPointSize
-          : DEFAULT_POINT_SIZE;
-      this.pointSizes[data.fileIndex] = initialPointSize;
-      filesState.pointSizes[data.fileIndex] = initialPointSize;
+      // Ensure pointSizes array is large enough and set correct default for this PLY
+      while (this.pointSizes.length <= data.fileIndex) {
+        this.pointSizes.push(0.001); // Placeholder for non-existent files
+        filesState.pointSizes.push(0.001);
+      }
+      // IMPORTANT: Always set PLY file point size to 0.001, overwriting any placeholder values
+      this.pointSizes[data.fileIndex] = 0.001;
+      filesState.pointSizes[data.fileIndex] = 0.001;
       // debug
 
       // Create geometry and material
@@ -3321,12 +2886,7 @@ class PointCloudVisualizer {
       const isObjFile2 = (data as any).isObjFile;
       const objRenderType = (data as any).objRenderType;
 
-      if (data.sceneModel) {
-        const modelObject = createModelObject(data, geometry, material);
-        this.scene.add(modelObject);
-        this.meshes.push(modelObject);
-        this.requestRender();
-      } else if (isObjFile2) {
+      if (isObjFile2) {
         if (objRenderType === 'wireframe' && (data as any).objLines) {
           // Create wireframe using LineSegments
           const lines = (data as any).objLines;
@@ -3583,52 +3143,27 @@ class PointCloudVisualizer {
       // If sequence mode is active, only the current frame stays visible to avoid overloading the scene
       const isSeqMode = this.sequenceFiles.length > 0;
       const shouldBeVisible = !isSeqMode || data.fileIndex === this.sequenceIndex;
-      this.fileVisibility[data.fileIndex] = shouldBeVisible;
-      filesState.visibility[data.fileIndex] = shouldBeVisible;
+      this.fileVisibility.push(shouldBeVisible);
+      filesState.visibility.push(shouldBeVisible);
       const lastObject = this.meshes[this.meshes.length - 1];
       if (lastObject) {
         lastObject.visible = shouldBeVisible;
       }
       const isObjFile3 = (data as any).isObjFile;
+      // Universal default point size for all file types (now that all use world-space sizing)
+      // Note: pointSizes array is pre-allocated in the material creation step above
+      if (this.pointSizes.length <= data.fileIndex) {
+        this.pointSizes.push(0.001);
+        filesState.pointSizes.push(0.001);
+      }
       this.appliedMtlColors.push(null); // No MTL color applied initially
       this.appliedMtlNames.push(null); // No MTL material applied initially
       this.appliedMtlData.push(null); // No MTL data applied initially
       this.multiMaterialGroups.push(null); // No multi-material group initially
       this.materialMeshes.push(null); // No sub-meshes initially
 
-      if ((data.metadata?.stonexCameraFrames as unknown[])?.length) {
-        stonexCameraFiles.push(data);
-      }
-      if ((data.metadata?.e57Images as unknown[])?.length) {
-        e57CameraFiles.push(data);
-      }
-      if (data.metadata?.colmapModel) {
-        colmapCameraFiles.push(data);
-      }
-    }
-
-    for (const data of stonexCameraFiles) {
-      try {
-        stonexCameras.addStonexCameraVisualization(this, data);
-      } catch (error) {
-        // Camera helpers are auxiliary. A malformed preview or calibration must
-        // never prevent the point cloud from being fitted and rendered.
-        console.error(`Could not add Stonex camera visualization for ${data.fileName}:`, error);
-      }
-    }
-    for (const data of colmapCameraFiles) {
-      try {
-        addColmapCameraVisualization(this, data);
-      } catch (error) {
-        console.error(`Could not add COLMAP camera visualization for ${data.fileName}:`, error);
-      }
-    }
-    for (const data of e57CameraFiles) {
-      try {
-        addE57CameraVisualization(this, data);
-      } catch (error) {
-        console.error(`Could not add E57 camera visualization for ${data.fileName}:`, error);
-      }
+      // Initialize transformation matrix for this file
+      this.transformationMatrices.push(new THREE.Matrix4());
     }
 
     // Update UI (preserve depth panel states)
@@ -3638,59 +3173,7 @@ class PointCloudVisualizer {
     this.updateFileStats();
     this.showLoading(false);
 
-    // Splat containers (.spz/.splat/…) render as splats right away.
-    this.splatMode.autoEnablePending();
-  }
-
-  /**
-   * Drops an entry's registry slot and per-entry state, together with any
-   * entry that declared it as a parent.
-   *
-   * A container publishes children - a COLMAP reconstruction's cloud owns its
-   * camera profile - and removing the parent alone would strand their scene
-   * objects with no row to control them.
-   */
-  private removeEntryAndChildren(fileIndex: number): void {
-    const entry = this.fileEntries.at(fileIndex);
-
-    // Collection positions must be read before the registry forgets them.
-    const children = entry
-      ? this.fileEntries.childrenOf(entry.id).map(child => {
-          const unified = this.fileEntries.indexOf(child.id);
-          return { kind: child.kind, kindIndex: this.fileEntries.kindIndexAt(unified) };
-        })
-      : [];
-
-    // Only camera profiles are published as children today. Highest index
-    // first so the remaining positions stay valid.
-    const cameraChildren = children
-      .filter(child => child.kind === 'camera')
-      .sort((a, b) => b.kindIndex - a.kindIndex);
-    for (const child of cameraChildren) {
-      const group = this.cameraGroups[child.kindIndex];
-      if (!group) {
-        continue;
-      }
-      this.scene.remove(group);
-      group.traverse((object: any) => {
-        object.geometry?.dispose?.();
-        const materials = Array.isArray(object.material) ? object.material : [object.material];
-        for (const material of materials) {
-          material?.map?.dispose?.();
-          material?.dispose?.();
-        }
-      });
-      this.cameraGroups.splice(child.kindIndex, 1);
-      this.cameraNames.splice(child.kindIndex, 1);
-      this.cameraShowLabels.splice(child.kindIndex, 1);
-      this.cameraShowCoords.splice(child.kindIndex, 1);
-    }
-
-    // The registry returns removals in descending index order, so these
-    // per-entry splices stay valid as they go.
-    for (const removal of this.fileEntries.removeAt(fileIndex)) {
-      removeEntryState(this, removal.index);
-    }
+    // debug
   }
 
   removeFileByIndex(fileIndex: number): void {
@@ -3698,11 +3181,12 @@ class PointCloudVisualizer {
       return;
     }
 
-    // Which collection this index refers to is the registry's to answer.
-    const kind = this.fileEntries.kindAt(fileIndex);
+    // Determine if this index refers to a camera profile, pose, or pointcloud/mesh
+    const cameraStartIndex = this.spatialFiles.length + this.poseGroups.length;
 
-    if (kind === 'camera') {
-      const cameraIndex = this.fileEntries.kindIndexAt(fileIndex);
+    if (fileIndex >= cameraStartIndex) {
+      // Camera profile removal
+      const cameraIndex = fileIndex - cameraStartIndex;
       if (cameraIndex < 0 || cameraIndex >= this.cameraGroups.length) {
         return;
       }
@@ -3717,8 +3201,6 @@ class PointCloudVisualizer {
           if (Array.isArray(obj.material)) {
             obj.material.forEach((m: any) => m.dispose && m.dispose());
           } else if (typeof obj.material.dispose === 'function') {
-            const material = obj.material as THREE.Material & { map?: THREE.Texture };
-            material.map?.dispose();
             obj.material.dispose();
           }
         }
@@ -3728,7 +3210,16 @@ class PointCloudVisualizer {
       this.cameraShowLabels.splice(cameraIndex, 1);
       this.cameraShowCoords.splice(cameraIndex, 1);
 
-      this.removeEntryAndChildren(fileIndex);
+      // Remove UI-aligned state for this unified index
+      this.fileVisibility.splice(fileIndex, 1);
+      this.pointSizes.splice(fileIndex, 1);
+      filesState.visibility.splice(fileIndex, 1);
+      filesState.pointSizes.splice(fileIndex, 1);
+      if (this.individualColorModes[fileIndex] !== undefined) {
+        this.individualColorModes.splice(fileIndex, 1);
+        filesState.colorModes.splice(fileIndex, 1);
+      }
+      this.transformationMatrices.splice(fileIndex, 1);
 
       // Preserve depth panel states when removing files
       const openPanelStates = this.captureDepthPanelStates();
@@ -3738,8 +3229,9 @@ class PointCloudVisualizer {
       return;
     }
 
-    if (kind === 'pose') {
-      const poseIndex = this.fileEntries.kindIndexAt(fileIndex);
+    if (fileIndex >= this.spatialFiles.length) {
+      // Pose removal
+      const poseIndex = fileIndex - this.spatialFiles.length;
       if (poseIndex < 0 || poseIndex >= this.poseGroups.length) {
         return;
       }
@@ -3760,23 +3252,15 @@ class PointCloudVisualizer {
       });
       this.poseGroups.splice(poseIndex, 1);
       this.poseMeta.splice(poseIndex, 1);
-      this.poseLabelsGroups.splice(poseIndex, 1);
-      this.poseJoints.splice(poseIndex, 1);
-      this.poseEdges.splice(poseIndex, 1);
-
-      // pose.ts keys its per-pose toggles by the unified index, not by the pose
-      // index, so they are spliced here alongside the shared entry state rather
-      // than with poseGroups above.
-      this.poseUseDatasetColors.splice(fileIndex, 1);
-      this.poseShowLabels.splice(fileIndex, 1);
-      this.poseScaleByScore.splice(fileIndex, 1);
-      this.poseScaleByUncertainty.splice(fileIndex, 1);
-      this.poseConvention.splice(fileIndex, 1);
-      this.poseMinScoreThreshold.splice(fileIndex, 1);
-      this.poseMaxUncertaintyThreshold.splice(fileIndex, 1);
-
-      this.removeEntryAndChildren(fileIndex);
-
+      // Remove UI-aligned state for this unified index
+      this.fileVisibility.splice(fileIndex, 1);
+      this.pointSizes.splice(fileIndex, 1);
+      filesState.visibility.splice(fileIndex, 1);
+      filesState.pointSizes.splice(fileIndex, 1);
+      if (this.individualColorModes[fileIndex] !== undefined) {
+        this.individualColorModes.splice(fileIndex, 1);
+        filesState.colorModes.splice(fileIndex, 1);
+      }
       // Preserve depth panel states when removing files
       const openPanelStates = this.captureDepthPanelStates();
       this.updateFileList();
@@ -3785,7 +3269,6 @@ class PointCloudVisualizer {
       return;
     }
 
-    this.spatialFiles[fileIndex]?.sceneModel?.dispose();
     // Remove mesh from scene
     const mesh = this.meshes[fileIndex];
     this.scene.remove(mesh);
@@ -3798,6 +3281,12 @@ class PointCloudVisualizer {
       } else {
         mesh.material.dispose();
       }
+    }
+
+    const voxels = this.voxelObjects[fileIndex];
+    if (voxels) {
+      this.scene.remove(voxels);
+      voxelRenderer.disposeVoxelMesh(voxels);
     }
 
     // Remove normals visualizer from scene and dispose
@@ -3851,24 +3340,20 @@ class PointCloudVisualizer {
     }
 
     // Remove from arrays
-    const volumeSessionId = this.spatialFiles[fileIndex]?.metadata?.volumeSessionId;
-    if (typeof volumeSessionId === 'string') {
-      const source = this.volumeSources.get(volumeSessionId);
-      if (source) {
-        source.generation++;
-      }
-      this.volumeSources.delete(volumeSessionId);
-    }
-    this.splatMode.onFileRemoved(fileIndex);
-    this.splatModeActive.splice(fileIndex, 1);
     this.spatialFiles.splice(fileIndex, 1);
-    this.sectionPlanes.onFileRemoved(fileIndex);
     this.meshes.splice(fileIndex, 1);
     this.normalsVisualizers.splice(fileIndex, 1); // Remove normals visualizer for this file
     this.vertexPointsObjects.splice(fileIndex, 1); // Remove vertex points object for this file
+    this.voxelObjects.splice(fileIndex, 1);
     this.multiMaterialGroups.splice(fileIndex, 1); // Remove multi-material group for this file
     this.materialMeshes.splice(fileIndex, 1); // Remove sub-meshes for this file
-    this.removeEntryAndChildren(fileIndex);
+    this.fileVisibility.splice(fileIndex, 1);
+    this.pointSizes.splice(fileIndex, 1); // Remove point size for this file
+    this.voxelSizes.splice(fileIndex, 1);
+    this.individualColorModes.splice(fileIndex, 1); // Remove color mode for this file
+    filesState.visibility.splice(fileIndex, 1);
+    filesState.pointSizes.splice(fileIndex, 1);
+    filesState.colorModes.splice(fileIndex, 1);
     this.appliedMtlColors.splice(fileIndex, 1); // Remove MTL color for this file
     this.appliedMtlNames.splice(fileIndex, 1); // Remove MTL name for this file
     this.appliedMtlData.splice(fileIndex, 1); // Remove MTL data for this file
@@ -3877,7 +3362,11 @@ class PointCloudVisualizer {
     this.solidVisible.splice(fileIndex, 1);
     this.wireframeVisible.splice(fileIndex, 1);
     this.pointsVisible.splice(fileIndex, 1);
+    this.voxelsVisible.splice(fileIndex, 1);
     this.normalsVisible.splice(fileIndex, 1);
+
+    // Remove transformation matrix for this file
+    this.transformationMatrices.splice(fileIndex, 1);
 
     // Remove Depth data if it exists for this file
     this.fileDepthData.delete(fileIndex);
@@ -3982,8 +3471,8 @@ class PointCloudVisualizer {
     await binaryDataHandlers.handleUltimateRawBinaryUri(this, message);
   }
 
-  async handleUltimateRawBinaryData(message: any, preparsed?: PlyParseResult): Promise<void> {
-    await binaryDataHandlers.handleUltimateRawBinaryData(this, message, preparsed);
+  async handleUltimateRawBinaryData(message: any): Promise<void> {
+    await binaryDataHandlers.handleUltimateRawBinaryData(this, message);
   }
 
   private async handleDirectTypedArrayData(message: any): Promise<void> {
@@ -4004,12 +3493,22 @@ class PointCloudVisualizer {
 
   private async handleLargeFileComplete(message: any): Promise<void> {
     await largeFileChunking.handleLargeFileComplete(this, message);
-    stationPipelineFeature.flushPendingLoadTimeColors(this);
   }
 
-  /** Called from the file rows and from the all-clouds slider in the controls. */
-  updatePointSize(fileIndex: number, newSize: number): void {
+  private updatePointSize(fileIndex: number, newSize: number): void {
     pointSizeScaling.updatePointSize(this, fileIndex, newSize);
+  }
+
+  updateVoxelSize(fileIndex: number, newSize: number): void {
+    if (fileIndex < 0 || fileIndex >= this.spatialFiles.length || newSize <= 0) {
+      return;
+    }
+    this.voxelSizes[fileIndex] = newSize;
+    const voxels = this.voxelObjects[fileIndex];
+    if (voxels) {
+      voxelRenderer.updateVoxelSize(voxels, newSize);
+      this.requestRender();
+    }
   }
 
   private getColorName(fileIndex: number): string {
@@ -4042,23 +3541,43 @@ class PointCloudVisualizer {
   }
 
   private soloPointCloud(fileIndex: number): void {
-    const totalEntries = this.fileEntries.length;
-    const selectedIsSoleVisible =
-      (this.fileVisibility[fileIndex] ?? filesState.visibility[fileIndex] ?? true) &&
-      Array.from({ length: totalEntries }, (_, index) => index).every(
-        index =>
-          index === fileIndex ||
-          !(this.fileVisibility[index] ?? filesState.visibility[index] ?? true)
-      );
-    const showAll = selectedIsSoleVisible;
-
+    // Hide all objects (point clouds and poses)
+    const totalEntries = this.spatialFiles.length + this.poseGroups.length;
     for (let i = 0; i < totalEntries; i++) {
-      this.setFileEntryVisibility(i, showAll || i === fileIndex);
+      this.fileVisibility[i] = false;
+      filesState.visibility[i] = false;
+      if (i < this.meshes.length) {
+        const obj = this.meshes[i];
+        if (obj) {
+          obj.visible = false;
+        }
+        const voxels = this.voxelObjects[i];
+        if (voxels) {
+          voxels.visible = false;
+        }
+      } else {
+        const poseIndex = i - this.spatialFiles.length;
+        const group = this.poseGroups[poseIndex];
+        if (group) {
+          group.visible = false;
+        }
+      }
     }
-
-    // filesState.visibility is reactive, so rebuilding the complete file list
-    // here is unnecessary. Keeping the existing rows also preserves scroll,
-    // focus, expanded panels, and each row's identity during Shift-click solo.
+    // Show only the selected entry
+    this.fileVisibility[fileIndex] = true;
+    filesState.visibility[fileIndex] = true;
+    if (fileIndex < this.meshes.length) {
+      this.updateMeshVisibilityAndMaterial(fileIndex);
+    } else {
+      const poseIndex = fileIndex - this.spatialFiles.length;
+      const group = this.poseGroups[poseIndex];
+      if (group) {
+        group.visible = true;
+      }
+    }
+    // Update UI
+    this.updateFileList();
+    // Request render to show visibility changes
     this.requestRender();
   }
 
@@ -4070,13 +3589,15 @@ class PointCloudVisualizer {
     controlSchemeSwitcher.switchToOrbitControls(this);
   }
 
-  private switchToLegacyTrackballControls(): void {
-    controlSchemeSwitcher.switchToLegacyTrackballControls(this);
+  private switchToInverseTrackballControls(): void {
+    controlSchemeSwitcher.switchToInverseTrackballControls(this);
   }
 
   private switchToArcballControls(): void {
     controlSchemeSwitcher.switchToArcballControls(this);
   }
+
+  // Removed CloudCompare button/shortcut per user request; turntable impl remains unused
 
   updateControlStatus(): void {
     controlSchemeSwitcher.updateControlStatus(this);
@@ -4086,12 +3607,8 @@ class PointCloudVisualizer {
     cameraConvention.setOpenCVCameraConvention(this);
   }
 
-  setOpenGLCameraConvention(): void {
+  private setOpenGLCameraConvention(): void {
     cameraConvention.setOpenGLCameraConvention(this);
-  }
-
-  loadMeasurementPathProject(jsonText: string): boolean {
-    return this.measurementManager?.loadPathProject(jsonText) ?? false;
   }
 
   updateAxesForCameraConvention(convention: 'opencv' | 'opengl'): void {
@@ -4240,111 +3757,8 @@ class PointCloudVisualizer {
     await formatDataHandlers.handleNpyData(this, message);
   }
 
-  /**
-   * A COLMAP sparse model arriving from the extension host as a set of raw
-   * files. The extension cannot parse them one at a time - the model only makes
-   * sense as a whole - so it forwards the bytes and the assembly happens here,
-   * the same way the standalone page does it.
-   */
-  private async handleColmapModelFiles(message: any): Promise<void> {
-    const files: Array<{ name: string; data: Uint8Array }> = (message.files || []).map(
-      (file: any) => ({ name: file.name, data: messageBytes(file.data) })
-    );
-
-    // An empty part means the transfer dropped the payload rather than that the
-    // model is empty; saying "no points3D" here would send you looking in the
-    // wrong place entirely.
-    const empty = files.filter(file => file.data.byteLength === 0).map(file => file.name);
-    if (empty.length > 0) {
-      this.showError(`COLMAP model files arrived empty: ${empty.join(', ')}`);
-      return;
-    }
-
-    const collected = collectColmapModelFiles(files);
-    if (!collected) {
-      const found = files.map(file => file.name).join(', ') || 'none';
-      this.showError(`COLMAP model needs a cameras and an images file. Found: ${found}.`);
-      return;
-    }
-
-    const model = parseColmapModel(collected.model);
-    const cloud = buildSparseCloud(model, colmapReconstructionName(files));
-    if (!cloud) {
-      this.showError(
-        collected.model.points3D
-          ? 'COLMAP points3D file contained no points.'
-          : 'COLMAP model has no points3D file; load it alongside cameras and images to see the sparse cloud.'
-      );
-      return;
-    }
-    cloud.metadata = { ...cloud.metadata, colmapModel: model };
-    // Read back by loadWithPerf's summary, so the PERF line for the
-    // reconstruction reports the cloud it actually built.
-    message.vertexCount = cloud.vertexCount;
-    await this.displayFiles([cloud]);
-
-    // The frames are on screen now; photographs arrive separately and attach
-    // themselves as they decode.
-    this.colmapImageNames = model.images.map(image => image.name);
-    this.colmapImagesDone = 0;
-  }
-
-  /**
-   * A batch of reconstruction photographs. Each is decoded and hung on its own
-   * frame as soon as it is ready, so the frames fill in progressively instead
-   * of the whole set appearing at the end.
-   */
-  private async handleColmapImages(message: any): Promise<void> {
-    const profile = this.cameraGroups.find(group => group.name.startsWith('colmap_cameras_'));
-    if (!profile || this.colmapImageNames.length === 0) {
-      return;
-    }
-    const total: number = message.total ?? 0;
-    const sources = (message.files || []).map((file: any) => ({
-      name: file.name,
-      data: messageBytes(file.data),
-    }));
-
-    let attached = false;
-    await loadColmapTextures(sources, this.colmapImageNames, (name, texture) => {
-      if (attachColmapFrameImage(profile, name, texture)) {
-        attached = true;
-      }
-      this.colmapImagesDone += 1;
-      profile.userData.imageProgress = { done: this.colmapImagesDone, total };
-    });
-
-    if (attached) {
-      // The panel only offers the image toggle once a frame actually has one.
-      profile.userData.hasImagePlanes = true;
-      this.requestRender();
-    }
-    filesState.renderTick += 1;
-
-    if (total > 0 && this.colmapImagesDone >= total) {
-      // One PERF line for the whole background phase, separate from the
-      // reconstruction's own line, so the two costs can be read apart.
-      const perf = new PerfTimer('colmap-images', message.loadStartedAt);
-      perf.mark('read+decode');
-      // Not `verts`: that note is formatted as "pts", which would read as a
-      // point count rather than an image count.
-      perf.note('images', total);
-      if (typeof message.totalBytes === 'number') {
-        perf.note('MB', (message.totalBytes / 1048576).toFixed(1));
-      }
-      perf.summary();
-      // Clearing it removes the counter; the "Show images" toggle stays.
-      profile.userData.imageProgress = null;
-      filesState.renderTick += 1;
-    }
-  }
-
   private async handlePtsData(message: any): Promise<void> {
     await formatDataHandlers.handlePtsData(this, message);
-  }
-
-  private async handleKittiBinData(message: any): Promise<void> {
-    await formatDataHandlers.handleKittiBinData(this, message);
   }
 
   private async handleOffData(message: any): Promise<void> {
@@ -4353,157 +3767,6 @@ class PointCloudVisualizer {
 
   private async handleGltfData(message: any): Promise<void> {
     await formatDataHandlers.handleGltfData(this, message);
-  }
-
-  private async handleVolumeData(message: any): Promise<void> {
-    this.retainVolumeSource(message.data);
-    await formatDataHandlers.handleVolumeData(this, message);
-  }
-
-  private retainVolumeSource(data: SpatialData | undefined): void {
-    const metadata = data?.metadata as any;
-    const sessionId = metadata?.volumeSessionId;
-    const sizes = metadata?.volumeSizes;
-    const samples = data?.intensityArray;
-    if (
-      typeof sessionId !== 'string' ||
-      !Array.isArray(sizes) ||
-      sizes.length !== 3 ||
-      !samples ||
-      samples.length !== sizes[0] * sizes[1] * sizes[2]
-    ) {
-      return;
-    }
-
-    this.volumeSources.set(sessionId, {
-      volume: {
-        sizes: [...sizes] as [number, number, number],
-        samples,
-        ijkToWorld: [...metadata.ijkToWorld],
-        spaceUnits: metadata.spaceUnits || 'm',
-        intensityUnits: metadata.intensityUnits,
-        range: metadata.volumeRange,
-        channels: Number(metadata.channels) || 1,
-        header: {
-          'photometric interpretation': metadata.photometricInterpretation || 'MONOCHROME2',
-        },
-        fileName: data.fileName,
-      },
-      metadata: { ...metadata },
-      generation: 0,
-    });
-  }
-
-  async reextractVolumeLocally(request: {
-    sessionId: string;
-    fileIndex: number;
-    threshold: number;
-    step: [number, number, number];
-    renderMode: 'points' | 'mesh' | 'slices' | 'voxels';
-    windowCenter: number;
-    windowWidth: number;
-    brightnessMode: 'slice-auto' | 'dicom-window' | 'volume-range';
-    sliceIndices: [number, number, number];
-    /** Visible index range per axis; voxel mode clips in geometry, not planes. */
-    clipRanges?: Array<[number, number]>;
-    requestId: number;
-  }): Promise<void> {
-    const source = this.volumeSources.get(request.sessionId);
-    if (!source) {
-      // Older/partial volume payloads can still use the extension-host fallback.
-      this.vscode.postMessage({ type: 'volume:reextract', ...request });
-      return;
-    }
-
-    const generation = ++source.generation;
-    const cancelled = () => generation !== source.generation;
-    const onProgress = (fraction: number) =>
-      updateVolumeProgress(request.sessionId, request.requestId, fraction);
-
-    try {
-      const result =
-        request.renderMode === 'slices'
-          ? await buildVolumeSlicesAsync(
-              source.volume,
-              {
-                windowCenter: request.windowCenter,
-                windowWidth: request.windowWidth,
-                brightnessMode: request.brightnessMode,
-                volumeRange: source.metadata.volumeRange,
-                sliceRanges: source.metadata.volumeSliceRanges,
-                slices: request.sliceIndices,
-                onProgress,
-              },
-              cancelled
-            )
-          : request.renderMode === 'mesh'
-            ? await buildVolumeMeshAsync(
-                source.volume,
-                { threshold: request.threshold, step: request.step, onProgress },
-                cancelled
-              )
-            : request.renderMode === 'voxels'
-              ? await buildVolumeVoxelsAsync(
-                  source.volume,
-                  {
-                    threshold: request.threshold,
-                    step: [1, 1, 1],
-                    clip: request.clipRanges,
-                    windowCenter: request.windowCenter,
-                    windowWidth: request.windowWidth,
-                    brightnessMode: request.brightnessMode,
-                    volumeRange: source.metadata.volumeRange,
-                    sliceRanges: source.metadata.volumeSliceRanges,
-                    onProgress,
-                  },
-                  cancelled
-                )
-              : await buildVolumePointsAsync(
-                  source.volume,
-                  {
-                    threshold: request.threshold,
-                    step: [1, 1, 1],
-                    windowCenter: request.windowCenter,
-                    windowWidth: request.windowWidth,
-                    brightnessMode: request.brightnessMode,
-                    volumeRange: source.metadata.volumeRange,
-                    sliceRanges: source.metadata.volumeSliceRanges,
-                    onProgress,
-                  },
-                  cancelled
-                );
-      if (!result || cancelled()) {
-        return;
-      }
-
-      result.data.metadata = {
-        ...source.metadata,
-        ...result.data.metadata,
-        volumeSessionId: request.sessionId,
-        volumeRenderMode: request.renderMode,
-        threshold: request.threshold,
-        windowCenter: request.windowCenter,
-        windowWidth: request.windowWidth,
-        brightnessMode: request.brightnessMode,
-        meshExtractionStep: request.step,
-        sliceIndices: request.sliceIndices,
-      };
-      updateVolumeProgress(request.sessionId, request.requestId, 1);
-      await this.handleVolumeData({
-        data: result.data,
-        fileName: source.volume.fileName,
-        replaceFileIndex: request.fileIndex,
-        requestId: request.requestId,
-      });
-    } catch (error) {
-      if (!cancelled()) {
-        setVolumeError(
-          request.sessionId,
-          request.requestId,
-          error instanceof Error ? error.message : String(error)
-        );
-      }
-    }
   }
 
   private async handleXyzVariantData(message: any): Promise<void> {
@@ -4672,7 +3935,7 @@ class PointCloudVisualizer {
         fy: message.settings.fy,
         cx: this.defaultDepthSettings.cx, // Keep existing cx, don't load from storage
         cy: this.defaultDepthSettings.cy, // Keep existing cy, don't load from storage
-        cameraModel: message.settings.cameraModel || 'pinhole-opencv',
+        cameraModel: message.settings.cameraModel || 'pinhole-ideal',
         depthType: message.settings.depthType || 'euclidean',
         baseline: message.settings.baseline,
         convention: message.settings.convention || 'opengl',
@@ -4682,17 +3945,11 @@ class PointCloudVisualizer {
       };
       console.log('✅ Loaded default depth settings from extension:', this.defaultDepthSettings);
 
-      // X3A/X3R and E57 define Z as world-up. The settings response is
-      // asynchronous and can arrive after their first camera fit, so applying
-      // a persisted generic OpenCV/OpenGL view here would deterministically
-      // tip the survey onto its side. A response received before geometry is
-      // still safe: the first fit establishes the format-defined up axis.
-      if (shouldApplySavedViewConvention(this.spatialFiles)) {
-        if (message.viewConvention === 'opencv') {
-          this.setOpenCVCameraConvention();
-        } else if (message.viewConvention === 'opengl') {
-          this.setOpenGLCameraConvention();
-        }
+      // Apply saved camera view convention if present
+      if (message.viewConvention === 'opencv') {
+        this.setOpenCVCameraConvention();
+      } else if (message.viewConvention === 'opengl') {
+        this.setOpenGLCameraConvention();
       }
 
       // Update any existing depth file forms to use new defaults
@@ -4962,39 +4219,6 @@ class PointCloudVisualizer {
 // Export for global access
 (window as any).PointCloudVisualizer = PointCloudVisualizer;
 
-// Test hook: container totals only arise from multi-scan E57/X3A loads driven by
-// the extension host, so specs exercise the accumulator directly.
-(window as any).__plyContainerPerf = containerPerf;
-// Test hook, same reason as __plyContainerPerf: the zero-copy PLY route runs
-// only when the extension host hands the webview a URI to fetch, so a browser
-// spec has no other way to reach it.
-(window as any).__plyParsePly = { parsePlyFromResponse, parsePlyWasm };
-// Same reason: the NumPy reader's dtype and shape handling is worth testing
-// directly, not only through a depth panel that shows one pixel of the result.
-(window as any).__plyNpy = { inspectNpyWasm, isNpyPointCloudShape, readNpyWasm };
-// Same reason again: the depth kernels are reached through a camera-parameters
-// dialog and a worker, neither of which a spec can use to check the arithmetic
-// of a single pixel.
-(window as any).__plyDepth = {
-  initTiffWasm,
-  normalizeDepth,
-  projectToPointCloud,
-  // Both projection entry points, so a test can compare the banded path against
-  // the single-pass one through the same API the pipeline uses rather than
-  // reaching for the raw wasm global.
-  projectDepthWasmSync,
-  projectDepthBandWasmSync,
-};
-// The pool itself, so a benchmark can time it against the single pass.
-(window as any).__plyDepthPool = { projectDepthInBands };
-// The picking workflow's live counters, so a test can assert what a real
-// double-click did rather than calling the handler behind it.
-(window as any).__plyRegistrationState = registrationState;
-// Test handle for the file-list state, following __plyContainerPerf above.
-// Lets a browser test drive the background-work row without needing the
-// extension host to stream real images.
-(window as any).__plyFilesState = filesState;
-
 // Initialize when DOM is ready
 let visualizer: PointCloudVisualizer | null = null;
 
@@ -5012,17 +4236,6 @@ async function initializeVisualizer() {
   if (!visualizer) {
     visualizer = new PointCloudVisualizer();
     (window as any).visualizer = visualizer;
-    // Alongside the visualizer for the same reason: driving an alignment from
-    // the console (or from a spec) needs the module's entry points, and it has
-    // no other handle in the page.
-    (window as any).registrationFeature = registrationFeature;
-    // Same reason: the station pipeline's result handler is only reachable
-    // through the webview's message listener, which the standalone page never
-    // installs, so a spec has no other way to drive it.
-    (window as any).stationPipelineFeature = stationPipelineFeature;
-    // The colour-mode predicates decide how vertex colours are interpreted;
-    // exposing them lets a spec assert the two photographic modes agree.
-    (window as any).__colorMode = colorModeModule;
     console.log('✅ PointCloudVisualizer initialized');
   }
 }

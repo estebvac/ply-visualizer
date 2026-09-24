@@ -1,6 +1,6 @@
 import { viewerState } from './state/viewer.svelte';
 
-export type ControlType = 'trackball' | 'orbit' | 'legacy-trackball' | 'arcball';
+export type ControlType = 'trackball' | 'orbit' | 'inverse-trackball' | 'arcball' | 'cloudcompare';
 
 export interface ControlSchemeHost {
   controlType: ControlType;
@@ -26,23 +26,23 @@ export function switchToOrbitControls(host: ControlSchemeHost): void {
     return;
   }
 
-  console.log('🔄 Switching to OrbitControls');
+  console.log('🔄 Switching to Standard OrbitControls');
   host.controlType = 'orbit';
   host.initializeControls();
   host.updateControlStatus();
-  host.showStatus('Switched to Orbit controls');
+  host.showStatus('Switched to Standard Orbit');
 }
 
-export function switchToLegacyTrackballControls(host: ControlSchemeHost): void {
-  if (host.controlType === 'legacy-trackball') {
+export function switchToInverseTrackballControls(host: ControlSchemeHost): void {
+  if (host.controlType === 'inverse-trackball') {
     return;
   }
 
-  console.log('🔄 Switching to Legacy TrackballControls');
-  host.controlType = 'legacy-trackball';
+  console.log('🔄 Switching to Inverse TrackballControls');
+  host.controlType = 'inverse-trackball';
   host.initializeControls();
   host.updateControlStatus();
-  host.showStatus('Switched to Legacy Trackball controls (delta-based)');
+  host.showStatus('Switched to Inverse Trackball controls');
 }
 
 export function switchToArcballControls(host: ControlSchemeHost): void {
@@ -72,8 +72,9 @@ export function updateControlStatus(host: ControlSchemeHost): void {
   const controlButtons = [
     { id: 'trackball-controls', type: 'trackball' },
     { id: 'orbit-controls', type: 'orbit' },
-    { id: 'legacy-trackball-controls', type: 'legacy-trackball' },
+    { id: 'inverse-trackball-controls', type: 'inverse-trackball' },
     { id: 'arcball-controls', type: 'arcball' },
+    { id: 'cloudcompare-controls', type: 'cloudcompare' },
   ];
 
   controlButtons.forEach(button => {

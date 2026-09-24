@@ -1,26 +1,8 @@
 <script lang="ts">
-  import ModelAnimationPanel from './ModelAnimationPanel.svelte';
   import { filesState } from '../state/files.svelte';
-  import { runWithFileActivity } from '../fileActivity';
-  import { getPointCloudColorOptions } from '../colorOptions';
-  import { ensureKeyboardModifierTracking, isShiftPressed } from '../keyboardModifiers';
-  import { getRenderModeOptions, hasRenderMode } from '../renderModeOptions';
-  import CameraFrameList from './CameraFrameList.svelte';
-  import E57CorrectionPanel from './E57CorrectionPanel.svelte';
+  import { getExtraScalarFieldNames } from '../utils/scalarFields';
   import DepthSettingsPanel from './DepthSettingsPanel.svelte';
   import TransformSection from './TransformSection.svelte';
-  import VolumePanel from './VolumePanel.svelte';
-  import {
-    setStonexColorCorrection,
-    setStonexImageDistortion,
-    setStonexImagesVisible,
-    setStonexScannerVisible,
-  } from '../visualization/stonexCameras';
-  import {
-    DEFAULT_STONEX_COLOR_CORRECTION,
-    normalizeStonexColorCorrection,
-    type StonexColorCorrection,
-  } from '../visualization/stonexColorCorrection';
 
   let {
     host,
@@ -28,33 +10,12 @@
     kind,
   }: { host: any; index: number; kind: 'pointcloud' | 'pose' | 'camera' } = $props();
 
-  ensureKeyboardModifierTracking();
-
-  const data = $derived(
-    (filesState.renderTick, kind === 'pointcloud' ? host.spatialFiles[index] : null)
-  );
-  // Position within poseGroups/cameraGroups. The per-pose toggle arrays and the
-  // camera label arrays are keyed by it; host methods take the unified index.
-  const poseIndex = $derived((filesState.renderTick, host.fileEntries.kindIndexAt(index)));
-  const meta = $derived(
-    (filesState.renderTick, kind === 'pose' ? host.poseMeta[poseIndex] : null)
-  );
-  const cameraIndex = $derived((filesState.renderTick, host.fileEntries.kindIndexAt(index)));
-  const cameraGroup = $derived(
-    (filesState.renderTick, kind === 'camera' ? host.cameraGroups[cameraIndex] : null)
-  );
-  const cameraProfileName = $derived(
-    (filesState.renderTick, kind === 'camera' ? host.cameraNames[cameraIndex] : '')
-  );
-  // Set by sources that fetch their images after the frames are on screen
-  // (COLMAP). Absent for sources whose previews are embedded and already
-  // decoded, so nothing extra is shown for those.
-  const cameraImageProgress = $derived.by(() => {
-    filesState.renderTick;
-    return kind === 'camera'
-      ? (cameraGroup?.userData.imageProgress as { done: number; total: number } | undefined) ?? null
-      : null;
-  });
+  const data = $derived(kind === 'pointcloud' ? host.spatialFiles[index] : null);
+  const poseIndex = $derived(index - host.spatialFiles.length);
+  const meta = $derived(kind === 'pose' ? host.poseMeta[poseIndex] : null);
+  const cameraIndex = $derived(index - host.spatialFiles.length - host.poseGroups.length);
+  const cameraGroup = $derived(kind === 'camera' ? host.cameraGroups[cameraIndex] : null);
+  const cameraProfileName = $derived(kind === 'camera' ? host.cameraNames[cameraIndex] : '');
 
   const visible = $derived(filesState.visibility[index] ?? true);
   const collapsed = $derived(filesState.collapsed[index] ?? false);
@@ -66,29 +27,9 @@
       (host.isDepthDerivedFile(data) || (data as any).isDepthDerived)
   );
 
-  const colorOptions = $derived.by(() => {
-    filesState.renderTick;
-    filesState.renderModeTick;
-    return kind === 'pointcloud' && data
-      ? getPointCloudColorOptions(host, data, index, colorMode === 'original')
-      : [];
-  });
-
-  // Set when an E57's points were painted from its embedded photos because the
-  // scan itself stored no colour. Worth saying out loud: those colours are a
-  // projection result, not measured data.
-  const photoColoredPoints = $derived.by(() => {
-    filesState.renderTick;
-    return kind === 'pointcloud'
-      ? ((data?.metadata?.e57PhotographicallyColoredPoints as number | undefined) ?? null)
-      : null;
-  });
-  const photoColoredPercent = $derived(
-    photoColoredPoints && data?.vertexCount
-      ? Math.round((photoColoredPoints / data.vertexCount) * 100)
-      : 0
+  const scalarFieldNames = $derived(
+    kind === 'pointcloud' && data ? getExtraScalarFieldNames(data) : []
   );
-
 
   function colorIndicatorStyle(): string {
     if (kind === 'pointcloud' && colorMode === 'original' && data?.hasColors) {
@@ -115,34 +56,20 @@
     return `background-color: ${colorHex}`;
   }
 
-  function toggleCollapse(event: MouseEvent) {
+  function toggleCollapse() {
     const newCollapsed = !collapsed;
-    if (event.shiftKey) {
-      for (let fileIndex = 0; fileIndex < host.fileEntries.length; fileIndex++) {
-        host.fileItemsCollapsed[fileIndex] = newCollapsed;
-        filesState.collapsed[fileIndex] = newCollapsed;
-      }
-    } else {
-      host.fileItemsCollapsed[index] = newCollapsed;
-      filesState.collapsed[index] = newCollapsed;
-    }
+    host.fileItemsCollapsed[index] = newCollapsed;
+    filesState.collapsed[index] = newCollapsed;
   }
 
   function onVisibilityClick(e: MouseEvent) {
     if (e.shiftKey) {
-      const checkbox = e.currentTarget as HTMLInputElement;
       e.preventDefault();
       host.soloPointCloud(index);
-      // A checkbox's native checked toggle is finalized after its click
-      // handler. The soloed entry remains logically true, so that same-value
-      // state write does not necessarily make Svelte touch this DOM property.
-      // Synchronize once the browser has completed the cancelled default
-      // action; all other checkboxes update reactively through filesState.
-      window.setTimeout(() => {
-        checkbox.checked = filesState.visibility[index] ?? true;
-      }, 0);
-      return;
     }
+  }
+
+  function onVisibilityChange() {
     host.toggleFileVisibility(index);
   }
 
@@ -150,226 +77,81 @@
     host.requestRemoveFile(index);
   }
 
-  async function onColorModeChange(e: Event) {
+  function onColorModeChange(e: Event) {
     const value = (e.target as HTMLSelectElement).value;
-    // A select's change Event has no modifier fields. Read the live keyboard
-    // state here so Shift means "held while choosing this option", regardless
-    // of whether it was held when the list was first opened.
-    const applyToAll = kind === 'pointcloud' && isShiftPressed();
-    await runWithFileActivity(() => {
-      if (!applyToAll) {
-        host.onFileColorModeChange(index, value);
-        return;
-      }
-      for (let fileIndex = 0; fileIndex < host.spatialFiles.length; fileIndex++) {
-        const fileData = host.spatialFiles[fileIndex];
-        if (
-          fileData &&
-          !host.splatMode?.isActive(fileIndex) &&
-          getPointCloudColorOptions(host, fileData, fileIndex).some(
-            option => option.value === value
-          )
-        ) {
-          host.onFileColorModeChange(fileIndex, value);
-        }
-      }
-    });
+    host.onFileColorModeChange(index, value);
   }
 
+  // Render-mode button availability, matching the original updateFileList() logic.
+  const hasFaces = $derived(kind === 'pointcloud' && data?.faceCount > 0);
+  const hasLines = $derived(
+    kind === 'pointcloud' && (data as any)?.objData && (data as any).objData.lineCount > 0
+  );
+  const hasGeometry = $derived(hasFaces || hasLines);
+  const hasNormalsData = $derived(kind === 'pointcloud' && (data?.hasNormals || hasFaces));
+  const isPtsFile = $derived(kind === 'pointcloud' && data?.fileName?.toLowerCase().endsWith('.pts'));
+  const shouldShowNormals = $derived(
+    hasNormalsData && (!isPtsFile || (data?.vertices.length > 0 && data.vertices[0]?.nx !== undefined))
+  );
   const renderModeButtons = $derived(
-    kind === 'pointcloud' && data ? getRenderModeOptions(host, data) : []
+    (() => {
+      if (kind === 'pointcloud' && data) {
+        // Kept for parity with the pre-Phase-3 updateFileList(), which
+        // Playwright specs assert on (faceCount/hasFaces/hasGeometry signal
+        // that parsing + render-mode computation completed for this file).
+        console.log(
+          `File ${index}: ${data.fileName}, faceCount=${data.faceCount}, lineCount=${(data as any).objData?.lineCount || 0}, hasNormals=${data.hasNormals}, hasFaces=${hasFaces}, hasLines=${hasLines}, hasGeometry=${hasGeometry}`
+        );
+      }
+      const buttons: Array<{ mode: string; label: string; cls: string }> = [
+        { mode: 'points', label: '👁️ Points', cls: 'points-btn' },
+      ];
+      if (!hasGeometry) {
+        buttons.push({ mode: 'voxels', label: '🧱 Voxels', cls: 'voxels-btn' });
+      }
+      if (hasGeometry) {
+        buttons.push({ mode: 'mesh', label: '🔷 Mesh', cls: 'mesh-btn' });
+        buttons.push({ mode: 'wireframe', label: '📐 Wireframe', cls: 'wireframe-btn' });
+      }
+      if (shouldShowNormals) {
+        buttons.push({ mode: 'normals', label: '📏 Normals', cls: 'normals-btn' });
+      }
+      return buttons;
+    })()
   );
   const renderModeGridColumns = $derived(
     { 1: '1fr', 2: '1fr 1fr', 3: '1fr 1fr 1fr', 4: '1fr 1fr 1fr 1fr' }[renderModeButtons.length] ||
       '1fr'
   );
-  const canRenderSplats = $derived(
-    kind === 'pointcloud' && !!data && !!host.splatMode?.canEnable(data)
-  );
-  const splatActive = $derived.by(() => {
-    filesState.renderModeTick;
-    return canRenderSplats && !!host.splatMode?.isActive(index);
-  });
 
-  // Volume voxels are solid boxes sized from the voxel spacing, so there is no
-  // point sprite whose size could be tuned.
-  const hasPointSize = $derived(!data?.sceneModel && data?.metadata?.volumeRenderMode !== 'voxels');
-
-  function onRenderModeClick(event: MouseEvent, mode: string) {
-    if (!event.shiftKey) {
-      host.toggleUniversalRenderMode(index, mode);
-      return;
-    }
-
-    const targetActive = !isRenderModeActiveFor(index, mode);
-    for (let fileIndex = 0; fileIndex < host.spatialFiles.length; fileIndex++) {
-      const fileData = host.spatialFiles[fileIndex];
-      if (
-        fileData &&
-        hasRenderMode(host, fileData, mode) &&
-        isRenderModeActiveFor(fileIndex, mode) !== targetActive
-      ) {
-        host.toggleUniversalRenderMode(fileIndex, mode);
-      }
-    }
+  function onRenderModeClick(mode: string) {
+    host.toggleUniversalRenderMode(index, mode);
   }
 
-  function isRenderModeActive(mode: string): boolean {
-    // Re-evaluate parallel-array state without remounting the complete file
-    // list (which would discard its scroll position and local row state).
-    filesState.renderModeTick;
-    return isRenderModeActiveFor(index, mode);
-  }
-
-  function isRenderModeActiveFor(fileIndex: number, mode: string): boolean {
-    const fileData = host.spatialFiles[fileIndex];
-    const supportsSplats = !!fileData && !!host.splatMode?.canEnable(fileData);
-    const fileSplatActive = supportsSplats && !!host.splatMode?.isActive(fileIndex);
-    switch (mode) {
-      case 'points':
-        return supportsSplats ? !fileSplatActive : (host.pointsVisible[fileIndex] ?? true);
-      case 'splat':
-        return fileSplatActive;
-      case 'mesh':
-      case 'solid':
-        return host.solidVisible[fileIndex] ?? true;
-      case 'wireframe':
-        return host.wireframeVisible[fileIndex] ?? false;
-      case 'normals':
-        return host.normalsVisible[fileIndex] ?? false;
-      default:
-        return false;
-    }
-  }
-
-  function formatSplatSize(value: number): string {
-    const magnitude = Math.abs(value);
-    if (magnitude > 0 && (magnitude < 0.001 || magnitude >= 1000)) {
-      return value.toExponential(3);
-    }
-    return Number(value.toPrecision(6)).toString();
-  }
-
-  function syncMaxSplatSizeControls(value: number) {
-    const slider = document.getElementById(`max-splat-size-${index}`) as HTMLInputElement | null;
-    const input = document.getElementById(
-      `max-splat-size-value-${index}`
-    ) as HTMLInputElement | null;
-    if (slider) {
-      slider.value = String(host.splatMode.getMaxSplatSizeSlider(index));
-    }
-    if (input) {
-      input.value = formatSplatSize(value);
-    }
-  }
-
-  function onMaxSplatSizeSliderInput(e: Event) {
-    const value = host.splatMode?.setMaxSplatSizeSlider(
-      index,
-      parseFloat((e.target as HTMLInputElement).value)
-    );
-    if (value !== undefined) {
-      syncMaxSplatSizeControls(value);
-    }
-  }
-
-  function onMaxSplatSizeCommit(e: Event) {
-    const input = e.target as HTMLInputElement;
-    const parsed = parseFloat(input.value);
-    const value =
-      Number.isFinite(parsed) && parsed > 0
-        ? host.splatMode.setMaxSplatSizeValue(index, parsed)
-        : host.splatMode.getMaxSplatSizeValue(index);
-    syncMaxSplatSizeControls(value);
-  }
-
-  function onMaxSplatSizeKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter') {
-      onMaxSplatSizeCommit(e);
-      (e.target as HTMLInputElement).blur();
-    }
-  }
-
-  function onMaxSplatSizeReset(e: MouseEvent) {
-    e.preventDefault();
-    syncMaxSplatSizeControls(host.splatMode.resetMaxSplatSize(index));
-  }
-
-  const recommendedPointSize = $derived(
-    kind === 'pointcloud' &&
-      typeof (data as any)?.metadata?.recommendedPointSize === 'number' &&
-      (data as any).metadata.recommendedPointSize > 0
-      ? (data as any).metadata.recommendedPointSize
-      : 0.001
-  );
   const pointSize = $derived(
     kind === 'pose'
       ? (filesState.pointSizes[index] ?? 0.02)
       : kind === 'camera'
         ? (filesState.pointSizes[index] ?? 1.0)
-        : filesState.pointSizes[index] || recommendedPointSize
+        : filesState.pointSizes[index] || 0.001
   );
   const sizePrecision = $derived(kind === 'pose' ? 3 : kind === 'camera' ? 1 : 4);
-  const pointSizeSliderMax = $derived(Math.max(0.1, recommendedPointSize * 4));
-
-  function defaultPointSize(): number {
-    return kind === 'pose' ? 0.02 : kind === 'camera' ? 1.0 : recommendedPointSize;
-  }
-
-  let sizeShiftToAll = false;
-
-  function setPointSizeForIndex(fileIndex: number, value: number) {
-    host.updatePointSize(fileIndex, value);
-    filesState.pointSizes[fileIndex] = value;
-    const slider = document.getElementById(`size-${fileIndex}`) as HTMLInputElement | null;
-    const input = document.getElementById(`size-input-${fileIndex}`) as HTMLInputElement | null;
-    if (slider) slider.value = String(value);
-    if (input) input.value = value.toFixed(sizePrecision);
-  }
-
-  function setPointSize(value: number, applyToAll = false) {
-    if (applyToAll && kind === 'pointcloud') {
-      for (let fileIndex = 0; fileIndex < host.spatialFiles.length; fileIndex++) {
-        const fileData = host.spatialFiles[fileIndex];
-        if (
-          fileData &&
-          fileData.metadata?.volumeRenderMode !== 'voxels' &&
-          !host.splatMode?.isActive(fileIndex)
-        ) {
-          setPointSizeForIndex(fileIndex, value);
-        }
-      }
-    } else {
-      setPointSizeForIndex(index, value);
-    }
-    host.requestRender();
-  }
 
   function onSizeSliderInput(e: Event) {
     const newSize = parseFloat((e.target as HTMLInputElement).value);
-    setPointSize(newSize, sizeShiftToAll);
-  }
-
-  function onSizeSliderPointerDown(e: PointerEvent) {
-    sizeShiftToAll = kind === 'pointcloud' && e.shiftKey;
-  }
-
-  function onSizeSliderPointerEnd() {
-    sizeShiftToAll = false;
-  }
-
-  function onSizeSliderReset(e: MouseEvent) {
-    e.preventDefault();
-    setPointSize(defaultPointSize());
+    host.updatePointSize(index, newSize);
+    host.requestRender();
   }
 
   function onSizeInputCommit(e: Event) {
     const input = e.target as HTMLInputElement;
     const newSize = parseFloat(input.value);
     if (!isNaN(newSize) && newSize > 0) {
-      setPointSize(newSize);
+      host.updatePointSize(index, newSize);
+      host.requestRender();
+      input.value = newSize.toFixed(sizePrecision);
     } else {
-      const currentSize = host.pointSizes[index] || defaultPointSize();
+      const currentSize = host.pointSizes[index] || 0.001;
       input.value = currentSize.toFixed(sizePrecision);
     }
   }
@@ -385,6 +167,15 @@
     (e.target as HTMLInputElement).select();
   }
 
+  const voxelSize = $derived(host.voxelSizes[index] ?? 0.1);
+
+  function onVoxelSizeInput(e: Event) {
+    const newSize = parseFloat((e.target as HTMLInputElement).value);
+    if (!isNaN(newSize) && newSize > 0) {
+      host.updateVoxelSize(index, newSize);
+    }
+  }
+
   const isObjFile = $derived(kind === 'pointcloud' && (data as any)?.isObjFile);
   const isObjWireframeOrFile = $derived(
     kind === 'pointcloud' && ((data as any)?.isObjWireframe || (data as any)?.isObjFile)
@@ -396,47 +187,33 @@
 
   function onPoseDatasetColorsChange(e: Event) {
     host.poseUseDatasetColors[poseIndex] = (e.target as HTMLInputElement).checked;
-    host.updatePoseAppearance(index);
+    host.updatePoseAppearance(poseIndex);
   }
   function onPoseShowLabelsChange(e: Event) {
     host.poseShowLabels[poseIndex] = (e.target as HTMLInputElement).checked;
-    host.updatePoseLabels(index);
+    host.updatePoseLabels(poseIndex);
   }
   function onPoseScaleScoreChange(e: Event) {
     host.poseScaleByScore[poseIndex] = (e.target as HTMLInputElement).checked;
-    host.updatePoseScaling(index);
+    host.updatePoseScaling(poseIndex);
   }
   function onPoseScaleUncertaintyChange(e: Event) {
     host.poseScaleByUncertainty[poseIndex] = (e.target as HTMLInputElement).checked;
-    host.updatePoseScaling(index);
+    host.updatePoseScaling(poseIndex);
   }
   function onPoseConventionChange(e: Event) {
     const val = (e.target as HTMLSelectElement).value === 'opencv' ? 'opencv' : 'opengl';
-    host.applyPoseConvention(index, val);
+    host.applyPoseConvention(poseIndex, val);
   }
   function onPoseMinScoreInput(e: Event) {
     const v = Math.max(0, Math.min(1, parseFloat((e.target as HTMLInputElement).value)));
     host.poseMinScoreThreshold[poseIndex] = v;
-    const value = document.getElementById(`pose-minscore-val-${index}`);
-    if (value) value.textContent = v.toFixed(2);
-    host.applyPoseFilters(index);
-  }
-  function onPoseMinScoreReset(e: MouseEvent) {
-    e.preventDefault();
-    (e.currentTarget as HTMLInputElement).value = '0';
-    onPoseMinScoreInput(e);
+    host.applyPoseFilters(poseIndex);
   }
   function onPoseMaxUncInput(e: Event) {
     const v = Math.max(0, Math.min(1, parseFloat((e.target as HTMLInputElement).value)));
     host.poseMaxUncertaintyThreshold[poseIndex] = v;
-    const value = document.getElementById(`pose-maxunc-val-${index}`);
-    if (value) value.textContent = v.toFixed(2);
-    host.applyPoseFilters(index);
-  }
-  function onPoseMaxUncReset(e: MouseEvent) {
-    e.preventDefault();
-    (e.currentTarget as HTMLInputElement).value = '1';
-    onPoseMaxUncInput(e);
+    host.applyPoseFilters(poseIndex);
   }
 
   function onCameraShowLabelsChange(e: Event) {
@@ -445,82 +222,21 @@
   function onCameraShowCoordsChange(e: Event) {
     host.toggleCameraProfileCoordinates(cameraIndex, (e.target as HTMLInputElement).checked);
   }
-  // Seeded once from the group so a re-created panel keeps the scene's current
-  // state; the scene, not this component, owns it from then on.
-  const initialCameraUserData = () => cameraGroup?.userData ?? {};
-  let imagesVisible = $state(initialCameraUserData().imagesVisible === true);
-  let imagesDistorted = $state(initialCameraUserData().imagesDistorted !== false);
-  let imageDistortionAvailable = $state(
-    initialCameraUserData().imageDistortionAvailable !== false
+
+  const matrixText = $derived(
+    (() => {
+      const arr = host.getTransformationMatrixAsArray(index);
+      let str = '';
+      for (let r = 0; r < 4; ++r) {
+        str += arr
+          .slice(r * 4, r * 4 + 4)
+          .map((v: number) => v.toFixed(6))
+          .join(' ');
+        str += '\n';
+      }
+      return str;
+    })()
   );
-
-  async function applyImageDistortion(distorted: boolean) {
-    imagesDistorted = await setStonexImageDistortion(cameraGroup, distorted);
-    imageDistortionAvailable = cameraGroup.userData.imageDistortionAvailable !== false;
-    host.requestRender();
-  }
-  // Bumped whenever this panel changes plane visibility for the whole
-  // profile, so CameraFrameList's per-camera checkboxes re-read the scene.
-  let cameraSceneTick = $state(0);
-
-  async function onCameraShowImagesChange(e: Event) {
-    imagesVisible = (e.target as HTMLInputElement).checked;
-    setStonexImagesVisible(cameraGroup, imagesVisible);
-    cameraSceneTick++;
-    host.requestRender();
-    if (imagesVisible) {
-      await applyImageDistortion(imagesDistorted);
-    }
-  }
-  async function onCameraDistortImagesChange(e: Event) {
-    await applyImageDistortion((e.target as HTMLInputElement).checked);
-  }
-  function onCameraShowScannerChange(e: Event) {
-    setStonexScannerVisible(cameraGroup, (e.target as HTMLInputElement).checked);
-    host.requestRender();
-  }
-
-  // Photographic colour correction. The parser keeps the raw samples and a
-  // per-point frame index, so every mode here is a colour-array pass rather
-  // than a reload.
-  let colorCorrection = $state(
-    normalizeStonexColorCorrection(initialCameraUserData().colorCorrection)
-  );
-  // Matches the double-click-to-reset every other slider in the panel offers.
-  function onColorSliderReset(
-    e: MouseEvent,
-    key: 'manualRedGain' | 'manualBlueGain' | 'exposureStops'
-  ) {
-    e.preventDefault();
-    const value = DEFAULT_STONEX_COLOR_CORRECTION[key];
-    (e.currentTarget as HTMLInputElement).value = String(value);
-    applyColorCorrection({ [key]: value });
-  }
-  let colorCorrectionVersion = 0;
-  async function applyColorCorrection(patch: Partial<StonexColorCorrection>) {
-    colorCorrection = { ...colorCorrection, ...patch };
-    const version = ++colorCorrectionVersion;
-    await runWithFileActivity(() => {
-      // Slider input can enqueue several values before the browser paints.
-      if (version !== colorCorrectionVersion) {return;}
-      setStonexColorCorrection(host, cameraGroup, colorCorrection);
-      host.requestRender();
-    });
-  }
-
-  const matrixText = $derived.by(() => {
-    filesState.renderTick;
-    const arr = host.getTransformationMatrixAsArray(index);
-    let str = '';
-    for (let r = 0; r < 4; ++r) {
-      str += arr
-        .slice(r * 4, r * 4 + 4)
-        .map((v: number) => v.toFixed(6))
-        .join(' ');
-      str += '\n';
-    }
-    return str;
-  });
 
   const name = $derived(
     kind === 'pointcloud'
@@ -541,7 +257,7 @@
   );
 </script>
 
-<div class="file-item" data-render-tick={filesState.renderTick}>
+<div class="file-item">
   <div class="file-item-main">
     <button
       class="collapse-toggle"
@@ -549,7 +265,7 @@
       title={collapsed ? 'Expand' : 'Collapse'}
       onclick={(e: MouseEvent) => {
         e.stopPropagation();
-        toggleCollapse(e);
+        toggleCollapse();
       }}
     >
       <span class="collapse-icon">{collapsed ? '▶' : '▼'}</span>
@@ -559,6 +275,7 @@
       id={`file-${index}`}
       checked={visible}
       onclick={onVisibilityClick}
+      onchange={onVisibilityChange}
     />
     <span class="color-indicator" style={colorIndicatorStyle()}></span>
     <label for={`file-${index}`} class="file-name" data-short-path={shortPath}>{name}</label>
@@ -568,17 +285,12 @@
   </div>
   <div class="file-item-content" id={`file-content-${index}`} style="display: {collapsed ? 'none' : 'block'}">
     {#if kind === 'pointcloud' && data}
-      <div class="file-info">{data.vertexCount.toLocaleString()} vertices, {data.faceCount.toLocaleString()} faces{data.isGaussianSplat ? ' · 3DGS' : ''}</div>
+      <div class="file-info">{data.vertexCount.toLocaleString()} vertices, {data.faceCount.toLocaleString()} faces</div>
 
       {#if isDepthDerivedFile}
         <DepthSettingsPanel {host} fileIndex={index} {data} />
       {/if}
 
-      {#if data.metadata?.volumeSessionId}
-        <VolumePanel {host} {data} fileIndex={index} />
-      {/if}
-
-      {#if data.sceneModel}<ModelAnimationPanel model={data.sceneModel} {host} />{/if}
       <TransformSection {host} fileIndex={index} {matrixText} />
 
       <div class="rendering-controls" style="margin-top: 4px; margin-bottom: 6px;">
@@ -586,75 +298,57 @@
           {#each renderModeButtons as btn (btn.mode)}
             <button
               class={`render-mode-btn ${btn.cls}`}
-              class:active={isRenderModeActive(btn.mode)}
               data-file-index={index}
               data-mode={btn.mode}
-              style={`padding: 3px 6px; border: 1px solid var(--vscode-panel-border); border-radius: 2px; font-size: 9px; cursor: pointer; background: ${isRenderModeActive(btn.mode) ? 'var(--vscode-button-background)' : 'var(--vscode-button-secondaryBackground)'}; color: ${isRenderModeActive(btn.mode) ? 'var(--vscode-button-foreground)' : 'var(--vscode-button-secondaryForeground)'};`}
-              onclick={(event) => onRenderModeClick(event, btn.mode)}>{btn.label}</button
+              style="padding: 3px 6px; border: 1px solid var(--vscode-panel-border); border-radius: 2px; font-size: 9px; cursor: pointer;"
+              onclick={() => onRenderModeClick(btn.mode)}>{btn.label}</button
             >
           {/each}
         </div>
       </div>
 
-      {#if canRenderSplats && splatActive}
-        <div class="point-size-control max-splat-size-control" style="margin-top: 4px;">
-          <label for={`max-splat-size-${index}`} style="font-size: 11px;">Max splat size:</label>
-          <input
-            type="range"
-            id={`max-splat-size-${index}`}
-            min="0"
-            max="100"
-            step="0.1"
-            value={host.splatMode.getMaxSplatSizeSlider(index)}
-            class="size-slider"
-            title="Logarithmic scale from 0.01; double-click to reset"
-            style="width: 100%;"
-            oninput={onMaxSplatSizeSliderInput}
-            ondblclick={onMaxSplatSizeReset}
-          />
-          <input
-            type="text"
-            id={`max-splat-size-value-${index}`}
-            class="size-input"
-            value={formatSplatSize(host.splatMode.getMaxSplatSizeValue(index))}
-            title="Exact maximum size in scene units"
-            aria-label="Maximum splat size in scene units"
-            style="font-size: 10px; width: 64px; border: none; background: transparent; color: var(--vscode-foreground); text-align: left; padding: 0; margin: 0; outline: none; cursor: text;"
-            onblur={onMaxSplatSizeCommit}
-            onkeydown={onMaxSplatSizeKeydown}
-            onfocus={(e) => (e.target as HTMLInputElement).select()}
-          />
-        </div>
-      {/if}
+      <div class="point-size-control" style="margin-top: 4px;">
+        <label for={`size-${index}`} style="font-size: 11px;">Point Size:</label>
+        <input
+          type="range"
+          id={`size-${index}`}
+          min="0.0001"
+          max="0.1"
+          step="0.0001"
+          value={pointSize}
+          class="size-slider"
+          style="width: 100%;"
+          oninput={onSizeSliderInput}
+        />
+        <input
+          type="text"
+          id={`size-input-${index}`}
+          class="size-input"
+          value={pointSize.toFixed(4)}
+          style="font-size: 10px; width: 30px; border: none; background: transparent; color: var(--vscode-foreground); text-align: left; padding: 0; margin: 0; outline: none; cursor: text;"
+          onblur={onSizeInputCommit}
+          onkeydown={onSizeInputKeydown}
+          onfocus={onSizeInputFocus}
+        />
+      </div>
 
-      {#if !splatActive && hasPointSize}
-        <div class="point-size-control" style="margin-top: 4px;">
-          <label for={`size-${index}`} style="font-size: 11px;">Point Size:</label>
+      {#if !hasGeometry}
+        <div class="voxel-size-control" style="margin-top: 4px;">
+          <label for={`voxel-size-${index}`} style="font-size: 11px;">Voxel Size:</label>
           <input
-            type="range"
-            id={`size-${index}`}
+            type="number"
+            id={`voxel-size-${index}`}
             min="0.0001"
-            max={pointSizeSliderMax}
-            step="0.0001"
-            value={pointSize}
-            class="size-slider"
-            style="width: 100%;"
-            onpointerdown={onSizeSliderPointerDown}
-            onpointerup={onSizeSliderPointerEnd}
-            onpointercancel={onSizeSliderPointerEnd}
-            oninput={onSizeSliderInput}
-            ondblclick={onSizeSliderReset}
-            title="Double-click to reset"
-          />
-          <input
-            type="text"
-            id={`size-input-${index}`}
-            class="size-input"
-            value={pointSize.toFixed(4)}
-            style="font-size: 10px; width: 30px; border: none; background: transparent; color: var(--vscode-foreground); text-align: left; padding: 0; margin: 0; outline: none; cursor: text;"
-            onblur={onSizeInputCommit}
-            onkeydown={onSizeInputKeydown}
-            onfocus={onSizeInputFocus}
+            step="0.01"
+            value={voxelSize}
+            style="font-size: 10px; width: 58px;"
+            onchange={onVoxelSizeInput}
+            onkeydown={(e: KeyboardEvent) => {
+              if (e.key === 'Enter') {
+                onVoxelSizeInput(e);
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
           />
         </div>
       {/if}
@@ -677,29 +371,25 @@
         </div>
       {/if}
 
-      {#if !splatActive && !data.sceneModel}
-        <div class="color-control">
-          <label for={`color-${index}`}>Color:</label>
-          <select
-            id={`color-${index}`}
-            class="color-selector"
-            value={colorMode}
-            onchange={onColorModeChange}
-          >
-          {#each colorOptions as option (option.value)}
-            <option value={option.value}>{option.label}</option>
-          {/each}
-          </select>
-          {#if photoColoredPoints}
-            <div
-              style="font-size:10px;opacity:0.75;margin-top:2px;"
-              title={`Not original scan colour: this scan stored none, so ${photoColoredPoints?.toLocaleString()} of ${data.vertexCount.toLocaleString()} points were coloured by sampling the E57's embedded photos. Depends on the image alignment correction in the camera entry.`}
-            >
-              📷 Photo colour ({photoColoredPercent}%)
-            </div>
+      <div class="color-control">
+        <label for={`color-${index}`}>Color:</label>
+        <select id={`color-${index}`} class="color-selector" value={colorMode} onchange={onColorModeChange}>
+          {#if data.hasColors}
+            <option value="original">Original</option>
           {/if}
-        </div>
-      {/if}
+          {#if host.hasIntensityData(data)}
+            <option value="intensity">Intensity</option>
+            <option value="intensity-viridis">Intensity (Viridis)</option>
+            <option value="intensity-colors">Intensity (Colors)</option>
+          {/if}
+          {#each scalarFieldNames as fieldName (fieldName)}
+            <option value={`scalar:${fieldName}:viridis`}>{fieldName} (Viridis)</option>
+            <option value={`scalar:${fieldName}:grayscale`}>{fieldName} (Gray)</option>
+          {/each}
+          <option value="assigned">Assigned ({host.getColorName(index)})</option>
+          {@html host.getColorOptions(index)}
+        </select>
+      </div>
     {:else if kind === 'pose' && meta}
       <div class="file-info">
         {meta.jointCount} joints, {meta.edgeCount} edges{meta.invalidJoints
@@ -762,8 +452,6 @@
               value={(host.poseMinScoreThreshold[poseIndex] ?? 0).toFixed(2)}
               style="flex:1;"
               oninput={onPoseMinScoreInput}
-              ondblclick={onPoseMinScoreReset}
-              title="Double-click to reset"
             />
             <span id={`pose-minscore-val-${index}`} style="font-size:10px;">{(host.poseMinScoreThreshold[poseIndex] ?? 0).toFixed(2)}</span>
           </div>
@@ -778,8 +466,6 @@
               value={(host.poseMaxUncertaintyThreshold[poseIndex] ?? 1).toFixed(2)}
               style="flex:1;"
               oninput={onPoseMaxUncInput}
-              ondblclick={onPoseMaxUncReset}
-              title="Double-click to reset"
             />
             <span id={`pose-maxunc-val-${index}`} style="font-size:10px;">{(host.poseMaxUncertaintyThreshold[poseIndex] ?? 1).toFixed(2)}</span>
           </div>
@@ -788,7 +474,7 @@
       <TransformSection {host} fileIndex={index} {matrixText} />
       <div class="point-size-control">
         <label for={`size-${index}`}>Joint Radius (m):</label>
-        <input type="range" id={`size-${index}`} min="0.001" max="0.1" step="0.001" value={pointSize} class="size-slider" oninput={onSizeSliderInput} ondblclick={onSizeSliderReset} title="Double-click to reset" />
+        <input type="range" id={`size-${index}`} min="0.001" max="0.1" step="0.001" value={pointSize} class="size-slider" oninput={onSizeSliderInput} />
         <input
           type="text"
           id={`size-input-${index}`}
@@ -808,18 +494,8 @@
         </select>
       </div>
     {:else if kind === 'camera' && cameraGroup}
-      <div class="file-info" style="display:flex;justify-content:space-between;gap:8px;">
-        <span>{cameraGroup.userData.cameraCount ?? cameraGroup.children.length} cameras</span>
-        {#if cameraImageProgress}
-          <!-- Shown from the first render with 0 loaded, so it is clear the
-               photographs are still to come rather than absent. Cleared once
-               every image has arrived. -->
-          <span id={`camera-image-progress-${index}`} style="opacity:0.75;">
-            images {cameraImageProgress.done} / {cameraImageProgress.total}
-          </span>
-        {/if}
-      </div>
-      <div class="panel-section" style="margin-top:6px;margin-bottom:6px;padding-bottom:6px;">
+      <div class="file-info">{cameraGroup.children.length} cameras</div>
+      <div class="panel-section" style="margin-top:6px;">
         <div class="control-buttons">
           <label style="font-size:10px;display:flex;align-items:center;gap:6px;">
             <input
@@ -839,175 +515,11 @@
             />
             Show coordinates
           </label>
-          {#if cameraGroup.userData.hasImagePlanes}
-            <label style="font-size:10px;display:flex;align-items:center;gap:6px;">
-              <input
-                type="checkbox"
-                id={`camera-show-images-${index}`}
-                checked={cameraGroup.userData.imagesVisible}
-                onchange={onCameraShowImagesChange}
-              />
-              Show images
-            </label>
-            {#if imagesVisible && cameraGroup.userData.supportsDistortionToggle !== false}
-              <label
-                style="font-size:10px;display:flex;align-items:center;gap:6px;padding-left:14px;"
-                title={imageDistortionAvailable
-                  ? 'Shape the preview with the calibrated lens distortion, matching the projection used to colour the points'
-                  : 'Unavailable: the Rust/WASM camera kernel did not initialise'}
-              >
-                <input
-                  type="checkbox"
-                  id={`camera-distort-images-${index}`}
-                  checked={imagesDistorted}
-                  disabled={!imageDistortionAvailable}
-                  onchange={onCameraDistortImagesChange}
-                />
-                Apply lens distortion
-              </label>
-            {/if}
-          {/if}
-          {#if cameraGroup.userData.hasScannerMarker}
-            <label style="font-size:10px;display:flex;align-items:center;gap:6px;">
-              <input
-                type="checkbox"
-                id={`camera-show-scanner-${index}`}
-                checked={cameraGroup.userData.scannerVisible}
-                onchange={onCameraShowScannerChange}
-              />
-              Show scanner origin
-            </label>
-          {/if}
-          {#if cameraGroup.userData.colorCorrectionAvailable}
-            <div style="font-size:10px;opacity:0.7;margin-top:6px;">Photographic colour</div>
-            <label
-              style="font-size:10px;display:flex;align-items:center;gap:6px;"
-              title="How red and blue are balanced against the raw sensor's green. Applies to the point colours and the image previews."
-            >
-              White balance
-              <select
-                id={`camera-wb-${index}`}
-                value={colorCorrection.whiteBalance}
-                onchange={e =>
-                  applyColorCorrection({
-                    whiteBalance: (e.currentTarget as HTMLSelectElement)
-                      .value as StonexColorCorrection['whiteBalance'],
-                  })}
-              >
-                <option value="band">Reference patch (per camera)</option>
-                <option value="per-frame">Gray world (per frame)</option>
-                <option value="manual">Manual</option>
-                <option value="off">Off (raw sensor)</option>
-              </select>
-            </label>
-            {#if colorCorrection.whiteBalance === 'manual'}
-              <label
-                style="font-size:10px;display:flex;align-items:center;gap:6px;padding-left:14px;"
-              >
-                Red gain
-                <input
-                  type="range"
-                  min="0.5"
-                  max="3"
-                  step="0.01"
-                  value={colorCorrection.manualRedGain}
-                  title="Double-click to reset"
-                  oninput={e =>
-                    applyColorCorrection({
-                      manualRedGain: Number((e.currentTarget as HTMLInputElement).value),
-                    })}
-                  ondblclick={e => onColorSliderReset(e, 'manualRedGain')}
-                />
-                <span>{colorCorrection.manualRedGain.toFixed(2)}</span>
-              </label>
-              <label
-                style="font-size:10px;display:flex;align-items:center;gap:6px;padding-left:14px;"
-              >
-                Blue gain
-                <input
-                  type="range"
-                  min="0.5"
-                  max="3"
-                  step="0.01"
-                  value={colorCorrection.manualBlueGain}
-                  title="Double-click to reset"
-                  oninput={e =>
-                    applyColorCorrection({
-                      manualBlueGain: Number((e.currentTarget as HTMLInputElement).value),
-                    })}
-                  ondblclick={e => onColorSliderReset(e, 'manualBlueGain')}
-                />
-                <span>{colorCorrection.manualBlueGain.toFixed(2)}</span>
-              </label>
-            {/if}
-            <label
-              style="font-size:10px;display:flex;align-items:center;gap:6px;"
-              title="Each X3I frame is auto-exposed on its own, so adjacent frames can differ in brightness. Matching levels them to the scan median and removes the seams."
-            >
-              Exposure
-              <select
-                id={`camera-exposure-${index}`}
-                value={colorCorrection.exposure}
-                onchange={e =>
-                  applyColorCorrection({
-                    exposure: (e.currentTarget as HTMLSelectElement)
-                      .value as StonexColorCorrection['exposure'],
-                  })}
-              >
-                <option value="off">Off (as captured)</option>
-                <option value="match">Match frames to scan median</option>
-                <option value="manual">Manual</option>
-              </select>
-            </label>
-            {#if colorCorrection.exposure === 'manual'}
-              <label
-                style="font-size:10px;display:flex;align-items:center;gap:6px;padding-left:14px;"
-              >
-                Stops
-                <input
-                  type="range"
-                  min="-2"
-                  max="2"
-                  step="0.05"
-                  value={colorCorrection.exposureStops}
-                  title="Double-click to reset"
-                  oninput={e =>
-                    applyColorCorrection({
-                      exposureStops: Number((e.currentTarget as HTMLInputElement).value),
-                    })}
-                  ondblclick={e => onColorSliderReset(e, 'exposureStops')}
-                />
-                <span>{colorCorrection.exposureStops.toFixed(2)}</span>
-              </label>
-            {/if}
-            <label
-              style="font-size:10px;display:flex;align-items:center;gap:6px;"
-              title="Clipping cuts red and blue at 255 first and leaves bright surfaces looking green. Preserving hue scales all three channels down instead."
-            >
-              Highlights
-              <select
-                id={`camera-highlight-${index}`}
-                value={colorCorrection.highlight}
-                onchange={e =>
-                  applyColorCorrection({
-                    highlight: (e.currentTarget as HTMLSelectElement)
-                      .value as StonexColorCorrection['highlight'],
-                  })}
-              >
-                <option value="clip">Clip per channel</option>
-                <option value="preserve-hue">Preserve hue</option>
-              </select>
-            </label>
-          {/if}
         </div>
-        {#if cameraGroup.userData.imageCorrectionAvailable}
-          <E57CorrectionPanel {host} {cameraGroup} {index} />
-        {/if}
-        <CameraFrameList {host} {cameraGroup} sceneTick={cameraSceneTick} />
       </div>
       <div class="size-control">
         <label for={`size-${index}`}>Scale:</label>
-        <input type="range" id={`size-${index}`} min="0.1" max="5.0" step="0.1" value={pointSize} oninput={onSizeSliderInput} ondblclick={onSizeSliderReset} title="Double-click to reset" />
+        <input type="range" id={`size-${index}`} min="0.1" max="5.0" step="0.1" value={pointSize} oninput={onSizeSliderInput} />
         <input
           type="text"
           id={`size-input-${index}`}

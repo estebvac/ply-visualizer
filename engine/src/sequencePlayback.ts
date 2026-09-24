@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { SpatialData } from './interfaces';
 import { uiState } from './state/ui.svelte';
+import { disposeVoxelMesh } from './visualization/VoxelRenderer';
 
 /**
  * Everything the sequence-playback functions need from PointCloudVisualizer.
@@ -18,6 +19,9 @@ export interface SequencePlaybackHost {
   materialMeshes: (THREE.Object3D[] | null)[];
   fileVisibility: boolean[];
   pointSizes: number[];
+  voxelObjects: (THREE.InstancedMesh | null)[];
+  voxelSizes: number[];
+  voxelsVisible: boolean[];
   individualColorModes: string[];
 
   sequenceMode: boolean;
@@ -62,7 +66,16 @@ export function initializeSequence(
   for (const obj of host.meshes) {
     host.scene.remove(obj);
   }
+  for (const voxels of host.voxelObjects) {
+    if (voxels) {
+      host.scene.remove(voxels);
+      disposeVoxelMesh(voxels);
+    }
+  }
   host.meshes = [];
+  host.voxelObjects = [];
+  host.voxelSizes = [];
+  host.voxelsVisible = [];
   host.spatialFiles = [];
   // Load first frame
   if (files.length > 0) {
@@ -246,6 +259,15 @@ export function trimNormalModeArraysFrom(host: SequencePlaybackHost, startIndex:
   }
   if (host.pointSizes.length > startIndex) {
     host.pointSizes.splice(startIndex);
+  }
+  if (host.voxelObjects.length > startIndex) {
+    host.voxelObjects.splice(startIndex);
+  }
+  if (host.voxelSizes.length > startIndex) {
+    host.voxelSizes.splice(startIndex);
+  }
+  if (host.voxelsVisible.length > startIndex) {
+    host.voxelsVisible.splice(startIndex);
   }
   if (host.individualColorModes.length > startIndex) {
     host.individualColorModes.splice(startIndex);

@@ -19,7 +19,7 @@ interface ControlsWithTarget {
  * Manages rotation center behavior and UI state
  */
 export class RotationCenterManager {
-  private mode: RotationCenterMode = 'move-camera';
+  private mode: RotationCenterMode = 'keep-camera';
 
   /**
    * Get the current rotation center mode

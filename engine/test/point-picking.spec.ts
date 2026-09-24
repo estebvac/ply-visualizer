@@ -67,9 +67,18 @@ async function loadPly(page: Page, buffer: Buffer, name: string): Promise<void> 
 
 /**
  * Dispatch a synthetic dblclick at canvas-relative coordinates and measure how
- * long dispatch blocks the main thread. WebGPU completes asynchronously, so
- * callers wait for its result through the console assertions below.
+ * long the (synchronous) handler blocks the main thread.
  */
+function expectCameraSnapshotClose(
+  actual: { position: number[]; target: number[] },
+  expected: { position: number[]; target: number[] }
+): void {
+  for (let i = 0; i < 3; i++) {
+    expect(actual.position[i]).toBeCloseTo(expected.position[i], 10);
+    expect(actual.target[i]).toBeCloseTo(expected.target[i], 10);
+  }
+}
+
 async function timedDoubleClick(page: Page, relX: number, relY: number): Promise<number> {
   return page.evaluate(
     ({ relX, relY }) => {
@@ -88,18 +97,9 @@ async function timedDoubleClick(page: Page, relX: number, relY: number): Promise
   );
 }
 
-/** The fitted cloud/rotation target is centered in the unobstructed safe area. */
-async function targetRelativePosition(page: Page): Promise<{ x: number; y: number }> {
-  return page.evaluate(() => {
-    const viewer: any = (window as any).visualizer;
-    const projected = viewer.controls.target.clone().project(viewer.camera);
-    return { x: (projected.x + 1) / 2, y: (1 - projected.y) / 2 };
-  });
-}
-
 test.describe('Double-click point picking', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/3d-visualizer/');
     await page.waitForSelector('#three-canvas');
     await page.waitForTimeout(2000);
   });
@@ -111,12 +111,11 @@ test.describe('Double-click point picking', () => {
     page.on('console', msg => logs.push(msg.text()));
 
     await loadPly(page, buildLargePly(POINT_COUNT), 'picking_perf.ply');
-    let target = await targetRelativePosition(page);
 
     // Sanity: pick works at the default (fitted) zoom level
     logs.length = 0;
-    const zoomedInMs = await timedDoubleClick(page, target.x, target.y);
-    await expect.poll(() => logs.join('\n')).toContain('screen-space pick');
+    const zoomedInMs = await timedDoubleClick(page, 0.5, 0.5);
+    expect(logs.join('\n')).toContain('screen-space pick');
     console.log(`Zoomed-in pick handler time: ${zoomedInMs.toFixed(1)}ms`);
 
     // Zoom far out so the whole cloud collapses into a few pixels. This was
@@ -124,7 +123,7 @@ test.describe('Double-click point picking', () => {
     const canvas = page.locator('#three-canvas');
     const box = await canvas.boundingBox();
     expect(box).not.toBeNull();
-    await page.mouse.move(box!.x + box!.width * target.x, box!.y + box!.height * target.y);
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
     for (let i = 0; i < 30; i++) {
       await page.mouse.wheel(0, 500);
       await page.waitForTimeout(50);
@@ -132,56 +131,55 @@ test.describe('Double-click point picking', () => {
     await page.waitForTimeout(500);
 
     logs.length = 0;
-    target = await targetRelativePosition(page);
-    const zoomedOutMs = await timedDoubleClick(page, target.x, target.y);
+    const zoomedOutMs = await timedDoubleClick(page, 0.5, 0.5);
     console.log(`Zoomed-out pick handler time: ${zoomedOutMs.toFixed(1)}ms`);
 
-    await expect.poll(() => logs.join('\n')).toContain('screen-space pick');
+    expect(logs.join('\n')).toContain('screen-space pick');
     // 2M points; the old implementation took seconds here. Generous CI bound.
     expect(zoomedOutMs).toBeLessThan(1000);
   });
 
-  test('near-miss stays inert; double-click far into empty space refits the view', async ({
-    page,
-  }) => {
+  test('near-miss and far empty-space double-clicks are both inert', async ({ page }) => {
     test.setTimeout(120000);
 
     const logs: string[] = [];
     page.on('console', msg => logs.push(msg.text()));
 
     await loadPly(page, buildLargePly(10_000), 'picking_miss.ply');
-    let target = await targetRelativePosition(page);
 
-    // Zoom out so the cloud shrinks to a small blob in the center
     const canvas = page.locator('#three-canvas');
     const box = await canvas.boundingBox();
-    await page.mouse.move(box!.x + box!.width * target.x, box!.y + box!.height * target.y);
+    expect(box).not.toBeNull();
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
     for (let i = 0; i < 30; i++) {
       await page.mouse.wheel(0, 500);
       await page.waitForTimeout(50);
     }
     await page.waitForTimeout(500);
 
-    // A miss close to the cloud must not move the camera (failed pick, not
-    // a recovery gesture)
+    const snapshot = () =>
+      page.evaluate(() => {
+        const v: any = (window as any).visualizer;
+        return {
+          position: v.camera.position.toArray(),
+          target: v.controls.target.toArray(),
+        };
+      });
+
+    const beforeNear = await snapshot();
     logs.length = 0;
-    target = await targetRelativePosition(page);
-    await timedDoubleClick(page, target.x + 80 / box!.width, target.y);
-    await expect.poll(() => logs.join('\n')).toContain('No selectable object found');
+    await timedDoubleClick(page, 0.5 + 80 / box!.width, 0.5);
     let output = logs.join('\n');
     expect(output).toContain('No selectable object found');
     expect(output).not.toContain('fitting view to all objects');
+    expectCameraSnapshotClose(await snapshot(), beforeNear);
 
-    // A double-click far from everything is the recovery gesture
+    const beforeFar = await snapshot();
     logs.length = 0;
     await timedDoubleClick(page, 0.02, 0.02);
-    await expect.poll(() => logs.join('\n')).toContain('fitting view to all objects');
-    await page.waitForTimeout(500);
-
-    // After the refit the cloud fills the view again and picking works
-    logs.length = 0;
-    target = await targetRelativePosition(page);
-    await timedDoubleClick(page, target.x, target.y);
-    await expect.poll(() => logs.join('\n')).toContain('screen-space pick');
+    output = logs.join('\n');
+    expect(output).toContain('No selectable object found');
+    expect(output).not.toContain('fitting view to all objects');
+    expectCameraSnapshotClose(await snapshot(), beforeFar);
   });
 });

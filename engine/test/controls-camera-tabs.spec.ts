@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import path from 'path';
 
 test('Phase 4: controls tab, camera tab, and stats render and respond', async ({ page }) => {
-  await page.goto('/');
+  await page.goto('/3d-visualizer/');
   await page.waitForSelector('#three-canvas');
   await page.waitForTimeout(1000);
 
@@ -12,36 +12,30 @@ test('Phase 4: controls tab, camera tab, and stats render and respond', async ({
 
   const edlBtn = page.locator('#toggle-edl');
   await expect(edlBtn).toBeVisible();
-  await expect(edlBtn).toHaveClass(/active/);
-  await expect(edlBtn).toHaveAttribute('aria-label', 'Eye Dome Lighting: auto');
-  await edlBtn.click();
-  await expect(edlBtn).toHaveAttribute('aria-label', 'Eye Dome Lighting: all');
-  await expect(edlBtn).toHaveClass(/active/);
-  await edlBtn.click();
-  await expect(edlBtn).toHaveAttribute('aria-label', 'Eye Dome Lighting: off');
   await expect(edlBtn).not.toHaveClass(/active/);
   await edlBtn.click();
-  await expect(edlBtn).toHaveAttribute('aria-label', 'Eye Dome Lighting: auto');
+  await expect(edlBtn).toHaveClass(/active/);
   const edlSettings = page.locator('#edl-settings');
   await expect(edlSettings).toBeVisible();
 
-  const secondRing = page.locator('#edl-second-ring-slider');
-  await secondRing.fill('0.4');
-  await secondRing.dblclick();
-  await expect(secondRing).toHaveValue('0');
-  const edlStrength = page.locator('#edl-strength-slider');
-  await edlStrength.fill('2.5');
-  await edlStrength.dblclick();
-  await expect(edlStrength).toHaveValue('1');
-  const edlRadius = page.locator('#edl-radius-slider');
-  await edlRadius.fill('3');
-  await edlRadius.dblclick();
-  await expect(edlRadius).toHaveValue('1.4');
+  const orbitBtn = page.locator('#orbit-controls');
+  await expect(orbitBtn).toHaveClass(/active/);
+
+  const navigationHelp = page.locator('#navigation-help');
+  await expect(navigationHelp).toContainText('Left drag');
+  await expect(navigationHelp).toContainText('Middle drag / Wheel');
+  await expect(navigationHelp).toContainText('Right drag');
+  await expect(navigationHelp).toContainText('Double-click');
+
+  const advanced = page.locator('#advanced-navigation');
+  await expect(advanced).not.toHaveAttribute('open', '');
+  await advanced.locator('summary').click();
 
   const trackballBtn = page.locator('#trackball-controls');
   await trackballBtn.click();
   await expect(trackballBtn).toHaveClass(/active/);
-  const orbitBtn = page.locator('#orbit-controls');
+  await expect(orbitBtn).not.toHaveClass(/active/);
+
   await orbitBtn.click();
   await expect(orbitBtn).toHaveClass(/active/);
   await expect(trackballBtn).not.toHaveClass(/active/);
@@ -51,16 +45,20 @@ test('Phase 4: controls tab, camera tab, and stats render and respond', async ({
   const opencvBtn = page.locator('#opencv-convention');
   await opencvBtn.click();
   await expect(opencvBtn).toHaveClass(/active/);
+  const orbitUp = await page.evaluate(() => (window as any).visualizer.camera.up.toArray());
+  expect(orbitUp[0]).toBeCloseTo(0, 8);
+  expect(orbitUp[1]).toBeCloseTo(0, 8);
+  expect(orbitUp[2]).toBeCloseTo(1, 8);
 
   // Switch to Camera tab
   await page.click('[data-tab="camera"]');
   await page.waitForTimeout(300);
+  await expect(page.locator('[data-view-cube]')).toBeVisible();
+  for (const face of ['+x', '-x', '+y', '-y', '+z', '-z']) {
+    await expect(page.locator(`[data-view-face="${face}"]`)).toHaveCount(1);
+  }
   const fovSlider = page.locator('#camera-fov');
   await expect(fovSlider).toBeVisible();
-  await fovSlider.fill('110');
-  await fovSlider.dblclick();
-  await expect(fovSlider).toHaveValue('75');
-  await expect(page.locator('#fov-input')).toHaveValue('75.00');
   const positionDisplay = page.locator('#camera-controls-panel');
   await expect(positionDisplay).toContainText('Position:');
 

@@ -1,0 +1,67 @@
+name: Build recovered voxel-camera VSIX
+
+on:
+  push:
+    branches:
+      - recovered/voxel-camera-ui
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-vsix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.32.1 --activate
+
+      - name: Install dependencies with one webview dependency tree
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm add @sparkjsdev/spark@2.1.0 --ignore-scripts
+          git checkout -- package.json pnpm-lock.yaml
+          rm -rf engine/node_modules
+          ln -s ../node_modules engine/node_modules
+
+      - name: Compile
+        run: pnpm run compile
+
+      - name: Package VSIX
+        run: |
+          mkdir -p artifacts
+          pnpm dlx @vscode/vsce package --out artifacts/ply-visualizer-recovered-voxel-camera-ui.vsix
+          sha256sum artifacts/ply-visualizer-recovered-voxel-camera-ui.vsix | tee artifacts/SHA256SUMS
+
+      - name: Upload Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ply-visualizer-recovered-voxel-camera-ui
+          path: |
+            artifacts/ply-visualizer-recovered-voxel-camera-ui.vsix
+            artifacts/SHA256SUMS
+
+      - name: Publish recovery release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=recovered-voxel-camera-ui
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --cleanup-tag --yes
+          fi
+          gh release create "$TAG" \
+            artifacts/ply-visualizer-recovered-voxel-camera-ui.vsix \
+            artifacts/SHA256SUMS \
+            --target "${{ github.sha }}" \
+            --title "Recovered voxel/camera UI build" \
+            --notes "Rebuilt from the exact recovered source delta based on dca6d575."

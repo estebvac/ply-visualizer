@@ -13,7 +13,6 @@ export const viewerState = $state(
    *   controlScheme: string;
    *   cameraConvention: string;
    *   edlEnabled: boolean;
-   *   edlMode: 'auto' | 'all' | 'off';
    *   edlStrength: number;
    *   edlRadius: number;
    *   brightnessStops: number;
@@ -23,14 +22,19 @@ export const viewerState = $state(
    *   cameraNear: number;
    *   cameraFar: number;
    *   cameraPositionText: string;
+   *   cameraPositionX: number;
+   *   cameraPositionY: number;
+   *   cameraPositionZ: number;
    *   cameraRotationText: string;
    *   cameraTargetText: string;
+   *   cameraTargetX: number;
+   *   cameraTargetY: number;
+   *   cameraTargetZ: number;
    * }}
    */ ({
-    controlScheme: 'legacy-trackball',
+    controlScheme: 'orbit',
     cameraConvention: 'opengl',
-    edlEnabled: true,
-    edlMode: 'auto',
+    edlEnabled: false,
     edlStrength: 1.0,
     edlRadius: 1.4,
     brightnessStops: 0,
@@ -38,12 +42,18 @@ export const viewerState = $state(
     lightingMode: 'normal',
     // Phase 4 (CameraControlsPanel.svelte): updated every frame the camera
     // moves by transformationMatrix.ts's updateCameraControlsPanel().
-    cameraFov: 75,
+    cameraFov: 60,
     // Must match the PerspectiveCamera constructor arguments in initThreeJS.
     cameraNear: 0.001,
-    cameraFar: 10000000,
+    cameraFar: 1000000,
     cameraPositionText: '(0.000, 0.000, 0.000)',
+    cameraPositionX: 0,
+    cameraPositionY: 0,
+    cameraPositionZ: 0,
     cameraRotationText: '(0.0°, 0.0°, 0.0°)',
     cameraTargetText: '(0.000, 0.000, 0.000)',
+    cameraTargetX: 0,
+    cameraTargetY: 0,
+    cameraTargetZ: 0,
   })
 );

@@ -1,8 +1,5 @@
 <script lang="ts">
-  import { sceneGuidesState } from '../state/sceneGuides.svelte';
   import { viewerState } from '../state/viewer.svelte';
-  import { measurementState } from '../state/measurement.svelte';
-  import { formatDistance } from '../MeasurementManager';
 
   let { host }: { host: any } = $props();
 
@@ -16,23 +13,11 @@
   let gammaEnabled = $state(!host.convertSrgbToLinear);
   // svelte-ignore state_referenced_locally
   let rotationCenterMode = $state(host.rotationCenterManager.getMode());
-  // svelte-ignore state_referenced_locally
-  let pointPickingImplementation = $state(host.pointPickingImplementation);
-  // svelte-ignore state_referenced_locally
-  let pointRenderingImplementation = $state(host.pointRenderingImplementation);
 
   function onBrightnessInput(e: Event) {
     const val = parseFloat((e.target as HTMLInputElement).value);
     host.brightnessStops = Number.isFinite(val) ? val : 0;
     viewerState.brightnessStops = host.brightnessStops;
-    host.applySceneBrightness();
-    host.requestRender();
-  }
-
-  function resetBrightness(e: MouseEvent) {
-    e.preventDefault();
-    host.brightnessStops = 0;
-    viewerState.brightnessStops = 0;
     host.applySceneBrightness();
     host.requestRender();
   }
@@ -45,20 +30,6 @@
     host.requestRender();
   }
 
-  function resetBackground(e: MouseEvent) {
-    e.preventDefault();
-    host.backgroundBrightness = 13;
-    viewerState.backgroundBrightness = 13;
-    host.applyBackgroundBrightness();
-    host.requestRender();
-  }
-
-  function backgroundLabel(value: number): string {
-    const channel = Math.max(0, Math.min(255, Math.round((value / 100) * 255)));
-    const hex = channel.toString(16).padStart(2, '0');
-    return `${Math.round(value)}% (#${hex}${hex}${hex})`;
-  }
-
   function onToggleEdl() {
     host.toggleEDL();
   }
@@ -66,8 +37,6 @@
   function onEdlSecondRingInput(e: Event) {
     const val = parseFloat((e.target as HTMLInputElement).value);
     host.edlSecondRingWeight = Number.isFinite(val) ? val : 0.0;
-    const value = document.getElementById('edl-second-ring-value');
-    if (value) value.textContent = host.edlSecondRingWeight.toFixed(2);
     if (host.edlPass) {
       host.edlPass.secondRingWeight = host.edlSecondRingWeight;
     }
@@ -77,12 +46,6 @@
         : 'Advanced EDL neighborhood: OFF'
     );
     host.requestRender();
-  }
-
-  function resetEdlSecondRing(e: MouseEvent) {
-    e.preventDefault();
-    (e.currentTarget as HTMLInputElement).value = '0';
-    onEdlSecondRingInput(e);
   }
 
   function onEdlStrengthInput(e: Event) {
@@ -103,20 +66,6 @@
       host.edlPass.edlRadius = val;
     }
     host.requestRender();
-  }
-
-  function resetEdlStrength(e: MouseEvent) {
-    e.preventDefault();
-    const input = e.currentTarget as HTMLInputElement;
-    input.value = '1';
-    onEdlStrengthInput(e);
-  }
-
-  function resetEdlRadius(e: MouseEvent) {
-    e.preventDefault();
-    const input = e.currentTarget as HTMLInputElement;
-    input.value = '1.4';
-    onEdlRadiusInput(e);
   }
 
   function onFitCamera() {
@@ -143,65 +92,20 @@
     host.setRotationCenterToOrigin();
     host.updateRotationOriginButtonState();
   }
-  function setPointPickingImplementation(implementation: 'cpu' | 'webgpu') {
-    host.setPointPickingImplementation(implementation);
-    pointPickingImplementation = host.pointPickingImplementation;
-  }
-  function setPointRenderingImplementation(implementation: 'current' | 'webgpu-visibility') {
-    host.setPointRenderingImplementation(implementation);
-    pointRenderingImplementation = host.pointRenderingImplementation;
-  }
 
-  function onUndoPathPoint() {
+  function onClearMeasurements() {
     if (host.measurementManager) {
-      host.measurementManager.undoLastPathPoint();
+      host.measurementManager.clearAll();
       host.requestRender();
+      host.showStatus('All measurements cleared');
     }
   }
-  function onClearPath() {
+  function onRemoveLastMeasurement() {
     if (host.measurementManager) {
-      host.measurementManager.clearPath();
+      host.measurementManager.removeLastMeasurement();
       host.requestRender();
-      host.showStatus('Measurement path cleared');
+      host.showStatus('Last measurement removed');
     }
-  }
-  function onTogglePathClosed() {
-    if (host.measurementManager) {
-      host.measurementManager.togglePathClosed();
-      host.requestRender();
-    }
-  }
-  function onNewPath() {
-    if (host.measurementManager) {
-      host.measurementManager.togglePathStartMode('free');
-      host.requestRender();
-      host.showStatus(
-        measurementState.pathStartMode === 'free'
-          ? 'New free path armed for the next Shift + Double-click'
-          : 'New free path cancelled; continuing the current path'
-      );
-    }
-  }
-  function onNewPathFromCenter() {
-    if (host.measurementManager) {
-      host.measurementManager.togglePathStartMode('center');
-      host.requestRender();
-      host.showStatus(
-        measurementState.pathStartMode === 'center'
-          ? 'Path from center armed for the next Shift + Double-click'
-          : 'Path from center cancelled; continuing the current path'
-      );
-    }
-  }
-  function onClearAllPaths() {
-    if (host.measurementManager) {
-      host.measurementManager.clearAllPaths();
-      host.requestRender();
-      host.showStatus('All measurement paths cleared');
-    }
-  }
-  function onExportPaths() {
-    host.measurementManager?.savePaths();
   }
 
   function onOpenCVConvention() {
@@ -223,8 +127,8 @@
   function onOrbit() {
     host.switchToOrbitControls();
   }
-  function onLegacyTrackball() {
-    host.switchToLegacyTrackballControls();
+  function onInverseTrackball() {
+    host.switchToInverseTrackballControls();
   }
   function onArcball() {
     host.switchToArcballControls();
@@ -278,7 +182,6 @@
     host.updateLightingButtonsState();
     host.showStatus('Using flat lighting');
   }
-
 </script>
 
 <div class="panel-section">
@@ -296,8 +199,6 @@
         class="control-input"
         style="flex: 1; margin: 0 8px;"
         oninput={onBrightnessInput}
-        ondblclick={resetBrightness}
-        title="Double-click to reset"
       />
       <span id="brightness-value" style="font-size: 11px; min-width: 32px; text-align: right;"
         >{viewerState.brightnessStops.toFixed(1)}</span
@@ -315,17 +216,16 @@
         class="control-input"
         style="flex: 1; margin: 0 8px;"
         oninput={onBackgroundInput}
-        ondblclick={resetBackground}
-        title="Double-click to reset"
       />
       <span
         id="background-brightness-value"
         style="font-size: 11px; min-width: 88px; text-align: right;"
-        >{backgroundLabel(viewerState.backgroundBrightness)}</span
+        >{host.getBackgroundBrightnessLabel ? host.getBackgroundBrightnessLabel() : ''}</span
       >
     </div>
     <p class="setting-description" style="margin-top: 0;">
-      Brightness adjusts the rendered geometry. Background adjusts only the neutral backdrop. Double-click a slider to reset it.
+      Brightness adjusts the rendered geometry. Background adjusts only the neutral backdrop.
+      Double-click a slider to reset it.
     </p>
   </div>
   <div
@@ -335,18 +235,17 @@
       <button
         id="toggle-edl"
         class="control-button"
-        class:active={viewerState.edlMode !== 'off'}
-        aria-label={`Eye Dome Lighting: ${viewerState.edlMode}`}
+        class:active={viewerState.edlEnabled}
         onclick={onToggleEdl}
       >
-        Eye Dome Lighting: {viewerState.edlMode[0].toUpperCase() + viewerState.edlMode.slice(1)} <span class="button-shortcut">E</span>
+        Eye Dome Lighting <span class="button-shortcut">E</span>
       </button>
     </div>
     <p class="setting-description">
-      Auto shades uniformly coloured point clouds while preserving per-point colours. All shades
-      every geometry type; Off bypasses the post-processing pass.
+      Eye Dome Lighting enhances depth perception by darkening edges and silhouettes. Works with
+      all geometry types and combines with any lighting mode.
     </p>
-    <div id="edl-settings" style="display: {viewerState.edlMode !== 'off' ? 'block' : 'none'}; margin-top: 8px;">
+    <div id="edl-settings" style="display: {viewerState.edlEnabled ? 'block' : 'none'}; margin-top: 8px;">
       <div id="edl-advanced-settings" style="margin-bottom: 6px;">
         <div class="control-group" style="margin-bottom: 6px;">
           <label for="edl-second-ring-slider" style="font-size: 11px;">Second Ring:</label>
@@ -360,8 +259,6 @@
             class="control-input"
             style="flex: 1; margin: 0 8px;"
             oninput={onEdlSecondRingInput}
-            ondblclick={resetEdlSecondRing}
-            title="Double-click to reset"
           />
           <span id="edl-second-ring-value" style="font-size: 11px; min-width: 28px; text-align: right;"
             >{host.edlSecondRingWeight.toFixed(2)}</span
@@ -383,8 +280,6 @@
           class="control-input"
           style="flex: 1; margin: 0 8px;"
           oninput={onEdlStrengthInput}
-          ondblclick={resetEdlStrength}
-          title="Double-click to reset"
         />
         <span id="edl-strength-value" style="font-size: 11px; min-width: 28px; text-align: right;"
           >{viewerState.edlStrength.toFixed(1)}</span
@@ -402,8 +297,6 @@
           class="control-input"
           style="flex: 1; margin: 0 8px;"
           oninput={onEdlRadiusInput}
-          ondblclick={resetEdlRadius}
-          title="Double-click to reset"
         />
         <span id="edl-radius-value" style="font-size: 11px; min-width: 28px; text-align: right;"
           >{viewerState.edlRadius.toFixed(1)}</span
@@ -415,8 +308,6 @@
 <div class="panel-section">
   <h4>View Controls</h4>
   <div class="control-buttons">
-    <button id="toggle-coordinate-grid" class="control-button" class:active={sceneGuidesState.grid} aria-pressed={sceneGuidesState.grid} onclick={() => { sceneGuidesState.grid = !sceneGuidesState.grid; }}>Coordinate Grid</button>
-    <button id="toggle-legend" class="control-button" class:active={sceneGuidesState.legend} aria-pressed={sceneGuidesState.legend} onclick={() => { sceneGuidesState.legend = !sceneGuidesState.legend; }}>Legend</button>
     <button id="fit-camera" class="control-button" onclick={onFitCamera}>
       Fit to View <span class="button-shortcut">F</span>
     </button>
@@ -433,87 +324,22 @@
       onclick={onToggleCameras}>Show Cameras</button
     >
     <button id="set-rotation-origin" class="control-button" onclick={onSetRotationOrigin}>
-      Set Rotation Center to Origin <span class="button-shortcut">W</span>
+      Set Rotation Center to Origin
     </button>
   </div>
-  <p class="setting-description">
-    Touch is independent of the selected mouse controls: drag with one finger to orbit while
-    preserving the current up direction; pinch with two fingers to zoom and twist them to roll.
-    Moving two fingers together does not orbit. Double-tap sets the rotation center unless
-    Measurement mode is enabled in Files → Tools.
-  </p>
 </div>
 <div class="panel-section">
-  <h4 style="display: flex; align-items: baseline; justify-content: space-between; gap: 8px;">
-    <span>Measurements</span>
-    <span style="font-size: 9px; font-weight: normal; color: var(--vscode-descriptionForeground);">
-      Shift + Double-click
-    </span>
-  </h4>
+  <h4>Measurements</h4>
   <div class="control-buttons">
-    <button
-      id="new-measurement-path"
-      class="control-button"
-      class:active={measurementState.pathStartMode === 'free'}
-      aria-pressed={measurementState.pathStartMode === 'free'}
-      onclick={onNewPath}
+    <button id="clear-measurements" class="control-button" onclick={onClearMeasurements}
+      >Clear All Measurements</button
     >
-      New Free Path
+    <button id="remove-last-measurement" class="control-button" onclick={onRemoveLastMeasurement}>
+      Remove Last Measurement
     </button>
-    <button
-      id="new-measurement-path-from-center"
-      class="control-button"
-      class:active={measurementState.pathStartMode === 'center'}
-      aria-pressed={measurementState.pathStartMode === 'center'}
-      onclick={onNewPathFromCenter}
-      title="Use the current rotation center as point A on the next measurement pick"
-    >
-      New Path from Center
-    </button>
-    {#if measurementState.pathPointCount > 0}
-      <button id="undo-path-point" class="control-button" onclick={onUndoPathPoint}>
-        Undo Last Point
-      </button>
-      <button id="clear-measurement-path" class="control-button" onclick={onClearPath}>
-        Clear Path
-      </button>
-    {/if}
-    <button
-      id="close-measurement-path"
-      class="control-button"
-      class:active={measurementState.pathClosed}
-      onclick={onTogglePathClosed}
-      title="Keep the active path connected from its last point back to its first"
-    >
-      {measurementState.pathClosed ? 'Open Loop' : 'Close Loop'}
-    </button>
-    {#if measurementState.pathCount > 0}
-      <button id="export-measurement-paths" class="control-button" onclick={onExportPaths}>
-        Export Paths JSON
-      </button>
-      <button id="clear-all-measurement-paths" class="control-button" onclick={onClearAllPaths}>
-        Clear All Paths
-      </button>
-    {/if}
   </div>
-  {#if measurementState.pathPointCount > 0}
-    <div id="measurement-path-info" style="font-size: 11px; margin-top: 8px; font-family: monospace;">
-      {#if measurementState.segmentLengths.length > 0}
-        {#each measurementState.segmentLengths as length, i}
-          <div>Segment {i + 1}: {formatDistance(length)}</div>
-        {/each}
-        <div style="margin-top: 4px; font-weight: bold;">
-          Total: {formatDistance(measurementState.totalLength)}
-        </div>
-      {:else}
-        <div>1 point picked — double-click the next point.</div>
-      {/if}
-    </div>
-  {/if}
   <div style="font-size: 11px; color: var(--vscode-descriptionForeground); margin-top: 8px">
-    Shift + Double-click adds points. On touch, enable Measurement mode in Files → Tools and
-    double-tap points. By default the first path starts at the rotation center; use New Free Path
-    when the first picked point should be point A.
+    Tip: Shift + Double-click to measure distance from rotation center
   </div>
 </div>
 <div class="panel-section">
@@ -525,7 +351,7 @@
       class:active={viewerState.cameraConvention === 'opencv'}
       onclick={onOpenCVConvention}
     >
-      OpenCV (Y down) <span class="button-shortcut">V</span>
+      OpenCV (Y down) <span class="button-shortcut">C</span>
     </button>
     <button
       id="opengl-convention"
@@ -538,33 +364,48 @@
   </div>
 </div>
 <div class="panel-section">
-  <h4>Control Type</h4>
+  <h4>Navigation</h4>
+  <div id="navigation-help" class="setting-description">
+    <div><strong>Left drag</strong> — Orbit</div>
+    <div><strong>Middle drag / Wheel</strong> — Zoom</div>
+    <div><strong>Right drag</strong> — Pan</div>
+    <div><strong>Arrow keys</strong> — Pan</div>
+    <div><strong>Shift/Ctrl + Arrow</strong> — Rotate</div>
+    <div><strong>Double-click</strong> — Set pivot</div>
+    <div><strong>Shift + Double-click</strong> — Measure</div>
+    <div><strong>F</strong> — Fit to View</div>
+    <div><strong>R</strong> — Reset Camera</div>
+  </div>
+</div>
+<details id="advanced-navigation" class="panel-section">
+  <summary>Advanced Navigation</summary>
+  <p class="setting-description">
+    Legacy navigation modes and alternative pivot behaviors.
+  </p>
   <div class="control-buttons">
-    <button
-      id="trackball-controls"
-      class="control-button"
-      class:active={viewerState.controlScheme === 'trackball'}
-      onclick={onTrackball}
-      title="Virtual ball: center drags orbit; drags near the edge and circular gestures roll the scene under the cursor"
-    >
-      Trackball <span class="button-shortcut">T</span>
-    </button>
     <button
       id="orbit-controls"
       class="control-button"
       class:active={viewerState.controlScheme === 'orbit'}
       onclick={onOrbit}
     >
-      Orbit <span class="button-shortcut">O</span>
+      Standard Orbit
     </button>
     <button
-      id="legacy-trackball-controls"
+      id="trackball-controls"
       class="control-button"
-      class:active={viewerState.controlScheme === 'legacy-trackball'}
-      onclick={onLegacyTrackball}
-      title="Default: delta-based three.js TrackballControls with momentum"
+      class:active={viewerState.controlScheme === 'trackball'}
+      onclick={onTrackball}
     >
-      Legacy Trackball <span class="button-shortcut">I</span>
+      Trackball
+    </button>
+    <button
+      id="inverse-trackball-controls"
+      class="control-button"
+      class:active={viewerState.controlScheme === 'inverse-trackball'}
+      onclick={onInverseTrackball}
+    >
+      Inverse Trackball
     </button>
     <button
       id="arcball-controls"
@@ -572,103 +413,45 @@
       class:active={viewerState.controlScheme === 'arcball'}
       onclick={onArcball}
     >
-      Arcball <span class="button-shortcut">K</span>
+      Arcball
     </button>
   </div>
-</div>
-<div class="panel-section">
-  <h4>Rotation Center Behavior</h4>
-  <p class="setting-description">When double-clicking to set rotation center:</p>
-  <div class="control-buttons">
-    <button
-      id="rotation-center-move-camera"
-      class="control-button"
-      class:active={rotationCenterMode === 'move-camera'}
-      onclick={() => setRotationCenterMode('move-camera')}
-    >
-      Move Camera (Lateral)
-    </button>
-    <button
-      id="rotation-center-keep-camera"
-      class="control-button"
-      class:active={rotationCenterMode === 'keep-camera'}
-      onclick={() => setRotationCenterMode('keep-camera')}
-    >
-      Keep Camera Position
-    </button>
-    <button
-      id="rotation-center-keep-distance"
-      class="control-button"
-      class:active={rotationCenterMode === 'keep-distance'}
-      onclick={() => setRotationCenterMode('keep-distance')}
-    >
-      Keep Distance
-    </button>
+
+  <div style="margin-top: 10px;">
+    <strong style="font-size: 11px;">Rotation Center Behavior</strong>
+    <p class="setting-description">When double-clicking to set rotation center:</p>
+    <div class="control-buttons">
+      <button
+        id="rotation-center-move-camera"
+        class="control-button"
+        class:active={rotationCenterMode === 'move-camera'}
+        onclick={() => setRotationCenterMode('move-camera')}
+      >
+        Move Camera (Lateral)
+      </button>
+      <button
+        id="rotation-center-keep-camera"
+        class="control-button"
+        class:active={rotationCenterMode === 'keep-camera'}
+        onclick={() => setRotationCenterMode('keep-camera')}
+      >
+        Keep Camera Position
+      </button>
+      <button
+        id="rotation-center-keep-distance"
+        class="control-button"
+        class:active={rotationCenterMode === 'keep-distance'}
+        onclick={() => setRotationCenterMode('keep-distance')}
+      >
+        Keep Distance
+      </button>
+    </div>
+    <p class="setting-description">
+      Move Camera slides the camera on the view plane. Keep Camera changes only the pivot.
+      Keep Distance moves the camera to preserve its distance from the new pivot.
+    </p>
   </div>
-  <p class="setting-description">
-    Move Camera: Camera slides on view plane to center clicked point. Keep Camera: Only rotation
-    target changes, camera stays in place. Keep Distance: Camera moves to maintain same distance
-    from new center.
-  </p>
-</div>
-<div class="panel-section">
-  <h4>Point Picking</h4>
-  <div class="control-buttons">
-    <button
-      id="point-picking-cpu"
-      class="control-button"
-      class:active={pointPickingImplementation === 'cpu'}
-      onclick={() => setPointPickingImplementation('cpu')}
-    >
-      CPU
-    </button>
-    <button
-      id="point-picking-webgpu"
-      class="control-button"
-      class:active={pointPickingImplementation === 'webgpu'}
-      disabled={!host.webgpuPickingAvailable}
-      title={host.webgpuPickingAvailable
-        ? 'Use the GPU compute picker'
-        : `WebGPU unavailable: ${host.webgpuPickingUnavailableReason}`}
-      onclick={() => setPointPickingImplementation('webgpu')}
-    >
-      WebGPU
-    </button>
-  </div>
-  <p class="setting-description">
-    WebGPU scans point clouds in parallel and is selected automatically when available. CPU keeps
-    the original screen-space implementation.
-  </p>
-</div>
-<div class="panel-section">
-  <h4>Point Rendering</h4>
-  <div class="control-buttons">
-    <button
-      id="point-rendering-current"
-      class="control-button"
-      class:active={pointRenderingImplementation === 'current'}
-      onclick={() => setPointRenderingImplementation('current')}
-    >
-      Current
-    </button>
-    <button
-      id="point-rendering-webgpu"
-      class="control-button"
-      class:active={pointRenderingImplementation === 'webgpu-visibility'}
-      disabled={!host.webgpuPointRenderingAvailable}
-      title={host.webgpuPointRenderingAvailable
-        ? 'Resolve opaque one-pixel point visibility with WebGPU compute'
-        : `WebGPU unavailable: ${host.webgpuPointRenderingUnavailableReason}`}
-      onclick={() => setPointRenderingImplementation('webgpu-visibility')}
-    >
-      WebGPU Visibility
-    </button>
-  </div>
-  <p class="setting-description">
-    Keeps every point and resolves the front-most opaque one-pixel point per screen pixel. Enlarged
-    points, transparency, EDL and incompatible scenes automatically use Current.
-  </p>
-</div>
+</details>
 <div class="panel-section">
   <h4>Color &amp; Lighting</h4>
   <div class="control-buttons">
