@@ -961,6 +961,9 @@ export async function readProgressiveTile(
 ): Promise<ProgressivePointPayload> {
   if (tileId.startsWith('node:')) {
     const nodeId = tileId.slice('node:'.length);
+    if (!/^[0-7]*$/.test(nodeId) || !manifest.nodes[nodeId]) {
+      throw new Error(`Unknown progressive PLY node tile ${tileId}`);
+    }
     const fileName = `${nodeId || 'root'}.bin`;
     return decodeCacheRecords(
       await fs.promises.readFile(path.join(cacheDirectory, 'lod', fileName)),
@@ -970,7 +973,9 @@ export async function readProgressiveTile(
   if (tileId.startsWith('leaf:')) {
     const [, nodeId, pageText] = tileId.split(':');
     const node = manifest.nodes[nodeId];
-    if (!node || node.leafPageCount <= 0) throw new Error(`Unknown leaf tile ${tileId}`);
+    if (!/^[0-7]+$/.test(nodeId) || !node || node.leafPageCount <= 0) {
+      throw new Error(`Unknown leaf tile ${tileId}`);
+    }
     const page = Number(pageText);
     if (!Number.isInteger(page) || page < 0 || page >= node.leafPageCount) {
       throw new Error(`Invalid leaf page ${tileId}`);
