@@ -125,6 +125,13 @@
           "minimum": 4,
           "maximum": 64,
           "description": "Maximum remote-to-webview payload size for a single progressive PLY tile."
+        },
+        "plyViewer.progressivePly.refineScreenPixels": {
+          "type": "number",
+          "default": 180,
+          "minimum": 32,
+          "maximum": 1024,
+          "description": "Request fine progressive PLY tiles only when a tile projects to at least this many pixels on screen."
         }
       }
     },
