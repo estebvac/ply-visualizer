@@ -23,7 +23,10 @@ test('point cloud can switch Points -> Voxels -> Points and resize voxels', asyn
   await page.waitForSelector('#three-canvas');
   await page.waitForFunction(() => Boolean((window as any).visualizer));
 
-  await page.click('[data-tab="files"]');
+  const filesTab = page.locator('[data-tab="files"]');
+  if ((await filesTab.getAttribute('aria-pressed')) !== 'true') {
+    await filesTab.click();
+  }
   await page.locator('#hiddenFileInput').setInputFiles({
     name: 'voxel-test.ply',
     mimeType: 'application/octet-stream',
