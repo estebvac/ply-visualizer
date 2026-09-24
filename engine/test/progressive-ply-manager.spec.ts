@@ -73,6 +73,19 @@ test('progressive PLY manager bounds point residency and request bursts', async 
 
     const session = (manager as any).sessions.get('s1');
     expect(session).toBeTruthy();
+    messages.length = 0;
+    (manager as any).announceGeneration(session);
+    expect(messages).toEqual([
+      {
+        type: 'progressivePly:requestTiles',
+        sessionId: 's1',
+        generation: 0,
+        tileIds: [],
+      },
+    ]);
+    // An empty cancellation fence is intentionally sent even when the new view
+    // needs no remote bytes; this lets the extension stop an older generation.
+    messages.length = 0;
     // 12 pos + 3 RGB + 12 normals + 4 intensity + 8 scalar = 39 bytes/point.
     expect(session.bytesPerPoint).toBe(39);
     expect(session.pointBudget).toBeLessThanOrEqual(
