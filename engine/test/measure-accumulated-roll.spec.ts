@@ -32,6 +32,17 @@ async function setup(page: Page, mode: 'trackball' | 'inverse-trackball-controls
     await page.click('#trackball-controls');
   }
   await page.waitForTimeout(300);
+
+  // This suite validates legacy rotation/inversion math, not momentum.
+  // Disable Trackball's test-time damping so independent runs are deterministic.
+  await page.evaluate(() => {
+    const v: any = (window as any).visualizer;
+    if ('staticMoving' in v.controls) {
+      v.controls.staticMoving = true;
+      v.controls.dynamicDampingFactor = 0;
+    }
+  });
+
   await page.evaluate(() => {
     const v: any = (window as any).visualizer;
     v.controls.target.set(0, 0, 0);
