@@ -65,7 +65,6 @@ interface ClientSession {
   pending: Set<string>;
   requestedGeneration: number;
   desiredKey: string;
-  desiredIds: Set<string>;
   localPointBudget: number;
   localMemoryBudgetBytes: number;
   hidden: boolean;
@@ -200,7 +199,6 @@ export class ProgressivePlyClient {
       pending: new Set(),
       requestedGeneration: 0,
       desiredKey: '',
-      desiredIds: new Set(),
       localPointBudget: Math.max(100_000, Number(budgets.localPointBudget) || 4_000_000),
       localMemoryBudgetBytes: Math.max(
         64 * 1024 * 1024,
@@ -320,7 +318,7 @@ export class ProgressivePlyClient {
     };
     session.resident.set(node.id, resident);
     this.syncTileVoxel(session, resident);
-    this.enforceBudget(session, session.desiredIds);
+    this.enforceBudget(session, session.desired);
     this.host.requestRender();
     this.updateCamera(true);
   }
