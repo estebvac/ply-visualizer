@@ -399,6 +399,16 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
     );
     const styleUri = webview.asWebviewUri(stylePathOnDisk).toString();
 
+    // Svelte component-scoped CSS is extracted by MiniCssExtractPlugin into
+    // the webview bundle directory. It must be loaded explicitly in VS Code.
+    const componentStylePathOnDisk = vscode.Uri.joinPath(
+      this.context.extensionUri,
+      'out',
+      'webview',
+      'bundle.css'
+    );
+    const componentStyleUri = webview.asWebviewUri(componentStylePathOnDisk).toString();
+
     const geotiffPathOnDisk = vscode.Uri.joinPath(
       this.context.extensionUri,
       'engine',
@@ -439,6 +449,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
 
     // 2. Replace resource URLs with webview URIs
     html = html.replace(/href="media\/style\.css"/, `href="${styleUri}"`);
+    html = html.replace(/href="bundle\.css"/, `href="${componentStyleUri}"`);
     html = html.replace(/src="media\/geotiff\.min\.js"/, `nonce="${nonce}" src="${geotiffUri}"`);
     html = html.replace(
       /src="media\/wasm\/tiff_wasm\.js"/,
