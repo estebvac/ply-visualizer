@@ -34,6 +34,9 @@ jobs:
       - name: Check webview types
         run: npm run check --workspace=engine
 
+      - name: Build standalone page for Playwright
+        run: npm run build --workspace=engine
+
       - name: Progressive LOD residency and request-budget test
         working-directory: engine
         run: npm exec -- playwright test test/progressive-ply-manager.spec.ts --workers=1 --retries=0
