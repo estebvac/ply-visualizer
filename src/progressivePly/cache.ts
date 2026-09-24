@@ -552,7 +552,8 @@ async function sampleRecordFile(
   destination: string,
   recordStride: number,
   recordCount: number,
-  maxSamples: number
+  maxSamples: number,
+  isCancelled?: () => boolean
 ): Promise<number> {
   if (recordCount <= 0) {
     await fs.promises.writeFile(destination, Buffer.alloc(0));
@@ -567,6 +568,7 @@ async function sampleRecordFile(
   let written = 0;
   try {
     while (sourceIndex < recordCount && written < maxSamples) {
+      if (isCancelled?.()) throw new Error('Progressive PLY load cancelled');
       const requested = Math.min(chunkRecords, recordCount - sourceIndex);
       const { bytesRead } = await sourceHandle.read(
         buffer,
@@ -601,7 +603,8 @@ async function mergeSampleFiles(
   sources: Array<{ file: string; count: number }>,
   destination: string,
   recordStride: number,
-  maxSamples: number
+  maxSamples: number,
+  isCancelled?: () => boolean
 ): Promise<number> {
   const total = sources.reduce((sum, source) => sum + source.count, 0);
   if (total === 0) {
@@ -613,12 +616,14 @@ async function mergeSampleFiles(
   let globalIndex = 0;
   let written = 0;
   for (const source of sources) {
+    if (isCancelled?.()) throw new Error('Progressive PLY load cancelled');
     if (written >= maxSamples) break;
     const handle = await fs.promises.open(source.file, 'r');
     const buffer = Buffer.allocUnsafe(recordStride * Math.min(4096, Math.max(1, source.count)));
     try {
       let sourceIndex = 0;
       while (sourceIndex < source.count && written < maxSamples) {
+        if (isCancelled?.()) throw new Error('Progressive PLY load cancelled');
         const records = Math.min(
           Math.floor(buffer.length / recordStride),
           source.count - sourceIndex
@@ -777,7 +782,8 @@ export async function buildProgressiveCache(
       samplePath,
       layout.stride,
       state.count,
-      options.lodSamplePoints
+      options.lodSamplePoints,
+      isCancelled
     );
     leaf.sampleFile = samplePath;
     leafDone++;
@@ -799,7 +805,8 @@ export async function buildProgressiveCache(
         sources,
         samplePath,
         layout.stride,
-        options.lodSamplePoints
+        options.lodSamplePoints,
+        isCancelled
       );
       node.sampleFile = samplePath;
     }
