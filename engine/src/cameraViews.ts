@@ -26,6 +26,7 @@ export interface CameraViewHost {
   updateCameraMatrix(): void;
   updateCameraControlsPanel(): void;
   cameraViewAnimator?: { cancel(): void };
+  controlType?: string;
 }
 
 function presetToViewId(preset: CameraPreset): CameraViewId {
@@ -47,7 +48,9 @@ export function applyDeterministicCameraView(host: CameraViewHost, id: CameraVie
   const distance = Math.max(host.camera.position.distanceTo(target), 1e-6);
   const direction = poleSafeDirection(getViewDirection(id));
 
-  host.camera.up.copy(NAVIGATION_UP);
+  if (host.controlType === 'orbit') {
+    host.camera.up.copy(NAVIGATION_UP);
+  }
   host.camera.position.copy(target).addScaledVector(direction, distance);
   host.controls.target.copy(target);
   commitCameraChange(host);
@@ -70,7 +73,9 @@ export function setCameraPosition(host: CameraViewHost, x: number, y: number, z:
   }
 
   host.camera.position.copy(next);
-  host.camera.up.copy(NAVIGATION_UP);
+  if (host.controlType === 'orbit') {
+    host.camera.up.copy(NAVIGATION_UP);
+  }
   host.camera.lookAt(target);
   commitCameraChange(host);
   return true;
