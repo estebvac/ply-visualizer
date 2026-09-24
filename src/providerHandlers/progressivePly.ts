@@ -934,7 +934,8 @@ export class ProgressivePlySessionManager {
       segment: number;
       count: number;
       buffered: number;
-      buffer: Buffer;
+      buffer: Buffer | null;
+      lastTouched: number;
       file: string;
     };
     const maxPointsPerNode = Math.max(
@@ -946,10 +947,12 @@ export class ProgressivePlySessionManager {
       Math.min(
         4096,
         maxPointsPerNode,
-        Math.max(1, Math.floor((512 * 1024) / recordStride))
+        Math.max(1, Math.floor((256 * 1024) / recordStride))
       )
     );
+    const maxActiveBuffers = 64;
     const activeTiles = new Map<string, TileState>();
+    const activeBuffers = new Set<TileState>();
     const segmentCounters = new Map<string, number>();
     const allTiles: TileState[] = [];
     let processed = 0;
@@ -962,10 +965,28 @@ export class ProgressivePlySessionManager {
       });
     };
 
-    const flush = (tile: TileState) => {
-      if (tile.buffered <= 0) return;
-      fs.appendFileSync(tile.file, tile.buffer.subarray(0, tile.buffered * recordStride));
-      tile.buffered = 0;
+    const flush = (tile: TileState, release = false) => {
+      if (tile.buffer && tile.buffered > 0) {
+        fs.appendFileSync(tile.file, tile.buffer.subarray(0, tile.buffered * recordStride));
+        tile.buffered = 0;
+      }
+      if (release && tile.buffer) {
+        tile.buffer = null;
+        activeBuffers.delete(tile);
+      }
+    };
+
+    const acquireBuffer = (tile: TileState) => {
+      if (tile.buffer) return;
+      if (activeBuffers.size >= maxActiveBuffers) {
+        let oldest: TileState | undefined;
+        for (const candidate of activeBuffers) {
+          if (!oldest || candidate.lastTouched < oldest.lastTouched) oldest = candidate;
+        }
+        if (oldest) flush(oldest, true);
+      }
+      tile.buffer = Buffer.allocUnsafe(chunkPoints * recordStride);
+      activeBuffers.add(tile);
     };
 
     const createTile = (
@@ -988,7 +1009,8 @@ export class ProgressivePlySessionManager {
         segment,
         count: 0,
         buffered: 0,
-        buffer: Buffer.allocUnsafe(chunkPoints * recordStride),
+        buffer: null,
+        lastTouched: 0,
         file,
       };
       activeTiles.set(baseId, tile);
@@ -1010,16 +1032,19 @@ export class ProgressivePlySessionManager {
           tile = createTile(baseId, ix, iy, iz);
         }
 
-        writeCanonical(tile.buffer, tile.buffered * recordStride, point, probe);
+        acquireBuffer(tile);
+        tile.lastTouched = processed;
+        writeCanonical(tile.buffer!, tile.buffered * recordStride, point, probe);
         tile.buffered++;
         tile.count++;
-        if (tile.buffered >= chunkPoints) flush(tile);
+        if (tile.buffered >= chunkPoints) flush(tile, true);
         processed++;
         if (processed % 1_000_000 === 0) emitProgress();
       },
       () => session.cancelled
     );
-    for (const tile of activeTiles.values()) flush(tile);
+    for (const tile of [...activeBuffers]) flush(tile, true);
+    activeBuffers.clear();
     if (session.cancelled) return;
 
     const populatedTiles = allTiles.filter(tile => tile.count > 0);
