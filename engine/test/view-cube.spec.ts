@@ -75,7 +75,7 @@ test('view cube mirrors manual orbit and manual orbit cancels a snap', async ({ 
   const after = await cube.getAttribute('style');
   expect(after).not.toBe(before);
 
-  await page.getByRole('button', { name: 'View from -Y' }).click();
+  await page.getByRole('button', { name: 'View from −Y' }).click();
   await page.waitForFunction(() => (window as any).visualizer.cameraViewAnimator.isAnimating);
   await page.mouse.move(x, y);
   await page.mouse.down({ button: 'left' });
