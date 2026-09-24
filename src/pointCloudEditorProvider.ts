@@ -235,6 +235,12 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
     this.panelToPath.set(webviewPanel, document.uri.fsPath);
     this.panelVolumeSessions.set(webviewPanel, new Set([document.uri.toString()]));
     this.prepareWebviewMessaging(webviewPanel, readyGate);
+    webviewPanel.onDidChangeViewState(event => {
+      void event.webviewPanel.webview.postMessage({
+        type: 'progressivePly:panelVisibility',
+        visible: event.webviewPanel.visible,
+      });
+    });
     webviewPanel.onDidDispose(() => {
       readyGate.dispose();
       this.activePanels.delete(webviewPanel);
