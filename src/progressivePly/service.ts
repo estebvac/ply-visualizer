@@ -177,6 +177,7 @@ export class ProgressivePlyService {
       scalarFieldNames: header.scalarFieldNames,
       isGaussianSplat: header.isGaussianSplat,
       fixedVertexStride: header.vertexStride,
+      vertexDataStartsAtBody: header.vertexDataStartsAtBody,
     }, routingConfig())) {
       return false;
     }
