@@ -131,6 +131,8 @@ test.describe('Standard Orbit navigation', () => {
   });
 
   test('suppresses the context menu only on the navigation canvas', async ({ page }) => {
+    await loadSampleMesh(page);
+
     await page.evaluate(() => {
       (window as any).__canvasContextMenuPrevented = false;
       document.addEventListener(
