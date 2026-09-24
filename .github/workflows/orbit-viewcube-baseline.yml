@@ -7,9 +7,6 @@ on:
       - integration/orbit-viewcube-main-v2
   workflow_dispatch:
 
-concurrency:
-  group: orbit-viewcube-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   verify:
