@@ -65,6 +65,7 @@ interface ClientSession {
   pending: Set<string>;
   requestedGeneration: number;
   desiredKey: string;
+  desiredIds: Set<string>;
   localPointBudget: number;
   localMemoryBudgetBytes: number;
   hidden: boolean;
@@ -202,6 +203,7 @@ export class ProgressivePlyClient {
       pending: new Set(),
       requestedGeneration: 0,
       desiredKey: '',
+      desiredIds: new Set(),
       localPointBudget: Math.max(100_000, Number(budgets.localPointBudget) || 4_000_000),
       localMemoryBudgetBytes: Math.max(
         64 * 1024 * 1024,
@@ -321,8 +323,9 @@ export class ProgressivePlyClient {
     };
     session.resident.set(node.id, resident);
     this.syncTileVoxel(session, resident);
-    this.enforceBudget(session, new Set([node.id]));
+    this.enforceBudget(session, session.desiredIds);
     this.host.requestRender();
+    this.updateCamera(true);
   }
 
   updateCamera(force = false): void {
@@ -333,7 +336,8 @@ export class ProgressivePlyClient {
     for (const session of this.sessions.values()) {
       if (session.hidden || session.manifest.depth <= 0) continue;
       const source = this.host.meshes[session.fileIndex];
-      if (!(source instanceof THREE.Points) || !source.visible) continue;
+      const voxelMode = !!this.host.voxelsVisible?.[session.fileIndex];
+      if (!(source instanceof THREE.Points) || (!source.visible && !voxelMode)) continue;
 
       source.updateWorldMatrix(true, true);
       this.host.camera.updateMatrixWorld(true);
