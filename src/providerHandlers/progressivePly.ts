@@ -99,6 +99,7 @@ export interface ProgressiveConfig extends ProgressivePlyDecisionOptions {
   localPointBudget: number;
   localMemoryBudgetBytes: number;
   maxTileMessageBytes: number;
+  refineScreenPixels: number;
 }
 
 interface CanonicalPoint {
@@ -731,6 +732,7 @@ function configFromWorkspace(): ProgressiveConfig {
     localPointBudget: Math.max(100_000, config.get<number>('localPointBudget', 4_000_000)),
     localMemoryBudgetBytes: Math.max(64, config.get<number>('localMemoryBudgetMB', 256)) * mb,
     maxTileMessageBytes: Math.max(4, config.get<number>('maxTileMessageMB', 16)) * mb,
+    refineScreenPixels: Math.max(32, config.get<number>('refineScreenPixels', 180)),
   };
 }
 
@@ -1245,6 +1247,7 @@ export class ProgressivePlySessionManager {
       budgets: {
         localPointBudget: config.localPointBudget,
         localMemoryBudgetBytes: config.localMemoryBudgetBytes,
+        refineScreenPixels: config.refineScreenPixels,
       },
     });
     await session.panel.webview.postMessage({
@@ -1275,6 +1278,7 @@ export class ProgressivePlySessionManager {
       budgets: {
         localPointBudget: session.config.localPointBudget,
         localMemoryBudgetBytes: session.config.localMemoryBudgetBytes,
+        refineScreenPixels: session.config.refineScreenPixels,
       },
       data: {
         vertices: [],
