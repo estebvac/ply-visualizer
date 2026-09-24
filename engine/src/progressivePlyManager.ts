@@ -142,6 +142,9 @@ export class ProgressivePlyManager {
         return true;
       case 'progressivePly:progress':
         return true;
+      case 'progressivePly:panelVisibility':
+        this.handlePanelVisibility(!!message.visible);
+        return true;
       case 'progressivePly:error':
         console.error('Progressive PLY error:', message.error);
         return true;
@@ -152,6 +155,31 @@ export class ProgressivePlyManager {
 
   onCameraChanged(): void {
     for (const session of this.sessions.values()) this.scheduleSelection(session);
+  }
+
+  private handlePanelVisibility(visible: boolean): void {
+    for (const session of this.sessions.values()) {
+      if (visible) {
+        this.scheduleSelection(session, 0);
+        continue;
+      }
+      if (session.selectionTimer !== null) {
+        window.clearTimeout(session.selectionTimer);
+        session.selectionTimer = null;
+      }
+      if (!session.manifest || !session.previewCreated) continue;
+      session.selected = ['node:'];
+      session.generation++;
+      session.pending.clear();
+      const root = session.tileCache.get('node:');
+      if (root) {
+        root.lastUsed = performance.now();
+        this.applySelectedTiles(session);
+      } else {
+        this.requestMissing(session);
+      }
+      this.evictTiles(session);
+    }
   }
 
   dispose(): void {
