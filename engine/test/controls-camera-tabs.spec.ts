@@ -49,6 +49,10 @@ test('Phase 4: controls tab, camera tab, and stats render and respond', async ({
   // Switch to Camera tab
   await page.click('[data-tab="camera"]');
   await page.waitForTimeout(300);
+  await expect(page.locator('[data-view-cube]')).toBeVisible();
+  for (const face of ['+x', '-x', '+y', '-y', '+z', '-z']) {
+    await expect(page.locator(`[data-view-face="${face}"]`)).toHaveCount(1);
+  }
   const fovSlider = page.locator('#camera-fov');
   await expect(fovSlider).toBeVisible();
   const positionDisplay = page.locator('#camera-controls-panel');
