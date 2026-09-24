@@ -683,7 +683,9 @@ export class ProgressivePlySessionManager {
     panel: vscode.WebviewPanel,
     shortPath: string
   ): Promise<boolean> {
-    if (path.extname(uri.fsPath).toLowerCase() !== '.ply') return false;
+    // Node fs here intentionally executes in the workspace extension host. For
+    // virtual/non-file providers, keep using the generic VS Code loader.
+    if (uri.scheme !== 'file' || path.extname(uri.fsPath).toLowerCase() !== '.ply') return false;
     const config = { ...configFromWorkspace(), ...this.configOverride };
     if (!config.enabled) return false;
 
