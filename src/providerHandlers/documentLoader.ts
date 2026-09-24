@@ -47,6 +47,11 @@ export interface DocumentLoaderHost {
     fileIndex: number
   ): Promise<void>;
   getSceneMetadata(fsPath: string): Promise<any>;
+  startProgressivePly(
+    documentUri: vscode.Uri,
+    webviewPanel: vscode.WebviewPanel,
+    shortPath: string
+  ): Promise<boolean>;
 }
 
 export interface DocumentFileTypeFlags {
@@ -1000,6 +1005,20 @@ export async function loadDocumentContent(
       kind: 'ply',
       at: wallStart,
     });
+
+    // Large ordinary PLY point clouds stay on the extension host. This is
+    // especially important under Remote-SSH, where the webview still lives on
+    // the local machine and fetching a 1+ GiB PLY would exhaust local RAM.
+    if (
+      fileType.extension === 'ply' &&
+      (await host.startProgressivePly(
+        documentUri,
+        webviewPanel,
+        host.getShortPath(documentUri.fsPath)
+      ))
+    ) {
+      return;
+    }
 
     // Streaming overlap for ASCII PLY point clouds (same cold-cache win as
     // XYZ). Gate on a 64KB header read so we don't read the whole file first:
