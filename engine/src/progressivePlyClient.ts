@@ -67,6 +67,7 @@ interface ClientSession {
   desiredKey: string;
   localPointBudget: number;
   localMemoryBudgetBytes: number;
+  refineScreenPixels: number;
   hidden: boolean;
   desired: Set<string>;
 }
@@ -129,6 +130,31 @@ export function decodeProgressiveTile(
     }
   }
   return { positions, colors, normals, intensity, scalars };
+}
+
+export function estimateProjectedBoxPixels(
+  box: THREE.Box3,
+  camera: THREE.Camera,
+  viewportHeight: number
+): number {
+  const size = box.getSize(new THREE.Vector3());
+  const extent = Math.max(size.x, size.y, size.z);
+  if (!(extent > 0) || !(viewportHeight > 0)) return 0;
+
+  if (camera instanceof THREE.PerspectiveCamera) {
+    const center = box.getCenter(new THREE.Vector3());
+    const distance = Math.max(1e-6, center.distanceTo(camera.position));
+    const focalPixels =
+      viewportHeight / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
+    return (extent * focalPixels) / distance;
+  }
+
+  if (camera instanceof THREE.OrthographicCamera) {
+    const visibleHeight = Math.abs(camera.top - camera.bottom) / Math.max(camera.zoom, 1e-6);
+    return visibleHeight > 0 ? (extent / visibleHeight) * viewportHeight : 0;
+  }
+
+  return Number.POSITIVE_INFINITY;
 }
 
 export function selectProgressiveNodes(
@@ -204,6 +230,7 @@ export class ProgressivePlyClient {
         64 * 1024 * 1024,
         Number(budgets.localMemoryBudgetBytes) || 256 * 1024 * 1024
       ),
+      refineScreenPixels: Math.max(32, Number(budgets.refineScreenPixels) || 180),
       hidden: document.hidden,
       desired: new Set(),
     };
@@ -228,6 +255,8 @@ export class ProgressivePlyClient {
         Number(message.budgets.localPointBudget) || session.localPointBudget;
       session.localMemoryBudgetBytes =
         Number(message.budgets.localMemoryBudgetBytes) || session.localMemoryBudgetBytes;
+      session.refineScreenPixels =
+        Number(message.budgets.refineScreenPixels) || session.refineScreenPixels;
     }
     session.desiredKey = '';
     this.updateCamera(true);
@@ -353,8 +382,19 @@ export class ProgressivePlyClient {
         if (node.id === session.manifest.rootId || node.children.length > 0) continue;
         const worldBox = boxFromTuple(node.bbox).applyMatrix4(source.matrixWorld);
         if (!frustum.intersectsBox(worldBox)) continue;
+        const viewportHeight =
+          this.host.renderer?.domElement?.clientHeight || window.innerHeight || 1;
+        const projectedPixels = estimateProjectedBoxPixels(
+          worldBox,
+          this.host.camera,
+          viewportHeight
+        );
+        if (projectedPixels < session.refineScreenPixels) continue;
         const center = worldBox.getCenter(new THREE.Vector3());
-        candidates.push({ node, distance: Math.max(1e-6, center.distanceTo(this.host.camera.position)) });
+        candidates.push({
+          node,
+          distance: Math.max(1e-6, center.distanceTo(this.host.camera.position)),
+        });
       }
       const desired = selectProgressiveNodes(
         candidates,
