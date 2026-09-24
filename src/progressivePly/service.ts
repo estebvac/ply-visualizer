@@ -131,7 +131,13 @@ export class ProgressivePlyService {
     panel: vscode.WebviewPanel,
     metadata: ProgressivePlyOpenMetadata
   ): Promise<boolean> {
-    if (documentUri.scheme !== 'file' || path.extname(documentUri.fsPath).toLowerCase() !== '.ply') {
+    // Under Remote-SSH workspace resources use the vscode-remote scheme, but
+    // this extension runs in the workspace extension host and documentUri.fsPath
+    // is the real path on the remote machine. Keep all heavy I/O there.
+    if (
+      !['file', 'vscode-remote'].includes(documentUri.scheme) ||
+      path.extname(documentUri.fsPath).toLowerCase() !== '.ply'
+    ) {
       return false;
     }
 
