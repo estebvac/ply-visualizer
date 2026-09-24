@@ -51,6 +51,7 @@ test('progressive PLY manager bounds point residency and request bursts', async 
     },
     onFileColorModeChange: () => undefined,
     requestRender: () => undefined,
+    showError: () => undefined,
   };
 
   try {
