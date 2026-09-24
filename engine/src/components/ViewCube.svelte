@@ -68,9 +68,6 @@
   const choices = [...faces, ...edges, ...corners];
   let hoveredId = $state('');
 
-  const sceneStyle =
-    `--cube-size:${CUBE_SIZE}px;--cube-half:${CUBE_HALF}px;--cube-perspective:${PERSPECTIVE}px;--scene-size:${SCENE_SIZE}px;`;
-
   const cubeTransform = $derived.by(() => {
     // These state reads make the CSS gizmo follow every camera update without
     // introducing a second render loop.
@@ -158,7 +155,6 @@
     class="view-cube-scene"
     aria-label="Camera view cube"
     data-view-cube-scene
-    style={sceneStyle}
   >
     <div class="view-cube" style:transform={cubeTransform} data-view-cube>
       {#each faces as face (face.id)}
@@ -223,7 +219,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
+    gap: 0;
     margin: 8px auto 4px;
     width: 100%;
     min-width: 0;
@@ -231,21 +227,27 @@
   }
 
   .view-cube-scene {
-    width: var(--scene-size);
-    height: var(--scene-size);
-    flex: 0 0 var(--scene-size);
-    perspective: var(--cube-perspective);
+    position: relative;
+    width: 136px;
+    min-width: 136px;
+    max-width: 136px;
+    height: 136px;
+    min-height: 136px;
+    max-height: 136px;
+    flex: 0 0 136px;
+    perspective: 228px;
     perspective-origin: 50% 50%;
-    display: grid;
-    place-items: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     overflow: visible;
-    contain: layout style;
+    margin: 0 auto 8px;
   }
 
   .view-cube {
     position: relative;
-    width: var(--cube-size);
-    height: var(--cube-size);
+    width: 76px;
+    height: 76px;
     transform-style: preserve-3d;
     transform-origin: 50% 50%;
     transition: transform 70ms linear;
@@ -257,8 +259,8 @@
     box-sizing: border-box;
     position: absolute;
     inset: 0;
-    width: var(--cube-size);
-    height: var(--cube-size);
+    width: 76px;
+    height: 76px;
     display: grid;
     place-items: center;
     transform-style: preserve-3d;
@@ -306,12 +308,12 @@
    * Axis labels are mapped onto the six physical planes; the geometry itself
    * remains the canonical six-plane cube.
    */
-  .face-pos-z { transform: rotateY(0deg) translateZ(var(--cube-half)); }
-  .face-pos-x { transform: rotateY(90deg) translateZ(var(--cube-half)); }
-  .face-neg-z { transform: rotateY(180deg) translateZ(var(--cube-half)); }
-  .face-neg-x { transform: rotateY(-90deg) translateZ(var(--cube-half)); }
-  .face-neg-y { transform: rotateX(90deg) translateZ(var(--cube-half)); }
-  .face-pos-y { transform: rotateX(-90deg) translateZ(var(--cube-half)); }
+  .face-pos-z { transform: rotateY(0deg) translateZ(38px); }
+  .face-pos-x { transform: rotateY(90deg) translateZ(38px); }
+  .face-neg-z { transform: rotateY(180deg) translateZ(38px); }
+  .face-neg-x { transform: rotateY(-90deg) translateZ(38px); }
+  .face-neg-y { transform: rotateX(90deg) translateZ(38px); }
+  .face-pos-y { transform: rotateX(-90deg) translateZ(38px); }
 
   .face-label {
     pointer-events: none;
@@ -360,5 +362,6 @@
     line-height: 1.35;
     max-width: 190px;
     margin: 0 auto;
+    pointer-events: none;
   }
 </style>
