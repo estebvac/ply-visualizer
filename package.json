@@ -77,6 +77,48 @@
           "type": "boolean",
           "default": false,
           "description": "Render with WebGPU instead of WebGL. Experimental and slower on large point clouds; points are drawn at 1 pixel, and Eye Dome Lighting and gaussian splat rendering are unavailable. Falls back to WebGL when WebGPU cannot start. Reopen the viewer to apply."
+        },
+        "plyViewer.largePly.progressiveFileSizeMiB": {
+          "type": "number",
+          "default": 256,
+          "minimum": 32,
+          "description": "Binary PLY files at or above this size use remote progressive LOD loading instead of being fetched completely into the local webview."
+        },
+        "plyViewer.largePly.progressiveDecodedSizeMiB": {
+          "type": "number",
+          "default": 512,
+          "minimum": 64,
+          "description": "Use progressive LOD when the estimated decoded point-cloud arrays would exceed this local memory size."
+        },
+        "plyViewer.largePly.localMemoryBudgetMiB": {
+          "type": "number",
+          "default": 256,
+          "minimum": 64,
+          "description": "Approximate local CPU tile-cache budget for progressive PLY rendering."
+        },
+        "plyViewer.largePly.visiblePointBudget": {
+          "type": "number",
+          "default": 4000000,
+          "minimum": 100000,
+          "description": "Maximum number of progressive PLY points targeted for the current local view."
+        },
+        "plyViewer.largePly.previewPoints": {
+          "type": "number",
+          "default": 500000,
+          "minimum": 10000,
+          "description": "Maximum points in the initial remotely sampled large-PLY preview."
+        },
+        "plyViewer.largePly.tilePoints": {
+          "type": "number",
+          "default": 200000,
+          "minimum": 10000,
+          "description": "Maximum source points per progressive PLY leaf page before the transfer byte cap is applied."
+        },
+        "plyViewer.largePly.lodSamplePoints": {
+          "type": "number",
+          "default": 50000,
+          "minimum": 5000,
+          "description": "Maximum representative points stored for each internal progressive PLY LOD node."
         }
       }
     },
@@ -450,12 +492,12 @@
                   "type": "string"
                 },
                 "value_scale": {
-                  "default": 1.0,
+                  "default": 1,
                   "title": "Value Scale",
                   "type": "number"
                 },
                 "value_offset": {
-                  "default": 0.0,
+                  "default": 0,
                   "title": "Value Offset",
                   "type": "number"
                 },
@@ -472,7 +514,7 @@
                   "title": "Baseline"
                 },
                 "disparity_offset": {
-                  "default": 0.0,
+                  "default": 0,
                   "title": "Disparity Offset",
                   "type": "number"
                 },
@@ -797,7 +839,7 @@
               "title": "Vectors"
             },
             "vector_scale": {
-              "default": 1.0,
+              "default": 1,
               "title": "Vector Scale",
               "type": "number"
             }
@@ -1001,7 +1043,7 @@
               "title": "Vectors"
             },
             "vector_scale": {
-              "default": 1.0,
+              "default": 1,
               "title": "Vector Scale",
               "type": "number"
             }
@@ -2935,5 +2977,8 @@
     "*.{js,ts,tsx}": [
       "eslint --fix"
     ]
-  }
+  },
+  "extensionKind": [
+    "workspace"
+  ]
 }
