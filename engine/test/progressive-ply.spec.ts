@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
+import * as THREE from 'three';
 import {
   decodeProgressiveTile,
+  estimateProjectedBoxPixels,
   selectProgressiveNodes,
   type ProgressiveManifest,
   type ProgressiveNode,
@@ -81,4 +83,22 @@ test('LOD selection obeys both point and local byte budgets', () => {
   expect(selected.map(value => value.id)).toEqual(['near', 'far']);
   expect(selected.reduce((sum, value) => sum + value.pointCount, 0)).toBeLessThanOrEqual(250);
   expect(selected.reduce((sum, value) => sum + value.byteLength, 0)).toBeLessThanOrEqual(2500);
+});
+
+
+test('screen-space estimator increases as a tile approaches the camera', () => {
+  const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
+  const box = new THREE.Box3(
+    new THREE.Vector3(-1, -1, -1),
+    new THREE.Vector3(1, 1, 1)
+  );
+
+  camera.position.set(0, 0, 10);
+  const farPixels = estimateProjectedBoxPixels(box, camera, 1000);
+  camera.position.set(0, 0, 5);
+  const nearPixels = estimateProjectedBoxPixels(box, camera, 1000);
+
+  expect(farPixels).toBeGreaterThan(150);
+  expect(farPixels).toBeLessThan(200);
+  expect(nearPixels).toBeGreaterThan(farPixels * 1.9);
 });
