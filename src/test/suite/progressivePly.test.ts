@@ -123,6 +123,7 @@ suite('Progressive PLY remote loading', () => {
       scalarFieldNames: header.scalarFieldNames,
       isGaussianSplat: header.isGaussianSplat,
       fixedVertexStride: header.vertexStride,
+      vertexDataStartsAtBody: header.vertexDataStartsAtBody,
     };
     assert.strictEqual(estimateDecodedPlyBytes(routingHeader), 100 * 19);
     assert.strictEqual(
@@ -145,6 +146,7 @@ suite('Progressive PLY remote loading', () => {
       scalarFieldNames: [] as string[],
       isGaussianSplat: false,
       fixedVertexStride: 15,
+      vertexDataStartsAtBody: true,
     };
     const force = { fileSizeThresholdBytes: 1, decodedBytesThresholdBytes: 1 };
     assert.strictEqual(shouldUseProgressivePly(1024, { ...base, faceCount: 1 }, force), false);
@@ -230,6 +232,47 @@ suite('Progressive PLY remote loading', () => {
     );
   });
 
+  test('rejects a PLY whose vertex records do not start at the binary body', () => {
+    const headerBytes = Buffer.from(
+      [
+        'ply',
+        'format binary_little_endian 1.0',
+        'element metadata 1',
+        'property int id',
+        'element vertex 2',
+        'property float x',
+        'property float y',
+        'property float z',
+        'element face 0',
+        'property list uchar int vertex_indices',
+        'end_header',
+        '',
+      ].join('\n'),
+      'ascii'
+    );
+    const parsed = parseProgressivePlyHeader(headerBytes);
+    assert.strictEqual(parsed.vertexDataStartsAtBody, false);
+    assert.strictEqual(
+      shouldUseProgressivePly(
+        1024 * 1024 * 1024,
+        {
+          format: parsed.format,
+          vertexCount: parsed.vertexCount,
+          faceCount: parsed.faceCount,
+          hasColors: parsed.hasColors,
+          hasNormals: parsed.hasNormals,
+          hasIntensity: parsed.hasIntensity,
+          scalarFieldNames: parsed.scalarFieldNames,
+          isGaussianSplat: parsed.isGaussianSplat,
+          fixedVertexStride: parsed.vertexStride,
+          vertexDataStartsAtBody: parsed.vertexDataStartsAtBody,
+        },
+        { fileSizeThresholdBytes: 1, decodedBytesThresholdBytes: 1 }
+      ),
+      false
+    );
+  });
+
   test('keeps meshes, ASCII clouds, splats, and variable-width vertices off the progressive path', () => {
     const base = {
       format: 'binary_little_endian' as const,
@@ -241,6 +284,7 @@ suite('Progressive PLY remote loading', () => {
       scalarFieldNames: [] as string[],
       isGaussianSplat: false,
       fixedVertexStride: 15,
+      vertexDataStartsAtBody: true,
     };
     const force = { fileSizeThresholdBytes: 1, decodedBytesThresholdBytes: 1 };
     assert.strictEqual(shouldUseProgressivePly(1024, base, force), true);
