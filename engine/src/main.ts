@@ -111,6 +111,7 @@ import * as commentSettings from './depth/commentSettings';
 import * as cameraProfile from './cameraProfile';
 import * as renderModeToggles from './renderModeToggles';
 import * as voxelRenderer from './visualization/VoxelRenderer';
+import { ProgressivePlyClient } from './progressivePlyClient';
 import { SplatModeManager, handleSplatContainerUri } from './visualization/splatMode';
 import * as colorModeUtils from './colorMode';
 import * as pointSizeScaling from './pointSizeScaling';
@@ -365,6 +366,7 @@ class PointCloudVisualizer {
   // spatialFiles like the render-mode arrays below.
   splatModeActive: boolean[] = [];
   splatMode: SplatModeManager = new SplatModeManager(this);
+  progressivePly: ProgressivePlyClient;
   private isFirstFileLoad: boolean = true; // Track if this is the first file being loaded
 
   // Universal rendering mode states for each file
@@ -623,6 +625,7 @@ class PointCloudVisualizer {
   readonly fileColors: [number, number, number][] = DEFAULT_COLORS.FILE_COLORS;
 
   constructor() {
+    this.progressivePly = new ProgressivePlyClient(this);
     // Forward PERF lines to the extension's "3D Visualizer" Output channel.
     if (isVSCode) {
       setPerfSink((line: string) => this.vscode.postMessage({ type: 'perfLog', line }));
@@ -1286,6 +1289,7 @@ class PointCloudVisualizer {
 
     // Only update camera matrix and UI when camera actually changes
     if (positionChanged || rotationChanged) {
+      this.progressivePly.updateCamera();
       this.updateCameraMatrix();
       this.updateCameraControlsPanel();
 
@@ -2409,6 +2413,21 @@ class PointCloudVisualizer {
             break;
           case 'ultimateRawBinaryUri':
             await this.handleUltimateRawBinaryUri(message);
+            break;
+          case 'progressivePly:start':
+            await this.progressivePly.handleStart(message);
+            break;
+          case 'progressivePly:manifest':
+            this.progressivePly.handleManifest(message);
+            break;
+          case 'progressivePly:tile':
+            this.progressivePly.handleTile(message);
+            break;
+          case 'progressivePly:progress':
+            this.progressivePly.handleProgress(message);
+            break;
+          case 'progressivePly:error':
+            this.progressivePly.handleError(message);
             break;
           case 'directTypedArrayData':
             try {
@@ -4064,6 +4083,7 @@ class PointCloudVisualizer {
       return;
     }
     this.voxelSizes[fileIndex] = newSize;
+    this.progressivePly.syncVoxelSize(fileIndex, newSize);
     const voxels = this.voxelObjects[fileIndex];
     if (voxels) {
       voxelRenderer.updateVoxelSize(voxels, newSize);
