@@ -33,4 +33,4 @@ jobs:
 
       - name: Verify Standard Orbit and ViewCube baseline
         working-directory: engine
-        run: npm exec -- playwright test test/view-cube-transform.spec.ts test/view-cube-baseline.spec.ts
+        run: npm exec -- playwright test test/view-cube-transform.spec.ts test/view-cube-baseline.spec.ts --workers=1 --retries=0 --timeout=15000
