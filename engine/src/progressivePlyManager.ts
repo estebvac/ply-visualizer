@@ -63,6 +63,8 @@ interface ProgressiveSession {
   previewCreated: boolean;
   previewPayload: PointPayload | null;
   isAddFile: boolean;
+  /** Shift from this PLY's source origin into the scene's shared source origin. */
+  positionOffset: [number, number, number];
 }
 
 export interface ProgressivePlyViewerHost {
@@ -250,6 +252,7 @@ export class ProgressivePlyManager {
       previewCreated: false,
       previewPayload: null,
       isAddFile: !!message.isAddFile,
+      positionOffset: [0, 0, 0],
     });
   }
 
@@ -294,6 +297,20 @@ export class ProgressivePlyManager {
         await this.host.displayFiles([data]);
       }
       session.previewCreated = true;
+      // addNewFiles/displayFiles runs alignSourceOrigin(), which may shift this
+      // first preview into an already-loaded cloud's local frame. Capture that
+      // exact shift once and apply it to every later tile/refinement payload.
+      const fileIndex = this.fileIndex(session);
+      const alignedOrigin = fileIndex >= 0
+        ? this.host.spatialFiles[fileIndex]?.sourceOrigin
+        : undefined;
+      if (alignedOrigin) {
+        session.positionOffset = [
+          payload.sourceOrigin[0] - alignedOrigin[0],
+          payload.sourceOrigin[1] - alignedOrigin[1],
+          payload.sourceOrigin[2] - alignedOrigin[2],
+        ];
+      }
     } else {
       this.applyPayload(session, payload);
     }
@@ -535,14 +552,24 @@ export class ProgressivePlyManager {
     const mesh = this.host.meshes[fileIndex];
     if (!(mesh instanceof THREE.Points)) return;
 
-    data.positionsArray = payload.positions;
+    let positions = payload.positions;
+    const [dx, dy, dz] = session.positionOffset;
+    if (dx !== 0 || dy !== 0 || dz !== 0) {
+      positions = payload.positions.slice();
+      for (let i = 0; i < positions.length; i += 3) {
+        positions[i] += dx;
+        positions[i + 1] += dy;
+        positions[i + 2] += dz;
+      }
+    }
+    data.positionsArray = positions;
     data.colorsArray = payload.colors;
     data.normalsArray = payload.normals;
     data.intensityArray = payload.intensity;
     data.scalarFields = payload.scalarFields;
     data.vertexCount = payload.count;
     data.sourcePointCount = session.sourcePointCount;
-    data.sourceOrigin = payload.sourceOrigin;
+    // Keep the scene-aligned sourceOrigin established by alignSourceOrigin().
     data.metadata = {
       ...(data.metadata ?? {}),
       progressivePly: true,
@@ -552,7 +579,7 @@ export class ProgressivePlyManager {
     };
 
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(payload.positions, 3));
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
     const oldGeometry = mesh.geometry;
