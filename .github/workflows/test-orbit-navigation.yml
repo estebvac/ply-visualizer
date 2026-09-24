@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  focused-tests:
+  full-verification:
     runs-on: ubuntu-latest
     steps:
       - name: Check out
@@ -41,10 +41,39 @@ jobs:
       - name: Compile extension and tests
         run: pnpm run compile:all
 
-      - name: Install Xvfb for VS Code Electron
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb
+      - name: Lint
+        run: pnpm run lint
 
-      - name: Run extension-host tests
+      - name: Check formatting
+        run: pnpm run format:check
+
+      - name: Build standalone engine
+        run: cd engine && pnpm run build
+
+      - name: Install Playwright Chromium and host dependencies
+        run: cd engine && pnpm exec playwright install --with-deps chromium
+
+      - name: Run focused navigation regressions
+        run: |
+          cd engine
+          pnpm exec playwright test             test/orbit-navigation.spec.ts             test/point-picking.spec.ts             test/controls-camera-tabs.spec.ts             test/zoom-after-rotate.spec.ts             test/rotation-drift-check.spec.ts             --project=chromium
+
+      - name: Run complete engine browser suite
+        run: cd engine && pnpm test
+
+      - name: Run VS Code extension-host suite
         run: xvfb-run -a pnpm test
+
+      - name: Package feature VSIX
+        run: |
+          mkdir -p artifacts
+          pnpm dlx @vscode/vsce package --out artifacts/ply-visualizer-orbitcontrols-navigation.vsix
+          sha256sum artifacts/ply-visualizer-orbitcontrols-navigation.vsix | tee artifacts/SHA256SUMS
+
+      - name: Upload feature VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ply-visualizer-orbitcontrols-navigation
+          path: |
+            artifacts/ply-visualizer-orbitcontrols-navigation.vsix
+            artifacts/SHA256SUMS
