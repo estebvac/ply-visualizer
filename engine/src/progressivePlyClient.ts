@@ -333,8 +333,15 @@ export class ProgressivePlyClient {
     for (const session of this.sessions.values()) {
       if (session.hidden || session.manifest.depth <= 0) continue;
       const source = this.host.meshes[session.fileIndex];
-      const voxelMode = !!this.host.voxelsVisible?.[session.fileIndex];
-      if (!(source instanceof THREE.Points) || (!source.visible && !voxelMode)) continue;
+      if (!(source instanceof THREE.Points)) continue;
+      const voxelRoot = this.host.voxelObjects?.[session.fileIndex] as
+        | THREE.InstancedMesh
+        | null
+        | undefined;
+      const representationVisible =
+        source.visible ||
+        (!!this.host.voxelsVisible?.[session.fileIndex] && !!voxelRoot?.visible);
+      if (!representationVisible) continue;
 
       source.updateWorldMatrix(true, true);
       this.host.camera.updateMatrixWorld(true);
