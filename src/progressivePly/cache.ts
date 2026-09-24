@@ -167,11 +167,15 @@ function readXYZ(
   const x = props.get('x')!;
   const y = props.get('y')!;
   const z = props.get('z')!;
-  return [
+  const xyz: [number, number, number] = [
     scalarReader(bytes, base + x.byteOffset, x, littleEndian),
     scalarReader(bytes, base + y.byteOffset, y, littleEndian),
     scalarReader(bytes, base + z.byteOffset, z, littleEndian),
   ];
+  if (!xyz.every(Number.isFinite)) {
+    throw new Error('PLY contains a non-finite x/y/z coordinate');
+  }
+  return xyz;
 }
 
 function optionalProperty(
