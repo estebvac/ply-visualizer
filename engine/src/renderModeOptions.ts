@@ -10,6 +10,15 @@ export interface RenderModeOptionsHost {
   splatMode?: { canEnable(data: SpatialData | undefined): boolean };
 }
 
+export function canVoxelizePointCloud(data: SpatialData | undefined): boolean {
+  if (!data || data.sceneModel || data.metadata?.volumeRenderMode) {
+    return false;
+  }
+  const hasFaces = data.faceCount > 0;
+  const hasLines = !!(data as any).objData && (data as any).objData.lineCount > 0;
+  return !hasFaces && !hasLines;
+}
+
 /** The render-mode buttons available to one spatial file row. */
 export function getRenderModeOptions(
   host: RenderModeOptionsHost,
@@ -34,6 +43,9 @@ export function getRenderModeOptions(
     (!isPtsFile || (data.vertices.length > 0 && data.vertices[0]?.nx !== undefined));
 
   const buttons: RenderModeOption[] = [{ mode: 'points', label: '👁️ Points', cls: 'points-btn' }];
+  if (canVoxelizePointCloud(data)) {
+    buttons.push({ mode: 'voxels', label: '🧱 Voxels', cls: 'voxels-btn' });
+  }
   if (host.splatMode?.canEnable(data)) {
     buttons.push({ mode: 'splat', label: '✨ Splats', cls: 'splat-btn' });
   }

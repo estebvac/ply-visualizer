@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { viewerState } from './state/viewer.svelte';
+import { NAVIGATION_UP, poleSafeDirection } from './cameraOrientation';
 
 export interface CameraConventionHost {
   camera: THREE.PerspectiveCamera;
@@ -8,9 +9,12 @@ export interface CameraConventionHost {
   requestRender(): void;
   updateAxesForCameraConvention(convention: 'opencv' | 'opengl'): void;
   showCameraConventionFeedback(convention: string): void;
+  controlType?: string;
+  cameraViewAnimator?: { cancel(): void };
 }
 
 export function setOpenCVCameraConvention(host: CameraConventionHost): void {
+  host.cameraViewAnimator?.cancel();
   console.log('📷 Setting camera to OpenCV convention (Y-down, Z-forward)');
 
   // OpenCV convention: Y-down, Z-forward
@@ -19,15 +23,22 @@ export function setOpenCVCameraConvention(host: CameraConventionHost): void {
   // Store current target position
   const currentTarget = host.controls.target.clone();
 
-  // Set up vector to Y-down
-  host.camera.up.set(0, -1, 0);
+  if (host.controlType === 'orbit') {
+    host.camera.up.copy(NAVIGATION_UP);
+  } else {
+    host.camera.up.set(0, -1, 0);
+  }
 
   // Calculate current camera direction relative to target
   const distance = host.camera.position.distanceTo(currentTarget);
 
   // Position camera to look along +Z axis while maintaining focus on current target
   // Move camera to negative Z relative to target so it looks toward positive Z
-  host.camera.position.copy(currentTarget).add(new THREE.Vector3(0, 0, -distance));
+  const cameraOffset =
+    host.controlType === 'orbit'
+      ? poleSafeDirection(new THREE.Vector3(0, 0, -1)).multiplyScalar(distance)
+      : new THREE.Vector3(0, 0, -distance);
+  host.camera.position.copy(currentTarget).add(cameraOffset);
 
   // Keep the same target (don't reset to origin)
   host.controls.target.copy(currentTarget);
@@ -46,6 +57,7 @@ export function setOpenCVCameraConvention(host: CameraConventionHost): void {
 }
 
 export function setOpenGLCameraConvention(host: CameraConventionHost): void {
+  host.cameraViewAnimator?.cancel();
   console.log('📷 Setting camera to OpenGL convention (Y-up, Z-backward)');
 
   // OpenGL convention: Y-up, Z-backward
@@ -54,15 +66,22 @@ export function setOpenGLCameraConvention(host: CameraConventionHost): void {
   // Store current target position
   const currentTarget = host.controls.target.clone();
 
-  // Set up vector to Y-up
-  host.camera.up.set(0, 1, 0);
+  if (host.controlType === 'orbit') {
+    host.camera.up.copy(NAVIGATION_UP);
+  } else {
+    host.camera.up.set(0, 1, 0);
+  }
 
   // Calculate current camera direction relative to target
   const distance = host.camera.position.distanceTo(currentTarget);
 
   // Position camera to look along -Z axis while maintaining focus on current target
   // Move camera to positive Z relative to target so it looks toward negative Z
-  host.camera.position.copy(currentTarget).add(new THREE.Vector3(0, 0, distance));
+  const cameraOffset =
+    host.controlType === 'orbit'
+      ? poleSafeDirection(new THREE.Vector3(0, 0, 1)).multiplyScalar(distance)
+      : new THREE.Vector3(0, 0, distance);
+  host.camera.position.copy(currentTarget).add(cameraOffset);
 
   // Keep the same target (don't reset to origin)
   host.controls.target.copy(currentTarget);

@@ -10,6 +10,7 @@ export interface TransformationMatrixHost {
   transformationMatrices: THREE.Matrix4[];
   meshes: (THREE.Mesh | THREE.Points | THREE.LineSegments | null)[];
   vertexPointsObjects: (THREE.Points | null)[];
+  voxelObjects: (THREE.InstancedMesh | null)[];
   normalsVisualizers: (THREE.LineSegments | null)[];
   multiMaterialGroups: (THREE.Group | null)[];
   spatialFiles: SpatialData[];
@@ -100,6 +101,11 @@ export function applyTransformationMatrix(host: TransformationMatrixHost, fileIn
     const vertexPoints = host.vertexPointsObjects[fileIndex];
     if (vertexPoints) {
       setObjectMatrix(vertexPoints, matrix);
+    }
+
+    const voxels = host.voxelObjects[fileIndex];
+    if (voxels) {
+      setObjectMatrix(voxels, matrix);
     }
 
     // Also apply transformation to normals visualizer
@@ -223,4 +229,10 @@ export function updateCameraControlsPanel(host: TransformationMatrixHost): void 
   viewerState.cameraPositionText = `(${pos.x.toFixed(3)}, ${pos.y.toFixed(3)}, ${pos.z.toFixed(3)})`;
   viewerState.cameraRotationText = `(${rotX.toFixed(1)}°, ${rotY.toFixed(1)}°, ${rotZ.toFixed(1)}°)`;
   viewerState.cameraTargetText = `(${target.x.toFixed(3)}, ${target.y.toFixed(3)}, ${target.z.toFixed(3)})`;
+  viewerState.cameraPositionX = pos.x;
+  viewerState.cameraPositionY = pos.y;
+  viewerState.cameraPositionZ = pos.z;
+  viewerState.cameraTargetX = target.x;
+  viewerState.cameraTargetY = target.y;
+  viewerState.cameraTargetZ = target.z;
 }

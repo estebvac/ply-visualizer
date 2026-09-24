@@ -1,13 +1,12 @@
 import { expect, test } from '@playwright/test';
-import {
-  handleLargeFileChunk,
-  handleLargeFileComplete,
-  handleStartLargeFile,
-  LargeFileChunkingHost,
-} from '../src/largeFileChunking';
-import { SpatialData } from '../src/interfaces';
+import type { LargeFileChunkingHost } from '../src/largeFileChunking';
+import type { SpatialData } from '../src/interfaces';
 
 test('typed LiDAR chunks preserve packed arrays, scalar fields, and metadata', async () => {
+  (globalThis as any).$state = <T>(value: T) => value;
+  const { handleLargeFileChunk, handleLargeFileComplete, handleStartLargeFile } =
+    await import('../src/largeFileChunking');
+
   Object.defineProperty(globalThis, 'document', {
     value: { getElementById: () => null },
     configurable: true,

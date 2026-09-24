@@ -110,6 +110,7 @@ import * as intensity from './utils/intensity';
 import * as commentSettings from './depth/commentSettings';
 import * as cameraProfile from './cameraProfile';
 import * as renderModeToggles from './renderModeToggles';
+import * as voxelRenderer from './visualization/VoxelRenderer';
 import { SplatModeManager, handleSplatContainerUri } from './visualization/splatMode';
 import * as colorModeUtils from './colorMode';
 import * as pointSizeScaling from './pointSizeScaling';
@@ -136,7 +137,10 @@ import {
   scannerCapturePointFor,
   shouldApplySavedViewConvention,
   shouldOrientZUp,
+  resetStandardOrbitUp,
 } from './cameraOrientation';
+import { configureStandardOrbitControls } from './orbitNavigation';
+import { CameraViewAnimator } from './CameraViewAnimator';
 import { applyFixedClipPlanes, FIXED_CAMERA_FAR, FIXED_CAMERA_NEAR } from './cameraClipping';
 import * as axesFeature from './axesFeature';
 import * as transformationMatrix from './transformationMatrix';
@@ -264,9 +268,10 @@ class PointCloudVisualizer {
     | CustomArcballControls
     | TurntableControls
     | VirtualBallControls;
+  readonly cameraViewAnimator = new CameraViewAnimator();
 
   // Camera control state
-  controlType: 'trackball' | 'orbit' | 'legacy-trackball' | 'arcball' = 'legacy-trackball';
+  controlType: 'trackball' | 'orbit' | 'legacy-trackball' | 'arcball' = 'orbit';
   screenSpaceScaling: boolean = false;
   allowTransparency: boolean = false;
 
@@ -351,6 +356,7 @@ class PointCloudVisualizer {
   meshes: (THREE.Mesh | THREE.Points | THREE.LineSegments)[] = [];
   normalsVisualizers: (THREE.LineSegments | null)[] = [];
   vertexPointsObjects: (THREE.Points | null)[] = []; // Vertex points for triangle meshes
+  voxelObjects: (THREE.InstancedMesh | null)[] = [];
   multiMaterialGroups: (THREE.Group | null)[] = []; // Multi-material Groups for OBJ files
   materialMeshes: (THREE.Object3D[] | null)[] = []; // Sub-meshes for multi-material OBJ files
   fileVisibility: boolean[] = [];
@@ -365,10 +371,12 @@ class PointCloudVisualizer {
   solidVisible: boolean[] = []; // Solid mesh rendering
   wireframeVisible: boolean[] = []; // Wireframe rendering
   pointsVisible: boolean[] = []; // Points rendering
+  voxelsVisible: boolean[] = []; // Instanced cube rendering for point clouds
   normalsVisible: boolean[] = []; // Normals lines rendering
 
   private useOriginalColors = true; // Default to original colors
   pointSizes: number[] = []; // Individual point sizes for each point cloud
+  voxelSizes: number[] = []; // Physical voxel cube edge length in scene units
 
   // Sequence mode state
   sequenceMode = false;
@@ -858,6 +866,8 @@ class PointCloudVisualizer {
   }
 
   initializeControls(): void {
+    this.cameraViewAnimator.cancel();
+
     // Store current camera state before disposing old controls
     const currentCameraPosition = this.camera.position.clone();
     const currentTarget = this.controls ? this.controls.target.clone() : new THREE.Vector3(0, 0, 0);
@@ -911,23 +921,28 @@ class PointCloudVisualizer {
       // Apply preference
       arc.invertRotation = this.arcballInvertRotation;
     } else {
+      // Standard Orbit uses one immutable navigation frame: +Z world-up.
+      resetStandardOrbitUp(this.camera);
       this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-      const orbitControls = this.controls as OrbitControls;
-      orbitControls.enableDamping = true;
-      orbitControls.dampingFactor = 0.2;
-      orbitControls.screenSpacePanning = false;
-      orbitControls.minDistance = 0.001;
-      orbitControls.maxDistance = 50000; // Increased to match camera far plane
+      configureStandardOrbitControls(this.controls as OrbitControls);
     }
 
     // Set up axes visibility for all control types
     this.setupAxesVisibility();
 
-    // Restore camera state to prevent jumps
+    // Restore camera state to prevent jumps. Standard Orbit deliberately does
+    // not restore a historical camera.up: its navigation frame is always +Z.
     this.camera.position.copy(currentCameraPosition);
-    this.camera.up.copy(currentUp);
+    if (this.controlType === 'orbit') {
+      resetStandardOrbitUp(this.camera);
+    } else {
+      this.camera.up.copy(currentUp);
+    }
     this.controls.target.copy(currentTarget);
     this.controls.update();
+    if (this.controlType === 'orbit') {
+      this.controls.addEventListener('start', () => this.cameraViewAnimator.cancel());
+    }
     const safeRect = this.screenAnchor?.getSafeRect();
     if (safeRect) {
       this.applyControlScreenRegion(safeRect);
@@ -1610,6 +1625,8 @@ class PointCloudVisualizer {
   }
 
   private resetCameraToDefault(): void {
+    this.cameraViewAnimator.cancel();
+
     // Reset FOV and camera orientation
     this.camera.fov = 75;
     this.camera.updateProjectionMatrix();
@@ -1661,6 +1678,7 @@ class PointCloudVisualizer {
   }
 
   private async onDoubleClick(event: MouseEvent): Promise<void> {
+    this.cameraViewAnimator.cancel();
     if (!this.selectionManager) {
       return;
     }
@@ -1883,7 +1901,14 @@ class PointCloudVisualizer {
         e.target instanceof HTMLTextAreaElement ||
         e.target instanceof HTMLSelectElement
       ) {
+        if (e.key.startsWith('Arrow')) {
+          e.stopPropagation();
+        }
         return;
+      }
+
+      if (this.controlType === 'orbit' && e.key.startsWith('Arrow')) {
+        this.cameraViewAnimator.cancel();
       }
 
       // Every shortcut here is a bare letter, so anything with a modifier
@@ -2801,6 +2826,7 @@ class PointCloudVisualizer {
   }
 
   private fitCameraToAllObjects(): void {
+    this.cameraViewAnimator.cancel();
     if (
       this.meshes.length === 0 &&
       this.poseGroups.length === 0 &&
@@ -2979,6 +3005,10 @@ class PointCloudVisualizer {
         } else {
           oldMaterial.dispose();
         }
+      }
+      const voxels = this.voxelObjects[fileIndex];
+      if (voxels && this.meshes[fileIndex] instanceof THREE.Points) {
+        voxelRenderer.refreshVoxelColors(voxels, this.meshes[fileIndex] as THREE.Points);
       }
     }
     // The renderer draws on demand, so a colour change that does not ask for a
@@ -3277,12 +3307,15 @@ class PointCloudVisualizer {
         this.pointsVisible.push(true); // Show actual point data
       }
 
-      // Wireframe and normals always start disabled
+      // Wireframe, normals, and voxel view always start disabled.
       this.wireframeVisible.push(false);
       this.normalsVisible.push(false);
+      this.voxelsVisible.push(false);
+      this.voxelSizes.push(0.1);
 
-      // Initialize vertex points object (null initially, created on demand)
+      // Secondary visualization objects are created lazily.
       this.vertexPointsObjects.push(null);
+      this.voxelObjects.push(null);
 
       // Initialize color mode before creating material. The slot already exists
       // at entryIndex, so this only assigns.
@@ -3800,6 +3833,12 @@ class PointCloudVisualizer {
       }
     }
 
+    const voxels = this.voxelObjects[fileIndex];
+    if (voxels) {
+      this.scene.remove(voxels);
+      voxelRenderer.disposeVoxelMesh(voxels);
+    }
+
     // Remove normals visualizer from scene and dispose
     const normalsVisualizer = this.normalsVisualizers[fileIndex];
     if (normalsVisualizer) {
@@ -3866,6 +3905,8 @@ class PointCloudVisualizer {
     this.meshes.splice(fileIndex, 1);
     this.normalsVisualizers.splice(fileIndex, 1); // Remove normals visualizer for this file
     this.vertexPointsObjects.splice(fileIndex, 1); // Remove vertex points object for this file
+    this.voxelObjects.splice(fileIndex, 1);
+    this.voxelSizes.splice(fileIndex, 1);
     this.multiMaterialGroups.splice(fileIndex, 1); // Remove multi-material group for this file
     this.materialMeshes.splice(fileIndex, 1); // Remove sub-meshes for this file
     this.removeEntryAndChildren(fileIndex);
@@ -3877,6 +3918,7 @@ class PointCloudVisualizer {
     this.solidVisible.splice(fileIndex, 1);
     this.wireframeVisible.splice(fileIndex, 1);
     this.pointsVisible.splice(fileIndex, 1);
+    this.voxelsVisible.splice(fileIndex, 1);
     this.normalsVisible.splice(fileIndex, 1);
 
     // Remove Depth data if it exists for this file
@@ -4010,6 +4052,23 @@ class PointCloudVisualizer {
   /** Called from the file rows and from the all-clouds slider in the controls. */
   updatePointSize(fileIndex: number, newSize: number): void {
     pointSizeScaling.updatePointSize(this, fileIndex, newSize);
+  }
+
+  updateVoxelSize(fileIndex: number, newSize: number): void {
+    if (
+      fileIndex < 0 ||
+      fileIndex >= this.spatialFiles.length ||
+      !Number.isFinite(newSize) ||
+      newSize <= 0
+    ) {
+      return;
+    }
+    this.voxelSizes[fileIndex] = newSize;
+    const voxels = this.voxelObjects[fileIndex];
+    if (voxels) {
+      voxelRenderer.updateVoxelSize(voxels, newSize);
+      this.requestRender();
+    }
   }
 
   private getColorName(fileIndex: number): string {

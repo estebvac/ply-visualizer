@@ -4,7 +4,11 @@
   import { runWithFileActivity } from '../fileActivity';
   import { getPointCloudColorOptions } from '../colorOptions';
   import { ensureKeyboardModifierTracking, isShiftPressed } from '../keyboardModifiers';
-  import { getRenderModeOptions, hasRenderMode } from '../renderModeOptions';
+  import {
+    canVoxelizePointCloud,
+    getRenderModeOptions,
+    hasRenderMode,
+  } from '../renderModeOptions';
   import CameraFrameList from './CameraFrameList.svelte';
   import E57CorrectionPanel from './E57CorrectionPanel.svelte';
   import DepthSettingsPanel from './DepthSettingsPanel.svelte';
@@ -186,6 +190,9 @@
   const canRenderSplats = $derived(
     kind === 'pointcloud' && !!data && !!host.splatMode?.canEnable(data)
   );
+  const canRenderVoxels = $derived(
+    kind === 'pointcloud' && !!data && canVoxelizePointCloud(data)
+  );
   const splatActive = $derived.by(() => {
     filesState.renderModeTick;
     return canRenderSplats && !!host.splatMode?.isActive(index);
@@ -227,7 +234,13 @@
     const fileSplatActive = supportsSplats && !!host.splatMode?.isActive(fileIndex);
     switch (mode) {
       case 'points':
-        return supportsSplats ? !fileSplatActive : (host.pointsVisible[fileIndex] ?? true);
+        return (
+          (host.pointsVisible[fileIndex] ?? true) &&
+          !(host.voxelsVisible[fileIndex] ?? false) &&
+          !fileSplatActive
+        );
+      case 'voxels':
+        return host.voxelsVisible[fileIndex] ?? false;
       case 'splat':
         return fileSplatActive;
       case 'mesh':
@@ -383,6 +396,26 @@
 
   function onSizeInputFocus(e: Event) {
     (e.target as HTMLInputElement).select();
+  }
+
+  const voxelSize = $derived(host.voxelSizes?.[index] ?? 0.1);
+
+  function onVoxelSizeCommit(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const newSize = parseFloat(input.value);
+    if (Number.isFinite(newSize) && newSize > 0) {
+      host.updateVoxelSize(index, newSize);
+      input.value = String(newSize);
+    } else {
+      input.value = String(host.voxelSizes?.[index] ?? 0.1);
+    }
+  }
+
+  function onVoxelSizeKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      onVoxelSizeCommit(e);
+      (e.target as HTMLInputElement).blur();
+    }
   }
 
   const isObjFile = $derived(kind === 'pointcloud' && (data as any)?.isObjFile);
@@ -655,6 +688,23 @@
             onblur={onSizeInputCommit}
             onkeydown={onSizeInputKeydown}
             onfocus={onSizeInputFocus}
+          />
+        </div>
+      {/if}
+
+      {#if canRenderVoxels}
+        <div class="voxel-size-control" style="margin-top: 4px;">
+          <label for={`voxel-size-${index}`} style="font-size: 11px;">Voxel Size:</label>
+          <input
+            type="number"
+            id={`voxel-size-${index}`}
+            min="0.0001"
+            step="0.01"
+            value={voxelSize}
+            style="font-size: 10px; width: 64px;"
+            onblur={onVoxelSizeCommit}
+            onkeydown={onVoxelSizeKeydown}
+            onfocus={(e) => (e.target as HTMLInputElement).select()}
           />
         </div>
       {/if}

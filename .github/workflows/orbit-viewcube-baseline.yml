@@ -1,0 +1,33 @@
+name: Orbit, ViewCube, and Voxels baseline
+
+on:
+  push:
+    branches:
+      - main
+      - integration/orbit-viewcube-main-v2
+  workflow_dispatch:
+
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build standalone viewer
+        run: npm run build --workspace=engine
+
+      - name: Install Chromium
+        run: npm exec -- playwright install --with-deps chromium
+
+      - name: Verify Standard Orbit, ViewCube, and voxel baseline
+        working-directory: engine
+        run: npm exec -- playwright test test/view-cube-transform.spec.ts test/view-cube-baseline.spec.ts test/voxel-rendering.spec.ts --workers=1 --retries=0 --timeout=30000
