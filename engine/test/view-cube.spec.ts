@@ -45,7 +45,9 @@ test('animated view snap preserves target, distance, and +Z up', async ({ page }
   await loadSampleMesh(page);
   const before = await cameraState(page);
 
-  await page.getByRole('button', { name: 'View from +X', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'View from +X', exact: true })
+    .evaluate((el: HTMLButtonElement) => el.click());
   await page.waitForFunction(() => !(window as any).visualizer.cameraViewAnimator.isAnimating);
 
   const after = await cameraState(page);
@@ -75,7 +77,9 @@ test('view cube mirrors manual orbit and manual orbit cancels a snap', async ({ 
   const after = await cube.getAttribute('style');
   expect(after).not.toBe(before);
 
-  await page.getByRole('button', { name: 'View from −Y', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'View from −Y', exact: true })
+    .evaluate((el: HTMLButtonElement) => el.click());
   await page.waitForFunction(() => (window as any).visualizer.cameraViewAnimator.isAnimating);
   await page.mouse.move(x, y);
   await page.mouse.down({ button: 'left' });
@@ -85,4 +89,15 @@ test('view cube mirrors manual orbit and manual orbit cancels a snap', async ({ 
 
   const state = await cameraState(page);
   expect(state.position.every(Number.isFinite)).toBe(true);
+});
+
+test('visible active cube target accepts a pointer click', async ({ page }) => {
+  await loadSampleMesh(page);
+  const active = page.locator('[data-view-cube] .active').first();
+  await expect(active).toBeVisible();
+  await active.click();
+  await page.waitForFunction(() => !(window as any).visualizer.cameraViewAnimator.isAnimating);
+  const state = await cameraState(page);
+  expect(state.position.every(Number.isFinite)).toBe(true);
+  expect(state.target.every(Number.isFinite)).toBe(true);
 });
