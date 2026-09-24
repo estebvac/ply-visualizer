@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as readline from 'readline';
+import { parsePlyChunkWasm } from '../wasmPointcloud';
 
 export type ProgressivePlyEncoding =
   | 'ascii'
@@ -160,6 +161,9 @@ const STANDARD_PROPERTIES = new Set([
   'ny',
   'nz',
   'intensity',
+  'reflectivity',
+  'reflectance',
+  'remission',
 ]);
 
 function normalizeScalarType(raw: string): ScalarType | null {
@@ -293,7 +297,9 @@ export async function probeProgressivePly(uri: vscode.Uri): Promise<ProgressiveP
     (names.includes('green') || names.includes('g')) &&
     (names.includes('blue') || names.includes('b'));
   const hasNormals = names.includes('nx') && names.includes('ny') && names.includes('nz');
-  const hasIntensity = names.includes('intensity');
+  const hasIntensity = ['intensity', 'reflectivity', 'reflectance', 'remission'].some(name =>
+    names.includes(name)
+  );
   const isGaussianSplat =
     names.includes('f_dc_0') ||
     names.includes('scale_0') ||
@@ -402,7 +408,7 @@ function compileDecodePlan(probe: ProgressivePlyProbe): DecodePlan {
     nx: first('nx'),
     ny: first('ny'),
     nz: first('nz'),
-    intensity: first('intensity'),
+    intensity: first('intensity', 'reflectivity', 'reflectance', 'remission'),
     scalars: probe.scalarNames
       .map(name => byName.get(name.toLowerCase()))
       .filter((entry): entry is DecodeEntry => !!entry),
@@ -480,6 +486,52 @@ function decodeBinaryPoint(
   return target;
 }
 
+function syntheticBinaryPlyHeader(
+  probe: ProgressivePlyProbe,
+  vertexCount: number
+): Buffer {
+  const lines = [
+    'ply',
+    `format ${probe.encoding} 1.0`,
+    `element vertex ${vertexCount}`,
+    ...probe.properties.map(property => `property ${property.type} ${property.name}`),
+    'end_header',
+    '',
+  ];
+  return Buffer.from(lines.join('\n'), 'latin1');
+}
+
+function copyWasmPoint(
+  parsed: ReturnType<typeof parsePlyChunkWasm> & {},
+  local: number,
+  probe: ProgressivePlyProbe,
+  target: CanonicalPoint
+): CanonicalPoint {
+  const p3 = local * 3;
+  target.x = parsed!.positionsArray[p3];
+  target.y = parsed!.positionsArray[p3 + 1];
+  target.z = parsed!.positionsArray[p3 + 2];
+  if (parsed!.colorsArray) {
+    target.r = parsed!.colorsArray[p3];
+    target.g = parsed!.colorsArray[p3 + 1];
+    target.b = parsed!.colorsArray[p3 + 2];
+  } else {
+    target.r = target.g = target.b = 255;
+  }
+  if (parsed!.normalsArray) {
+    target.nx = parsed!.normalsArray[p3];
+    target.ny = parsed!.normalsArray[p3 + 1];
+    target.nz = parsed!.normalsArray[p3 + 2];
+  } else {
+    target.nx = target.ny = target.nz = 0;
+  }
+  target.intensity = parsed!.intensityArray?.[local] ?? 0;
+  for (let scalar = 0; scalar < probe.scalarNames.length; scalar++) {
+    target.scalars[scalar] = parsed!.scalarFields[probe.scalarNames[scalar]]?.[local] ?? 0;
+  }
+  return target;
+}
+
 async function scanPly(
   uri: vscode.Uri,
   probe: ProgressivePlyProbe,
@@ -533,16 +585,34 @@ async function scanPly(
       );
       const complete = Math.floor(bytesRead / probe.vertexStride);
       if (complete <= 0) break;
-      for (let local = 0; local < complete; local++) {
-        const recordOffset = local * probe.vertexStride;
-        decodeBinaryPoint(buffer, recordOffset, plan, littleEndian, point);
-        if (Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z)) {
-          onPoint(point, sourceIndex + local);
-          valid++;
+
+      const bodyBytes = complete * probe.vertexStride;
+      const syntheticHeader = syntheticBinaryPlyHeader(probe, complete);
+      const rustDecoded = parsePlyChunkWasm(
+        Buffer.concat([syntheticHeader, buffer.subarray(0, bodyBytes)])
+      );
+
+      if (rustDecoded && rustDecoded.vertexCount === complete) {
+        for (let local = 0; local < complete; local++) {
+          copyWasmPoint(rustDecoded, local, probe, point);
+          if (Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z)) {
+            onPoint(point, sourceIndex + local);
+            valid++;
+          }
+        }
+      } else {
+        // The prebuilt WASM can be unavailable in development/test hosts.
+        // Keep the bounded TypeScript decoder as a compatibility fallback.
+        for (let local = 0; local < complete; local++) {
+          const recordOffset = local * probe.vertexStride;
+          decodeBinaryPoint(buffer, recordOffset, plan, littleEndian, point);
+          if (Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z)) {
+            onPoint(point, sourceIndex + local);
+            valid++;
+          }
         }
       }
       sourceIndex += complete;
-      if (complete < records) break;
     }
   } finally {
     await handle.close();
