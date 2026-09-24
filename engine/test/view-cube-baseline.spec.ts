@@ -1,5 +1,23 @@
 import { test, expect } from '@playwright/test';
 
+const tinyOrbitPly = `ply
+format ascii 1.0
+element vertex 4
+property float x
+property float y
+property float z
+property uchar red
+property uchar green
+property uchar blue
+element face 0
+property list uchar int vertex_indices
+end_header
+0 0 0 255 0 0
+1 0 0 0 255 0
+0 1 0 0 0 255
+0 0 1 255 255 0
+`;
+
 test('verified Orbit/ViewCube baseline renders and snaps around the current target', async ({ page }) => {
   await page.goto('/');
   await page.waitForSelector('#three-canvas');
@@ -71,6 +89,15 @@ test('standard LMB orbit keeps the current pivot and distance', async ({ page })
   await page.goto('/');
   await page.waitForSelector('#three-canvas');
   await page.waitForFunction(() => Boolean((window as any).visualizer?.controls));
+
+  await page.click('[data-tab="files"]');
+  await page.locator('#hiddenFileInput').setInputFiles({
+    name: 'orbit-test.ply',
+    mimeType: 'application/octet-stream',
+    buffer: Buffer.from(tinyOrbitPly),
+  });
+  await expect(page.locator('#file-list .file-item')).toHaveCount(1, { timeout: 15_000 });
+  await page.waitForTimeout(250);
 
   const before = await page.evaluate(() => {
     const v: any = (window as any).visualizer;
