@@ -15,6 +15,7 @@ test('inverse-trackball stays stable (no up-vector drift/NaN) over sustained rot
 
   await page.click('[data-tab="controls"]');
   await page.waitForTimeout(300);
+  await page.locator('#advanced-navigation > summary').click();
   await page.click('#inverse-trackball-controls');
   await page.waitForTimeout(300);
 
