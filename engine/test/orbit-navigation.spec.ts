@@ -103,6 +103,11 @@ async function loadSampleMesh(page: Page) {
   await page.waitForTimeout(500);
 }
 
+async function clickView(page: Page, name: string) {
+  await page.getByRole('button', { name }).click();
+  await page.waitForFunction(() => !(window as any).visualizer.cameraViewAnimator?.isAnimating);
+}
+
 async function dragCanvas(
   page: Page,
   button: 'left' | 'middle' | 'right',
@@ -381,24 +386,24 @@ test.describe('Standard Orbit navigation', () => {
 
 
   for (const preset of [
-    ['positive-x', 'View from +X toward the rotation center'],
-    ['negative-x', 'View from −X toward the rotation center'],
-    ['positive-y', 'View from +Y toward the rotation center'],
-    ['negative-y', 'View from −Y toward the rotation center'],
-    ['positive-z', 'View from +Z toward the rotation center'],
-    ['negative-z', 'View from −Z toward the rotation center'],
+    ['positive-x', 'View from +X'],
+    ['negative-x', 'View from −X'],
+    ['positive-y', 'View from +Y'],
+    ['negative-y', 'View from −Y'],
+    ['positive-z', 'View from +Z'],
+    ['negative-z', 'View from −Z'],
   ] as const) {
     test(`${preset[0]} preset is independent of previous camera preset`, async ({ page }) => {
       await loadSampleMesh(page);
       await page.click('[data-tab="camera"]');
 
-      await page.getByRole('button', { name: 'View from +X toward the rotation center' }).click();
-      await page.getByRole('button', { name: preset[1] }).click();
+      await clickView(page, 'View from +X');
+      await clickView(page, preset[1]);
       const first = await cameraState(page);
       const firstCenter = await targetScreenOffset(page);
 
-      await page.getByRole('button', { name: 'View from −Y toward the rotation center' }).click();
-      await page.getByRole('button', { name: preset[1] }).click();
+      await clickView(page, 'View from −Y');
+      await clickView(page, preset[1]);
       const second = await cameraState(page);
       const secondCenter = await targetScreenOffset(page);
 
@@ -419,17 +424,13 @@ test.describe('Standard Orbit navigation', () => {
     await page.click('[data-tab="camera"]');
 
     const beforeAxis = await cameraState(page);
-    await page
-      .getByRole('button', { name: 'View from +X toward the rotation center' })
-      .click();
+    await clickView(page, 'View from +X');
     const afterAxis = await cameraState(page);
     expect(delta3(afterAxis.target, beforeAxis.target)).toBeLessThan(1e-6);
     expect(Math.abs(afterAxis.distance - beforeAxis.distance)).toBeLessThan(1e-4);
 
     const beforeIso = await cameraState(page);
-    await page
-      .getByRole('button', { name: 'Isometric view from +X, −Y, +Z' })
-      .click();
+    await clickView(page, 'View from +X -Y +Z corner');
     const afterIso = await cameraState(page);
     expect(delta3(afterIso.target, beforeIso.target)).toBeLessThan(1e-6);
     expect(Math.abs(afterIso.distance - beforeIso.distance)).toBeLessThan(1e-4);
