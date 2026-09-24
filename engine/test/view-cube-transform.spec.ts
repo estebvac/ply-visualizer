@@ -18,15 +18,21 @@ function transformDirection(values: number[], v: THREE.Vector3): THREE.Vector3 {
   );
 }
 
-test('ViewCube CSS matrix uses the CSS3DRenderer camera Y convention', () => {
+test('ViewCube CSS matrix is a proper identity rotation for an identity camera', () => {
   const values = matrixValues(cameraQuaternionToCssMatrix3d(new THREE.Quaternion()));
 
   expect(values).toHaveLength(16);
   expect(values[0]).toBeCloseTo(1, 10);
-  expect(values[5]).toBeCloseTo(-1, 10);
+  expect(values[5]).toBeCloseTo(1, 10);
   expect(values[10]).toBeCloseTo(1, 10);
   expect(values[15]).toBeCloseTo(1, 10);
   expect(values.every(Number.isFinite)).toBe(true);
+
+  const determinant =
+    values[0] * (values[5] * values[10] - values[9] * values[6]) -
+    values[4] * (values[1] * values[10] - values[9] * values[2]) +
+    values[8] * (values[1] * values[6] - values[5] * values[2]);
+  expect(determinant).toBeCloseTo(1, 10);
 });
 
 test('+Z world-up projects upward for a camera looking from +Y', () => {
