@@ -30,6 +30,10 @@ export interface WasmPointCloud {
   bbox: Float32Array;
 }
 
+export interface WasmPlyChunk extends WasmPointCloud {
+  scalarFields: Record<string, Float32Array>;
+}
+
 export interface WasmLidarCloud extends WasmPointCloud {
   name: string;
   sourcePointCount: number;
@@ -81,6 +85,48 @@ function marshal(r: any): WasmPointCloud {
     r.free();
   }
   return out;
+}
+
+function marshalPlyChunk(r: any): WasmPlyChunk {
+  const scalarFields: Record<string, Float32Array> = {};
+  const names = Array.from(r.scalar_field_names ?? []) as string[];
+  for (let index = 0; index < names.length; index++) {
+    scalarFields[names[index]] = r.take_scalar_at(index) as Float32Array;
+  }
+  const out: WasmPlyChunk = {
+    vertexCount: Number(r.vertex_count) || 0,
+    hasColors: !!r.has_colors,
+    hasNormals: !!r.has_normals,
+    hasIntensity: !!r.has_intensity,
+    positionsArray: r.take_positions() as Float32Array,
+    colorsArray: r.has_colors ? (r.take_colors() as Uint8Array) : null,
+    normalsArray: r.has_normals ? (r.take_normals() as Float32Array) : null,
+    intensityArray: r.has_intensity ? (r.take_intensity() as Float32Array) : null,
+    bbox: r.bbox() as Float32Array,
+    scalarFields,
+  };
+  if (typeof r.free === 'function') {
+    r.free();
+  }
+  return out;
+}
+
+/**
+ * Decode one bounded PLY fragment with the existing Rust binary parser.
+ * Callers provide a complete synthetic PLY header + a record-aligned body
+ * chunk, so memory is proportional to the chunk rather than the source file.
+ */
+export function parsePlyChunkWasm(bytes: Uint8Array): WasmPlyChunk | null {
+  const m = load();
+  if (!m || typeof m.parse_ply !== 'function') {
+    return null;
+  }
+  try {
+    return marshalPlyChunk(m.parse_ply(bytes));
+  } catch (error) {
+    console.warn('[pointcloud-wasm] bounded PLY chunk parse failed, using JS fallback:', error);
+    return null;
+  }
 }
 
 function takeNonEmpty(r: any, method: string): Float32Array | null {
