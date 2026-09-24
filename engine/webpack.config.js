@@ -80,6 +80,7 @@ module.exports = {
                 .toString()
                 // Update paths to be relative from 3d-visualizer subdirectory
                 .replace(/src="bundle\.js"/g, 'src="../bundle.js"')
+                .replace(/href="bundle\.css"/g, 'href="../bundle.css"')
                 .replace(/src="media\//g, 'src="../media/')
                 .replace(/href="media\//g, 'href="../media/')
                 // Update navigation: About button goes to root (about page is now at root)
