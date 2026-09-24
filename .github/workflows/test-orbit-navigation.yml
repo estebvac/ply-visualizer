@@ -56,6 +56,21 @@ jobs:
       - name: Install Playwright Chromium and host dependencies
         run: cd engine && pnpm exec playwright install --with-deps chromium
 
+      - name: Capture ViewCube visual reference
+        run: |
+          cd engine
+          pnpm exec playwright test test/view-cube.spec.ts \
+            --grep "capture narrow-panel isometric ViewCube visual reference" \
+            --project=chromium
+
+      - name: Upload ViewCube visual reference
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: view-cube-visual
+          path: engine/artifacts/view-cube-reference.png
+          if-no-files-found: error
+
       - name: Run focused Orbit navigation regressions
         run: |
           cd engine
@@ -68,14 +83,6 @@ jobs:
             test/zoom-after-rotate.spec.ts \
             test/rotation-drift-check.spec.ts \
             --project=chromium
-
-      - name: Upload ViewCube visual reference
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: view-cube-visual
-          path: engine/artifacts/view-cube-reference.png
-          if-no-files-found: error
 
       - name: Verify excluded recovery-baseline tests are semantically unchanged
         run: |
