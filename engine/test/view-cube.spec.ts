@@ -29,9 +29,17 @@ async function cameraState(page: Page) {
   });
 }
 
+function viewDirectionFromName(name: string): string {
+  return name
+    .replace(/^View from\s+/, '')
+    .replace(/\s+(edge|corner)$/, '')
+    .replace(/−/g, '-');
+}
+
 async function invokeView(page: Page, name: string) {
+  const direction = viewDirectionFromName(name);
   await page
-    .getByRole('button', { name, exact: true })
+    .locator(`[data-view-direction="${direction}"]`)
     .first()
     .evaluate((el: HTMLButtonElement) => el.click());
   await page.waitForFunction(() => !(window as any).visualizer.cameraViewAnimator.isAnimating);
@@ -178,7 +186,8 @@ test('view cube mirrors manual orbit and manual orbit cancels a snap', async ({ 
   expect(after).not.toBe(before);
 
   await page
-    .getByRole('button', { name: 'View from −Y', exact: true })
+    .locator('[data-view-direction="-Y"]')
+    .first()
     .evaluate((el: HTMLButtonElement) => el.click());
   await page.waitForFunction(() => (window as any).visualizer.cameraViewAnimator.isAnimating);
   await page.mouse.move(x, y);
@@ -195,7 +204,7 @@ test('a visible front cube face accepts a real pointer click', async ({ page }) 
   await loadSampleMesh(page);
   await invokeView(page, 'View from +Z');
 
-  const face = page.getByRole('button', { name: 'View from +Z', exact: true });
+  const face = page.locator('[data-view-kind="face"][data-view-direction="+Z"]').first();
   await expect(face).toBeVisible();
   await face.click();
   await page.waitForFunction(() => !(window as any).visualizer.cameraViewAnimator.isAnimating);
