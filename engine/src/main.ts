@@ -12,6 +12,7 @@ import {
 } from './interfaces';
 import { CustomArcballControls, TurntableControls } from './controls';
 import { configureStandardOrbitControls } from './orbitNavigation';
+import { resetStandardOrbitUp } from './cameraOrientation';
 import { initializeThemes, getThemeByName, applyTheme, getCurrentThemeName } from './themes';
 import { RotationCenterManager, RotationCenterMode } from './RotationCenterManager';
 import { MeasurementManager } from './MeasurementManager';
@@ -681,6 +682,10 @@ class PointCloudVisualizer {
       cc.panSpeed = 1.0;
       cc.worldUp.copy(this.camera.up.lengthSq() > 0 ? this.camera.up : new THREE.Vector3(0, 1, 0));
     } else {
+      // Standard Orbit has one immutable navigation frame: +Z is world-up.
+      // Apply it before OrbitControls captures camera state, and re-apply it
+      // after restoring the camera pose below.
+      resetStandardOrbitUp(this.camera);
       this.controls = new OrbitControls(this.camera, this.renderer.domElement);
       configureStandardOrbitControls(this.controls as OrbitControls);
     }
@@ -688,9 +693,14 @@ class PointCloudVisualizer {
     // Set up axes visibility for all control types
     this.setupAxesVisibility();
 
-    // Restore camera state to prevent jumps
+    // Restore camera state to prevent jumps. Standard Orbit deliberately does
+    // not restore a historical camera.up: its navigation frame is always +Z.
     this.camera.position.copy(currentCameraPosition);
-    this.camera.up.copy(currentUp);
+    if (this.controlType === 'orbit') {
+      resetStandardOrbitUp(this.camera);
+    } else {
+      this.camera.up.copy(currentUp);
+    }
     this.controls.target.copy(currentTarget);
     this.controls.update();
 
