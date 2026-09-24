@@ -560,13 +560,13 @@ async function sampleRecordFile(
   }
   const step = Math.max(1, Math.ceil(recordCount / maxSamples));
   const sourceHandle = await fs.promises.open(source, 'r');
-  const destinationHandle = await fs.promises.open(destination, 'w');
   const chunkRecords = Math.min(8192, recordCount);
   const buffer = Buffer.allocUnsafe(chunkRecords * recordStride);
+  const output = Buffer.allocUnsafe(Math.min(recordCount, maxSamples) * recordStride);
   let sourceIndex = 0;
   let written = 0;
   try {
-    while (sourceIndex < recordCount) {
+    while (sourceIndex < recordCount && written < maxSamples) {
       const requested = Math.min(chunkRecords, recordCount - sourceIndex);
       const { bytesRead } = await sourceHandle.read(
         buffer,
@@ -576,10 +576,15 @@ async function sampleRecordFile(
       );
       const got = Math.floor(bytesRead / recordStride);
       if (got <= 0) break;
-      for (let local = 0; local < got; local++) {
+      for (let local = 0; local < got && written < maxSamples; local++) {
         const absolute = sourceIndex + local;
-        if (absolute % step === 0 && written < maxSamples) {
-          await destinationHandle.write(buffer, local * recordStride, recordStride);
+        if (absolute % step === 0) {
+          buffer.copy(
+            output,
+            written * recordStride,
+            local * recordStride,
+            (local + 1) * recordStride
+          );
           written++;
         }
       }
@@ -587,8 +592,8 @@ async function sampleRecordFile(
     }
   } finally {
     await sourceHandle.close();
-    await destinationHandle.close();
   }
+  await fs.promises.writeFile(destination, output.subarray(0, written * recordStride));
   return written;
 }
 
@@ -604,44 +609,46 @@ async function mergeSampleFiles(
     return 0;
   }
   const step = Math.max(1, Math.ceil(total / maxSamples));
-  const destinationHandle = await fs.promises.open(destination, 'w');
+  const output = Buffer.allocUnsafe(Math.min(total, maxSamples) * recordStride);
   let globalIndex = 0;
   let written = 0;
-  try {
-    for (const source of sources) {
-      const handle = await fs.promises.open(source.file, 'r');
-      const buffer = Buffer.allocUnsafe(recordStride * Math.min(4096, Math.max(1, source.count)));
-      try {
-        let sourceIndex = 0;
-        while (sourceIndex < source.count) {
-          const records = Math.min(Math.floor(buffer.length / recordStride), source.count - sourceIndex);
-          const { bytesRead } = await handle.read(
-            buffer,
-            0,
-            records * recordStride,
-            sourceIndex * recordStride
-          );
-          const got = Math.floor(bytesRead / recordStride);
-          for (let i = 0; i < got; i++, globalIndex++) {
-            if (globalIndex % step === 0 && written < maxSamples) {
-              await destinationHandle.write(
-                buffer,
-                i * recordStride,
-                recordStride
-              );
-              written++;
-            }
+  for (const source of sources) {
+    if (written >= maxSamples) break;
+    const handle = await fs.promises.open(source.file, 'r');
+    const buffer = Buffer.allocUnsafe(recordStride * Math.min(4096, Math.max(1, source.count)));
+    try {
+      let sourceIndex = 0;
+      while (sourceIndex < source.count && written < maxSamples) {
+        const records = Math.min(
+          Math.floor(buffer.length / recordStride),
+          source.count - sourceIndex
+        );
+        const { bytesRead } = await handle.read(
+          buffer,
+          0,
+          records * recordStride,
+          sourceIndex * recordStride
+        );
+        const got = Math.floor(bytesRead / recordStride);
+        if (got === 0) break;
+        for (let i = 0; i < got && written < maxSamples; i++, globalIndex++) {
+          if (globalIndex % step === 0) {
+            buffer.copy(
+              output,
+              written * recordStride,
+              i * recordStride,
+              (i + 1) * recordStride
+            );
+            written++;
           }
-          if (got === 0) break;
-          sourceIndex += got;
         }
-      } finally {
-        await handle.close();
+        sourceIndex += got;
       }
+    } finally {
+      await handle.close();
     }
-  } finally {
-    await destinationHandle.close();
   }
+  await fs.promises.writeFile(destination, output.subarray(0, written * recordStride));
   return written;
 }
 
