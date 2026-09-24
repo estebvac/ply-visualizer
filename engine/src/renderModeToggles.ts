@@ -26,6 +26,9 @@ export interface RenderModeHost {
   allowTransparency: boolean;
   scene: THREE.Scene;
   /** Present on the full visualizer host; drives the per-file splat mode. */
+  progressivePly?: {
+    syncVoxelMode(fileIndex: number): void;
+  };
   splatMode?: {
     isActive(fileIndex: number): boolean;
     canEnable(data: SpatialData | undefined): boolean;
@@ -211,6 +214,7 @@ export function toggleVoxelRendering(host: RenderModeHost, fileIndex: number): v
   }
 
   updateMeshVisibilityAndMaterial(host, fileIndex);
+  host.progressivePly?.syncVoxelMode(fileIndex);
   host.requestRender();
 }
 
