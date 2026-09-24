@@ -315,6 +315,9 @@ export async function buildProgressivePreview(
     }
     scanned += records;
     onProgress?.(Math.min(1, scanned / header.vertexCount));
+    // Yield between bounded chunks so the remote extension host can still
+    // process cancellation and other VS Code events during a multi-GB scan.
+    await new Promise<void>(resolve => setImmediate(resolve));
     if (
       !earlySent &&
       onEarlyPreview &&
@@ -671,10 +674,12 @@ export async function buildProgressiveCache(
   await fs.promises.mkdir(leavesDirectory, { recursive: true });
   await fs.promises.mkdir(lodDirectory, { recursive: true });
 
-  const layout = createRecordLayout(header);
-  const props = propertyMap(header);
-  const spooler = new LeafSpooler(leavesDirectory, layout.stride);
-  let processed = 0;
+  let cachePublished = false;
+  try {
+    const layout = createRecordLayout(header);
+    const props = propertyMap(header);
+    const spooler = new LeafSpooler(leavesDirectory, layout.stride);
+    let processed = 0;
 
   for await (const chunk of vertexChunks(filePath, header, options.chunkBytes)) {
     if (isCancelled?.()) throw new Error('Progressive PLY load cancelled');
@@ -809,9 +814,15 @@ export async function buildProgressiveCache(
   );
   await fs.promises.rm(cacheDirectory, { recursive: true, force: true });
   await fs.promises.mkdir(path.dirname(cacheDirectory), { recursive: true });
-  await fs.promises.rename(tempDirectory, cacheDirectory);
-  onProgress?.('complete', 1);
-  return manifest;
+    await fs.promises.rename(tempDirectory, cacheDirectory);
+    cachePublished = true;
+    onProgress?.('complete', 1);
+    return manifest;
+  } finally {
+    if (!cachePublished) {
+      await fs.promises.rm(tempDirectory, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
 }
 
 function decodeCacheRecords(
