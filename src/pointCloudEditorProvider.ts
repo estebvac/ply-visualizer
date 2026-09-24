@@ -374,6 +374,12 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
           await handleAddFile(this.addFileHost, webviewPanel, this.panelToPath.get(webviewPanel));
           break;
         case 'removeFile':
+          if (typeof message.progressivePlySessionId === 'string') {
+            this.progressivePlyService.cancelSession(
+              webviewPanel,
+              message.progressivePlySessionId
+            );
+          }
           webviewPanel.webview.postMessage({
             type: 'fileRemoved',
             fileIndex: message.fileIndex,
