@@ -10,7 +10,7 @@
   type FaceSpec = {
     id: string;
     label: string;
-    cssClass: string;
+    transform: string;
     normal: THREE.Vector3;
     right: THREE.Vector3;
     down: THREE.Vector3;
@@ -29,7 +29,7 @@
     {
       id: '+x',
       label: '+X',
-      cssClass: 'face-pos-x',
+      transform: 'rotateY(90deg) translateZ(38px)',
       normal: new THREE.Vector3(1, 0, 0),
       right: new THREE.Vector3(0, 0, -1),
       down: new THREE.Vector3(0, 1, 0),
@@ -37,7 +37,7 @@
     {
       id: '-x',
       label: '−X',
-      cssClass: 'face-neg-x',
+      transform: 'rotateY(-90deg) translateZ(38px)',
       normal: new THREE.Vector3(-1, 0, 0),
       right: new THREE.Vector3(0, 0, 1),
       down: new THREE.Vector3(0, 1, 0),
@@ -45,7 +45,7 @@
     {
       id: '+y',
       label: '+Y',
-      cssClass: 'face-pos-y',
+      transform: 'rotateX(90deg) translateZ(38px)',
       normal: new THREE.Vector3(0, 1, 0),
       right: new THREE.Vector3(1, 0, 0),
       down: new THREE.Vector3(0, 0, -1),
@@ -53,7 +53,7 @@
     {
       id: '-y',
       label: '−Y',
-      cssClass: 'face-neg-y',
+      transform: 'rotateX(-90deg) translateZ(38px)',
       normal: new THREE.Vector3(0, -1, 0),
       right: new THREE.Vector3(1, 0, 0),
       down: new THREE.Vector3(0, 0, 1),
@@ -61,7 +61,7 @@
     {
       id: '+z',
       label: '+Z',
-      cssClass: 'face-pos-z',
+      transform: 'rotateY(0deg) translateZ(38px)',
       normal: new THREE.Vector3(0, 0, 1),
       right: new THREE.Vector3(1, 0, 0),
       down: new THREE.Vector3(0, 1, 0),
@@ -69,7 +69,7 @@
     {
       id: '-z',
       label: '−Z',
-      cssClass: 'face-neg-z',
+      transform: 'rotateY(180deg) translateZ(38px)',
       normal: new THREE.Vector3(0, 0, -1),
       right: new THREE.Vector3(-1, 0, 0),
       down: new THREE.Vector3(0, 1, 0),
@@ -177,7 +177,8 @@
     <div class="view-cube" style:transform={cubeTransform} data-view-cube>
       {#each faces as face (face.id)}
         <div
-          class="cube-face {face.cssClass}"
+          class="cube-face"
+          style:transform={face.transform}
           class:highlighted={isFaceHighlighted(face.id)}
           class:active={activeId === directionId(face.normal)}
           data-view-face={face.id}
@@ -290,14 +291,7 @@
     border-color: var(--vscode-focusBorder, #007fd4);
   }
 
-  /* DeSandro six-plane cube geometry, scaled from 200 px to 76 px. */
-  .face-pos-z { transform: rotateY(0deg) translateZ(38px); }
-  .face-pos-x { transform: rotateY(90deg) translateZ(38px); }
-  .face-neg-z { transform: rotateY(180deg) translateZ(38px); }
-  .face-neg-x { transform: rotateY(-90deg) translateZ(38px); }
-  .face-pos-y { transform: rotateX(90deg) translateZ(38px); }
-  .face-neg-y { transform: rotateX(-90deg) translateZ(38px); }
-
+  /* DeSandro six-plane transforms are supplied inline from FaceSpec. */
   .face-label {
     pointer-events: none;
     position: relative;
