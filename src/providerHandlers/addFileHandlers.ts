@@ -42,6 +42,11 @@ export interface AddFileHost {
   logPerf(line: string): void;
   setLoadStartedAt(ts: number): void;
   retainVolumeSession?(webviewPanel: vscode.WebviewPanel, key: string): void;
+  tryOpenProgressivePly?(
+    documentUri: vscode.Uri,
+    panel: vscode.WebviewPanel,
+    metadata: { fileName: string; shortPath: string; loadStartedAt: number; isAddFile?: boolean }
+  ): Promise<boolean>;
   tryAutoLoadMtl(
     webviewPanel: vscode.WebviewPanel,
     objUri: vscode.Uri,
@@ -154,7 +159,8 @@ export async function handleAddFile(
         // Tell the webview a load started so it shows a non-blocking progress
         // row in the Files list (the scene already has clouds and stays
         // interactive — no overlay). Sent before the read/parse below.
-        host.setLoadStartedAt(Date.now());
+        const loadStartedAt = Date.now();
+        host.setLoadStartedAt(loadStartedAt);
         webviewPanel.webview.postMessage({ type: 'startLoading', fileName });
 
         if (isSceneModel(fileName)) {
@@ -215,8 +221,20 @@ export async function handleAddFile(
           continue;
         }
 
-        // Handle PLY files (existing logic)
+        // Handle PLY files. Large workspace PLYs are indexed remotely and
+        // streamed progressively; only normal-size files take the legacy full-read path.
         if (fileExtension === '.ply') {
+          if (
+            await host.tryOpenProgressivePly?.(files[i], webviewPanel, {
+              fileName,
+              shortPath,
+              loadStartedAt,
+              isAddFile: true,
+            })
+          ) {
+            continue;
+          }
+
           // Read file data
           const spatialData = await vscode.workspace.fs.readFile(files[i]);
 
@@ -473,7 +491,8 @@ export async function handleAddFileFromPath(
 
     // Non-blocking progress row in the Files list during read/parse (the scene
     // already has clouds and stays interactive).
-    host.setLoadStartedAt(Date.now());
+    const loadStartedAt = Date.now();
+    host.setLoadStartedAt(loadStartedAt);
     webviewPanel.webview.postMessage({ type: 'startLoading', fileName });
 
     if (isSceneModel(fileName)) {
@@ -564,6 +583,16 @@ export async function handleAddFileFromPath(
       return;
     }
     if (ext === '.ply') {
+      if (
+        await host.tryOpenProgressivePly?.(fileUri, webviewPanel, {
+          fileName,
+          shortPath,
+          loadStartedAt,
+          isAddFile: true,
+        })
+      ) {
+        return;
+      }
       const spatialData = await vscode.workspace.fs.readFile(fileUri);
       const parser = new PlyParser();
       const isBinary = isPlyBinary(spatialData);
