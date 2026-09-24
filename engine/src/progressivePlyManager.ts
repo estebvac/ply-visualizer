@@ -60,6 +60,7 @@ interface ProgressiveSession {
   generation: number;
   selectionTimer: number | null;
   previewCreated: boolean;
+  isAddFile: boolean;
 }
 
 export interface ProgressivePlyViewerHost {
@@ -74,6 +75,7 @@ export interface ProgressivePlyViewerHost {
   voxelSizes: number[];
   individualColorModes: string[];
   displayFiles(dataArray: SpatialData[]): Promise<void>;
+  addNewFiles(dataArray: SpatialData[]): void;
   onFileColorModeChange(fileIndex: number, value: string): void;
   requestRender(): void;
 }
@@ -213,6 +215,7 @@ export class ProgressivePlyManager {
       generation: 0,
       selectionTimer: null,
       previewCreated: false,
+      isAddFile: !!message.isAddFile,
     });
   }
 
@@ -250,7 +253,11 @@ export class ProgressivePlyManager {
           progressiveResidentPointCount: payload.count,
         },
       };
-      await this.host.displayFiles([data]);
+      if (session.isAddFile) {
+        this.host.addNewFiles([data]);
+      } else {
+        await this.host.displayFiles([data]);
+      }
       session.previewCreated = true;
     } else {
       this.applyPayload(session, payload);
