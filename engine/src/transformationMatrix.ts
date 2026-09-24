@@ -10,6 +10,7 @@ export interface TransformationMatrixHost {
   transformationMatrices: THREE.Matrix4[];
   meshes: (THREE.Mesh | THREE.Points | THREE.LineSegments | null)[];
   vertexPointsObjects: (THREE.Points | null)[];
+  voxelObjects: (THREE.InstancedMesh | null)[];
   normalsVisualizers: (THREE.LineSegments | null)[];
   multiMaterialGroups: (THREE.Group | null)[];
   spatialFiles: SpatialData[];
@@ -100,6 +101,11 @@ export function applyTransformationMatrix(host: TransformationMatrixHost, fileIn
     const vertexPoints = host.vertexPointsObjects[fileIndex];
     if (vertexPoints) {
       setObjectMatrix(vertexPoints, matrix);
+    }
+
+    const voxels = host.voxelObjects[fileIndex];
+    if (voxels) {
+      setObjectMatrix(voxels, matrix);
     }
 
     // Also apply transformation to normals visualizer
