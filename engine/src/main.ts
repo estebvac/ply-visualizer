@@ -2485,6 +2485,17 @@ class PointCloudVisualizer {
             break;
           case 'fileRemoved':
             try {
+              const spatialIndex =
+                this.fileEntries.kindAt(message.fileIndex) === 'spatial'
+                  ? this.fileEntries.kindIndexAt(message.fileIndex)
+                  : -1;
+              const progressiveSessionId =
+                spatialIndex >= 0
+                  ? this.spatialFiles[spatialIndex]?.metadata?.progressivePlySessionId
+                  : undefined;
+              if (typeof progressiveSessionId === 'string') {
+                this.progressivePlyManager.removeSession(progressiveSessionId);
+              }
               this.removeFileByIndex(message.fileIndex);
             } catch (error) {
               console.error('Error removing file:', error);
@@ -3243,9 +3254,18 @@ class PointCloudVisualizer {
   }
 
   private requestRemoveFile(fileIndex: number): void {
+    const spatialIndex =
+      this.fileEntries.kindAt(fileIndex) === 'spatial'
+        ? this.fileEntries.kindIndexAt(fileIndex)
+        : -1;
+    const progressivePlySessionId =
+      spatialIndex >= 0
+        ? this.spatialFiles[spatialIndex]?.metadata?.progressivePlySessionId
+        : undefined;
     this.vscode.postMessage({
       type: 'removeFile',
-      fileIndex: fileIndex,
+      fileIndex,
+      progressivePlySessionId,
     });
   }
 
