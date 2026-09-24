@@ -869,7 +869,11 @@ export class ProgressivePlySessionManager {
     };
 
     const started = performance.now();
-    let previewResult: Awaited<ReturnType<ProgressivePlySessionManager['buildPreview']>>;
+    let previewResult: {
+      bbox: [number, number, number, number, number, number];
+      previewBuffer: Buffer;
+      validCount: number;
+    };
     try {
       previewResult = await this.buildPreview(session);
     } catch (error) {
