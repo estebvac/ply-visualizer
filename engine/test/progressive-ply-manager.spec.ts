@@ -86,6 +86,29 @@ test('progressive PLY manager bounds point residency and request bursts', async 
     // An empty cancellation fence is intentionally sent even when the new view
     // needs no remote bytes; this lets the extension stop an older generation.
     messages.length = 0;
+    await manager.handleMessage({
+      type: 'progressivePly:start',
+      sessionId: 'wide',
+      fileName: 'wide.ply',
+      shortPath: 'remote/wide.ply',
+      fileSizeInBytes: 1_000_000_000,
+      sourcePointCount: 1_000_000,
+      format: 'binary_little_endian',
+      hasColors: false,
+      hasNormals: false,
+      hasIntensity: false,
+      scalarFieldNames: Array.from({ length: 10_000 }, (_, index) => `s${index}`),
+      localMemoryBudgetMiB: 64,
+      pointBudget: 4_000_000,
+    });
+    const wide = (manager as any).sessions.get('wide');
+    expect(wide.bytesPerPoint).toBe(40_012);
+    expect(wide.pointBudget).toBe(
+      Math.floor((64 * 1024 * 1024) / (40_012 * 4))
+    );
+    expect(wide.pointBudget).toBeLessThan(1_000);
+    manager.removeSession('wide');
+
     // 12 pos + 3 RGB + 12 normals + 4 intensity + 8 scalar = 39 bytes/point.
     expect(session.bytesPerPoint).toBe(39);
     expect(session.pointBudget).toBeLessThanOrEqual(
