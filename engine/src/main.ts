@@ -110,6 +110,7 @@ import * as intensity from './utils/intensity';
 import * as commentSettings from './depth/commentSettings';
 import * as cameraProfile from './cameraProfile';
 import * as renderModeToggles from './renderModeToggles';
+import * as voxelRenderer from './visualization/VoxelRenderer';
 import { SplatModeManager, handleSplatContainerUri } from './visualization/splatMode';
 import * as colorModeUtils from './colorMode';
 import * as pointSizeScaling from './pointSizeScaling';
@@ -355,6 +356,7 @@ class PointCloudVisualizer {
   meshes: (THREE.Mesh | THREE.Points | THREE.LineSegments)[] = [];
   normalsVisualizers: (THREE.LineSegments | null)[] = [];
   vertexPointsObjects: (THREE.Points | null)[] = []; // Vertex points for triangle meshes
+  voxelObjects: (THREE.InstancedMesh | null)[] = [];
   multiMaterialGroups: (THREE.Group | null)[] = []; // Multi-material Groups for OBJ files
   materialMeshes: (THREE.Object3D[] | null)[] = []; // Sub-meshes for multi-material OBJ files
   fileVisibility: boolean[] = [];
@@ -369,10 +371,12 @@ class PointCloudVisualizer {
   solidVisible: boolean[] = []; // Solid mesh rendering
   wireframeVisible: boolean[] = []; // Wireframe rendering
   pointsVisible: boolean[] = []; // Points rendering
+  voxelsVisible: boolean[] = []; // Instanced cube rendering for point clouds
   normalsVisible: boolean[] = []; // Normals lines rendering
 
   private useOriginalColors = true; // Default to original colors
   pointSizes: number[] = []; // Individual point sizes for each point cloud
+  voxelSizes: number[] = []; // Physical voxel cube edge length in scene units
 
   // Sequence mode state
   sequenceMode = false;
@@ -3002,6 +3006,10 @@ class PointCloudVisualizer {
           oldMaterial.dispose();
         }
       }
+      const voxels = this.voxelObjects[fileIndex];
+      if (voxels && this.meshes[fileIndex] instanceof THREE.Points) {
+        voxelRenderer.refreshVoxelColors(voxels, this.meshes[fileIndex] as THREE.Points);
+      }
     }
     // The renderer draws on demand, so a colour change that does not ask for a
     // frame is invisible until something else does — a camera nudge, a resize.
@@ -3299,12 +3307,15 @@ class PointCloudVisualizer {
         this.pointsVisible.push(true); // Show actual point data
       }
 
-      // Wireframe and normals always start disabled
+      // Wireframe, normals, and voxel view always start disabled.
       this.wireframeVisible.push(false);
       this.normalsVisible.push(false);
+      this.voxelsVisible.push(false);
+      this.voxelSizes.push(0.1);
 
-      // Initialize vertex points object (null initially, created on demand)
+      // Secondary visualization objects are created lazily.
       this.vertexPointsObjects.push(null);
+      this.voxelObjects.push(null);
 
       // Initialize color mode before creating material. The slot already exists
       // at entryIndex, so this only assigns.
@@ -3822,6 +3833,12 @@ class PointCloudVisualizer {
       }
     }
 
+    const voxels = this.voxelObjects[fileIndex];
+    if (voxels) {
+      this.scene.remove(voxels);
+      voxelRenderer.disposeVoxelMesh(voxels);
+    }
+
     // Remove normals visualizer from scene and dispose
     const normalsVisualizer = this.normalsVisualizers[fileIndex];
     if (normalsVisualizer) {
@@ -3888,6 +3905,8 @@ class PointCloudVisualizer {
     this.meshes.splice(fileIndex, 1);
     this.normalsVisualizers.splice(fileIndex, 1); // Remove normals visualizer for this file
     this.vertexPointsObjects.splice(fileIndex, 1); // Remove vertex points object for this file
+    this.voxelObjects.splice(fileIndex, 1);
+    this.voxelSizes.splice(fileIndex, 1);
     this.multiMaterialGroups.splice(fileIndex, 1); // Remove multi-material group for this file
     this.materialMeshes.splice(fileIndex, 1); // Remove sub-meshes for this file
     this.removeEntryAndChildren(fileIndex);
@@ -3899,6 +3918,7 @@ class PointCloudVisualizer {
     this.solidVisible.splice(fileIndex, 1);
     this.wireframeVisible.splice(fileIndex, 1);
     this.pointsVisible.splice(fileIndex, 1);
+    this.voxelsVisible.splice(fileIndex, 1);
     this.normalsVisible.splice(fileIndex, 1);
 
     // Remove Depth data if it exists for this file
@@ -4032,6 +4052,23 @@ class PointCloudVisualizer {
   /** Called from the file rows and from the all-clouds slider in the controls. */
   updatePointSize(fileIndex: number, newSize: number): void {
     pointSizeScaling.updatePointSize(this, fileIndex, newSize);
+  }
+
+  updateVoxelSize(fileIndex: number, newSize: number): void {
+    if (
+      fileIndex < 0 ||
+      fileIndex >= this.spatialFiles.length ||
+      !Number.isFinite(newSize) ||
+      newSize <= 0
+    ) {
+      return;
+    }
+    this.voxelSizes[fileIndex] = newSize;
+    const voxels = this.voxelObjects[fileIndex];
+    if (voxels) {
+      voxelRenderer.updateVoxelSize(voxels, newSize);
+      this.requestRender();
+    }
   }
 
   private getColorName(fileIndex: number): string {
