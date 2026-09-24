@@ -68,7 +68,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: view-cube-visual
-          path: engine/artifacts/view-cube-reference.png
+          path: |
+            engine/artifacts/view-cube-reference.png
+            engine/artifacts/view-cube-reference.json
           if-no-files-found: error
 
       - name: Run focused Orbit navigation regressions
