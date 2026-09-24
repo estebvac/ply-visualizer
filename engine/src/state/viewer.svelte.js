@@ -42,7 +42,7 @@ export const viewerState = $state(
     lightingMode: 'normal',
     // Phase 4 (CameraControlsPanel.svelte): updated every frame the camera
     // moves by transformationMatrix.ts's updateCameraControlsPanel().
-    cameraFov: 60,
+    cameraFov: 75,
     // Must match the PerspectiveCamera constructor arguments in initThreeJS.
     cameraNear: 0.001,
     cameraFar: 1000000,
