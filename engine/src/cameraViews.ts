@@ -1,6 +1,6 @@
 import * as THREE from 'three';
+import type { CameraViewId } from './cameraOrientation';
 import {
-  CameraViewId,
   getViewDirection,
   NAVIGATION_UP,
   poleSafeDirection,
@@ -25,6 +25,7 @@ export interface CameraViewHost {
   requestRender(): void;
   updateCameraMatrix(): void;
   updateCameraControlsPanel(): void;
+  cameraViewAnimator?: { cancel(): void };
 }
 
 function presetToViewId(preset: CameraPreset): CameraViewId {
@@ -41,6 +42,7 @@ function commitCameraChange(host: CameraViewHost): void {
 }
 
 export function applyDeterministicCameraView(host: CameraViewHost, id: CameraViewId): void {
+  host.cameraViewAnimator?.cancel();
   const target = host.controls.target.clone();
   const distance = Math.max(host.camera.position.distanceTo(target), 1e-6);
   const direction = poleSafeDirection(getViewDirection(id));
@@ -56,6 +58,7 @@ export function applyCameraPreset(host: CameraViewHost, preset: CameraPreset): v
 }
 
 export function setCameraPosition(host: CameraViewHost, x: number, y: number, z: number): boolean {
+  host.cameraViewAnimator?.cancel();
   if (![x, y, z].every(Number.isFinite)) {
     return false;
   }
