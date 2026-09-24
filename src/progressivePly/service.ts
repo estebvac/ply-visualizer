@@ -41,6 +41,13 @@ export interface ProgressivePlyOpenMetadata {
 const MAX_HEADER_BYTES = 1024 * 1024;
 const TILE_MESSAGE_BYTES = 24 * 1024 * 1024;
 
+export function supportsProgressivePlyUri(uri: { scheme: string; fsPath: string }): boolean {
+  return (
+    (uri.scheme === 'file' || uri.scheme === 'vscode-remote') &&
+    path.extname(uri.fsPath).toLowerCase() === '.ply'
+  );
+}
+
 async function readHeaderProbe(filePath: string): Promise<Uint8Array> {
   const handle = await fs.promises.open(filePath, 'r');
   try {
@@ -150,10 +157,7 @@ export class ProgressivePlyService {
     // Under Remote-SSH workspace resources use the vscode-remote scheme, but
     // this extension runs in the workspace extension host and documentUri.fsPath
     // is the real path on the remote machine. Keep all heavy I/O there.
-    if (
-      !['file', 'vscode-remote'].includes(documentUri.scheme) ||
-      path.extname(documentUri.fsPath).toLowerCase() !== '.ply'
-    ) {
+    if (!supportsProgressivePlyUri(documentUri)) {
       return false;
     }
 
