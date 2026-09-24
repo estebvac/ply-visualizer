@@ -42,6 +42,7 @@ export interface ProgressivePlyProbe {
   vertexCount: number;
   faceCount: number;
   vertexStride: number;
+  vertexStartsAtBody: boolean;
   properties: ProgressivePlyProperty[];
   scalarNames: string[];
   hasColors: boolean;
@@ -195,7 +196,13 @@ export function shouldUseProgressivePly(
   fileSizeBytes: number,
   options: ProgressivePlyDecisionOptions
 ): boolean {
-  if (!options.enabled || probe.vertexCount <= 0 || probe.faceCount > 0 || probe.isGaussianSplat) {
+  if (
+    !options.enabled ||
+    probe.vertexCount <= 0 ||
+    probe.faceCount > 0 ||
+    probe.isGaussianSplat ||
+    !probe.vertexStartsAtBody
+  ) {
     return false;
   }
   if (!propertyByName(probe, 'x') || !propertyByName(probe, 'y') || !propertyByName(probe, 'z')) {
@@ -253,6 +260,8 @@ export async function probeProgressivePly(uri: vscode.Uri): Promise<ProgressiveP
   let currentElement = '';
   let vertexStride = 0;
   let unsupportedVertexList = false;
+  let sawVertexElement = false;
+  let nonEmptyElementBeforeVertex = false;
   const properties: ProgressivePlyProperty[] = [];
   const comments: string[] = [];
 
@@ -271,7 +280,12 @@ export async function probeProgressivePly(uri: vscode.Uri): Promise<ProgressiveP
     } else if (parts[0] === 'element') {
       currentElement = parts[1] ?? '';
       const count = Number(parts[2] ?? 0);
-      if (currentElement === 'vertex') vertexCount = count;
+      if (currentElement === 'vertex') {
+        vertexCount = count;
+        sawVertexElement = true;
+      } else if (!sawVertexElement && count > 0) {
+        nonEmptyElementBeforeVertex = true;
+      }
       if (currentElement === 'face') faceCount = count;
     } else if (parts[0] === 'property' && currentElement === 'vertex') {
       if (parts[1] === 'list') {
@@ -287,8 +301,8 @@ export async function probeProgressivePly(uri: vscode.Uri): Promise<ProgressiveP
   }
 
   if (!encoding) throw new Error('PLY header has no supported format');
-  if (unsupportedVertexList && encoding !== 'ascii') {
-    throw new Error('Progressive binary PLY does not support list-valued vertex properties');
+  if (unsupportedVertexList) {
+    throw new Error('Progressive PLY does not support list-valued vertex properties');
   }
 
   const names = properties.map(property => property.name.toLowerCase());
@@ -317,6 +331,7 @@ export async function probeProgressivePly(uri: vscode.Uri): Promise<ProgressiveP
     vertexCount,
     faceCount,
     vertexStride,
+    vertexStartsAtBody: !nonEmptyElementBeforeVertex,
     properties,
     scalarNames,
     hasColors,
