@@ -124,7 +124,7 @@ test('Camera tab renders one six-plane CSS 3D cube with invisible edge/corner hi
   }
 
   for (const hit of geometry.hitRegions) {
-    expect(hit.opacity).toBe('0');
+    expect(hit.backgroundColor === 'rgba(0, 0, 0, 0)' || hit.backgroundColor === 'transparent').toBe(true);
     expect(hit.borderWidth).toBe('0px');
   }
 });
