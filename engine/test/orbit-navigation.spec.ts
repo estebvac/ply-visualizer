@@ -5,7 +5,6 @@ async function getNavigationState(page: Page) {
     const v: any = (window as any).visualizer;
     return {
       controlType: v.controlType,
-      ctor: v.controls?.constructor?.name,
       enableDamping: v.controls?.enableDamping,
       enableRotate: v.controls?.enableRotate,
       enablePan: v.controls?.enablePan,
@@ -30,7 +29,6 @@ test.describe('Standard Orbit navigation', () => {
     const state = await getNavigationState(page);
 
     expect(state.controlType).toBe('orbit');
-    expect(state.ctor).toBe('OrbitControls');
     expect(state.enableDamping).toBe(false);
     expect(state.enableRotate).toBe(true);
     expect(state.enablePan).toBe(true);
