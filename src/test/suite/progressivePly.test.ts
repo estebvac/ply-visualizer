@@ -4,6 +4,10 @@ import * as os from 'os';
 import * as path from 'path';
 import { parseProgressivePlyHeader } from '../../progressivePly/header';
 import {
+  acceptProgressiveGeneration,
+  isCurrentProgressiveGeneration,
+} from '../../progressivePly/generation';
+import {
   estimateDecodedPlyBytes,
   shouldUseProgressivePly,
   supportsProgressivePlyUri,
@@ -85,6 +89,19 @@ function makeBinaryPly(pointCount = 2048): Buffer {
 }
 
 suite('Progressive PLY remote loading', () => {
+  test('rejects stale camera generations before remote tile work', () => {
+    const state = { latestGeneration: -1 };
+    assert.strictEqual(acceptProgressiveGeneration(state, 0), true);
+    assert.strictEqual(state.latestGeneration, 0);
+    assert.strictEqual(acceptProgressiveGeneration(state, 3), true);
+    assert.strictEqual(state.latestGeneration, 3);
+    assert.strictEqual(acceptProgressiveGeneration(state, 2), false);
+    assert.strictEqual(state.latestGeneration, 3);
+    assert.strictEqual(acceptProgressiveGeneration(state, Number.NaN), false);
+    assert.strictEqual(isCurrentProgressiveGeneration(state, 3), true);
+    assert.strictEqual(isCurrentProgressiveGeneration(state, 2), false);
+  });
+
   test('parses fixed-stride binary PLY schema and routes by memory budget', () => {
     const bytes = makeBinaryPly(100);
     const header = parseProgressivePlyHeader(bytes);
