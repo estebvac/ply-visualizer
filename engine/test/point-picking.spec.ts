@@ -129,9 +129,7 @@ test.describe('Double-click point picking', () => {
     expect(zoomedOutMs).toBeLessThan(1000);
   });
 
-  test('near-miss stays inert; double-click far into empty space refits the view', async ({
-    page,
-  }) => {
+  test('near-miss and far empty-space double-clicks are both inert', async ({ page }) => {
     test.setTimeout(120000);
 
     const logs: string[] = [];
@@ -139,9 +137,9 @@ test.describe('Double-click point picking', () => {
 
     await loadPly(page, buildLargePly(10_000), 'picking_miss.ply');
 
-    // Zoom out so the cloud shrinks to a small blob in the center
     const canvas = page.locator('#three-canvas');
     const box = await canvas.boundingBox();
+    expect(box).not.toBeNull();
     await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
     for (let i = 0; i < 30; i++) {
       await page.mouse.wheel(0, 500);
@@ -149,24 +147,29 @@ test.describe('Double-click point picking', () => {
     }
     await page.waitForTimeout(500);
 
-    // A miss close to the cloud must not move the camera (failed pick, not
-    // a recovery gesture)
+    const snapshot = () =>
+      page.evaluate(() => {
+        const v: any = (window as any).visualizer;
+        return {
+          position: v.camera.position.toArray(),
+          target: v.controls.target.toArray(),
+        };
+      });
+
+    const beforeNear = await snapshot();
     logs.length = 0;
     await timedDoubleClick(page, 0.5 + 80 / box!.width, 0.5);
     let output = logs.join('\n');
     expect(output).toContain('No selectable object found');
     expect(output).not.toContain('fitting view to all objects');
+    expect(await snapshot()).toEqual(beforeNear);
 
-    // A double-click far from everything is the recovery gesture
+    const beforeFar = await snapshot();
     logs.length = 0;
     await timedDoubleClick(page, 0.02, 0.02);
-    expect(logs.join('\n')).toContain('fitting view to all objects');
-    await page.waitForTimeout(500);
-
-    // After the refit the cloud fills the view again and picking works
-    logs.length = 0;
-    await timedDoubleClick(page, 0.5, 0.5);
     output = logs.join('\n');
-    expect(output).toContain('screen-space pick');
+    expect(output).toContain('No selectable object found');
+    expect(output).not.toContain('fitting view to all objects');
+    expect(await snapshot()).toEqual(beforeFar);
   });
 });
