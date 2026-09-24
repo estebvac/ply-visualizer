@@ -126,7 +126,7 @@ test.describe('Standard Orbit navigation', () => {
     expect(state.maxPolarAngle).toBeCloseTo(Math.PI);
     expect(state.keyPanSpeed).toBe(7);
     expect(state.keyRotateSpeed).toBe(1);
-    expect(state.fov).toBe(75);
+    expect(state.fov).toBe(60);
     expect(state.mouseButtons).toEqual({ LEFT: 0, MIDDLE: 1, RIGHT: 2 });
     expect(state.minDistance).toBeCloseTo(0.001);
     expect(state.maxDistance).toBe(50000);
