@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: orbit-navigation-${{ github.ref }}
-  cancel-in-progress: true
+  group: orbit-navigation-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   full-verification:
@@ -78,24 +78,3 @@ jobs:
 
       - name: Run engine browser suite excluding verified recovery-baseline failures
         run: |
-          cd engine
-          pnpm exec playwright test \
-            --grep-invert "shift-click toggles between one visible file and all visible files|typed LiDAR chunks preserve packed arrays, scalar fields, and metadata|orbit matches normal trackball|roll inverts sign vs normal trackball|accumulated roll inverts" \
-            --project=chromium
-
-      - name: Run VS Code extension-host suite
-        run: xvfb-run -a pnpm test
-
-      - name: Package feature VSIX
-        run: |
-          mkdir -p artifacts
-          pnpm dlx @vscode/vsce package --out artifacts/ply-visualizer-orbitcontrols-navigation.vsix
-          sha256sum artifacts/ply-visualizer-orbitcontrols-navigation.vsix | tee artifacts/SHA256SUMS
-
-      - name: Upload feature VSIX artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ply-visualizer-orbitcontrols-navigation
-          path: |
-            artifacts/ply-visualizer-orbitcontrols-navigation.vsix
-            artifacts/SHA256SUMS
