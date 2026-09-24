@@ -133,33 +133,76 @@ test.describe('Standard Orbit navigation', () => {
   test('double-click sets pivot without moving camera and Shift + double-click measures', async ({
     page,
   }) => {
-    await loadSampleMesh(page);
+    const pivotPly = Buffer.from(
+      [
+        'ply',
+        'format ascii 1.0',
+        'element vertex 2',
+        'property float x',
+        'property float y',
+        'property float z',
+        'end_header',
+        '-1 0 0',
+        '3 0 0',
+        '',
+      ].join('\n'),
+      'utf8'
+    );
 
-    const canvas = page.locator('#three-canvas');
-    const box = await canvas.boundingBox();
-    expect(box).not.toBeNull();
-    const clientX = box!.x + box!.width / 2;
-    const clientY = box!.y + box!.height / 2;
+    await page.click('[data-tab="files"]');
+    await page.locator('#hiddenFileInput').setInputFiles({
+      name: 'pivot_test.ply',
+      mimeType: 'application/octet-stream',
+      buffer: pivotPly,
+    });
+    const loading = page.locator('#loading');
+    if (await loading.isVisible()) {
+      await expect(loading).toBeHidden({ timeout: 60000 });
+    }
+    await page.waitForTimeout(500);
+
+    const pick = await page.evaluate(() => {
+      const v: any = (window as any).visualizer;
+      const canvas = document.getElementById('three-canvas') as HTMLCanvasElement;
+      const rect = canvas.getBoundingClientRect();
+
+      v.camera.updateMatrixWorld(true);
+      const view = v.camera.matrixWorldInverse.elements as number[];
+      const projection = v.camera.projectionMatrix.elements as number[];
+
+      const mul = (m: number[], p: number[]) => [
+        m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12] * p[3],
+        m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13] * p[3],
+        m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14] * p[3],
+        m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15] * p[3],
+      ];
+
+      const cameraPoint = mul(view, [3, 0, 0, 1]);
+      const clip = mul(projection, cameraPoint);
+      const ndcX = clip[0] / clip[3];
+      const ndcY = clip[1] / clip[3];
+
+      return {
+        clientX: rect.left + ((ndcX + 1) * 0.5) * rect.width,
+        clientY: rect.top + ((1 - ndcY) * 0.5) * rect.height,
+      };
+    });
 
     const before = await cameraState(page);
     await page.evaluate(
       ({ clientX, clientY }) => {
         const canvas = document.getElementById('three-canvas') as HTMLCanvasElement;
         canvas.dispatchEvent(
-          new MouseEvent('dblclick', {
-            bubbles: true,
-            clientX,
-            clientY,
-          })
+          new MouseEvent('dblclick', { bubbles: true, clientX, clientY })
         );
       },
-      { clientX, clientY }
+      pick
     );
     await page.waitForTimeout(100);
 
     const afterPivot = await cameraState(page);
     expect(delta3(afterPivot.position, before.position)).toBeLessThan(1e-6);
-    expect(delta3(afterPivot.target, before.target)).toBeGreaterThan(1e-5);
+    expect(delta3(afterPivot.target, before.target)).toBeGreaterThan(1e-3);
 
     const beforeMeasure = await page.evaluate(() => {
       const v: any = (window as any).visualizer;
@@ -181,7 +224,7 @@ test.describe('Standard Orbit navigation', () => {
           })
         );
       },
-      { clientX, clientY }
+      pick
     );
     await page.waitForTimeout(100);
 
