@@ -32,6 +32,7 @@ async function cameraState(page: Page) {
 async function invokeView(page: Page, name: string) {
   await page
     .getByRole('button', { name, exact: true })
+    .first()
     .evaluate((el: HTMLButtonElement) => el.click());
   await page.waitForFunction(() => !(window as any).visualizer.cameraViewAnimator.isAnimating);
   await page.waitForTimeout(100);
@@ -56,14 +57,26 @@ test('Camera tab renders one six-plane CSS 3D cube with invisible edge/corner hi
 
   await expect(page.locator('[data-view-cube]')).toBeVisible();
   await expect(page.locator('[data-view-face]')).toHaveCount(6);
-  await expect(page.locator('[data-view-edge]')).toHaveCount(12);
-  await expect(page.locator('[data-view-corner]')).toHaveCount(8);
+  const directionKinds = await page.evaluate(() => {
+    const entries = [...document.querySelectorAll('[data-view-direction]')].map(el => ({
+      direction: (el as HTMLElement).dataset.viewDirection ?? '',
+      kind: (el as HTMLElement).dataset.viewKind ?? '',
+    }));
+    return {
+      faces: [...new Set(entries.filter(entry => entry.kind === 'face').map(entry => entry.direction))],
+      edges: [...new Set(entries.filter(entry => entry.kind === 'edge').map(entry => entry.direction))],
+      corners: [...new Set(entries.filter(entry => entry.kind === 'corner').map(entry => entry.direction))],
+    };
+  });
+  expect(directionKinds.faces).toHaveLength(6);
+  expect(directionKinds.edges).toHaveLength(12);
+  expect(directionKinds.corners).toHaveLength(8);
 
   const geometry = await page.evaluate(() => {
     const scene = document.querySelector('[data-view-cube-scene]') as HTMLElement;
     const cube = document.querySelector('[data-view-cube]') as HTMLElement;
     const faces = [...document.querySelectorAll('[data-view-face]')] as HTMLElement[];
-    const hitRegions = [...document.querySelectorAll('.cube-hit-region')] as HTMLElement[];
+    const hitRegions = [...document.querySelectorAll('.face-hit-cell')] as HTMLElement[];
     const sceneStyle = getComputedStyle(scene);
     const cubeStyle = getComputedStyle(cube);
 
