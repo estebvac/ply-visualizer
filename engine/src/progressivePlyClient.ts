@@ -36,6 +36,20 @@ interface ResidentTile {
   nodeId: string;
   points: THREE.Points;
   voxel: THREE.InstancedMesh | null;
+  data: {
+    vertices: [];
+    faces: [];
+    vertexCount: number;
+    faceCount: 0;
+    hasColors: boolean;
+    hasNormals: boolean;
+    hasIntensity: boolean;
+    colorsArray: Uint8Array | null;
+    normalsArray: Float32Array | null;
+    intensityArray: Float32Array | null;
+    scalarFields: Record<string, Float32Array>;
+    useTypedArrays: true;
+  };
   byteLength: number;
   pointCount: number;
   lastUsed: number;
@@ -53,6 +67,7 @@ interface ClientSession {
   localPointBudget: number;
   localMemoryBudgetBytes: number;
   hidden: boolean;
+  desired: Set<string>;
 }
 
 function asArrayBuffer(value: unknown): ArrayBuffer | null {
@@ -115,6 +130,33 @@ export function decodeProgressiveTile(
   return { positions, colors, normals, intensity, scalars };
 }
 
+export function selectProgressiveNodes(
+  candidates: Array<{ node: ProgressiveNode; distance: number }>,
+  pointBudget: number,
+  memoryBudgetBytes: number,
+  maxNodes = 64
+): ProgressiveNode[] {
+  const sorted = [...candidates].sort((a, b) => a.distance - b.distance);
+  const desired: ProgressiveNode[] = [];
+  let points = 0;
+  let bytes = 0;
+  for (const candidate of sorted) {
+    if (desired.length >= maxNodes) break;
+    const nextPoints = points + candidate.node.pointCount;
+    const nextBytes = bytes + candidate.node.byteLength;
+    if (
+      desired.length > 0 &&
+      (nextPoints > pointBudget || nextBytes > memoryBudgetBytes)
+    ) {
+      continue;
+    }
+    desired.push(candidate.node);
+    points = nextPoints;
+    bytes = nextBytes;
+  }
+  return desired;
+}
+
 function boxFromTuple(tuple: ProgressiveNode['bbox']): THREE.Box3 {
   return new THREE.Box3(
     new THREE.Vector3(tuple[0], tuple[1], tuple[2]),
@@ -136,6 +178,7 @@ export class ProgressivePlyClient {
         } else {
           session.desiredKey = '';
           this.host.requestRender();
+          this.updateCamera(true);
         }
       }
     });
@@ -164,6 +207,7 @@ export class ProgressivePlyClient {
         Number(budgets.localMemoryBudgetBytes) || 256 * 1024 * 1024
       ),
       hidden: document.hidden,
+      desired: new Set(),
     };
     this.sessions.set(message.sessionId, session);
     const source = this.host.meshes[fileIndex] as THREE.Object3D | undefined;
@@ -207,11 +251,18 @@ export class ProgressivePlyClient {
 
   handleTile(message: any): void {
     const session = this.sessions.get(message.sessionId);
-    if (!session || session.hidden) return;
+    if (!session) return;
     const node = session.nodeById.get(message.nodeId);
+    if (node) session.pending.delete(node.id);
+    if (!node || session.hidden || !session.desired.has(node.id)) return;
+    if (
+      Number.isFinite(Number(message.generation)) &&
+      Number(message.generation) < session.requestedGeneration
+    ) {
+      return;
+    }
     const raw = asArrayBuffer(message.buffer);
-    if (!node || !raw) return;
-    session.pending.delete(node.id);
+    if (!raw) return;
 
     const source = this.host.meshes[session.fileIndex];
     if (!(source instanceof THREE.Points)) return;
@@ -231,6 +282,22 @@ export class ProgressivePlyClient {
     for (const [name, values] of Object.entries(decoded.scalars)) {
       geometry.setAttribute(`scalar_${name}`, new THREE.BufferAttribute(values, 1));
     }
+    const tileData = {
+      vertices: [] as [],
+      faces: [] as [],
+      vertexCount: decoded.positions.length / 3,
+      faceCount: 0 as const,
+      hasColors: !!decoded.colors,
+      hasNormals: !!decoded.normals,
+      hasIntensity: !!decoded.intensity,
+      colorsArray: decoded.colors,
+      normalsArray: decoded.normals,
+      intensityArray: decoded.intensity,
+      scalarFields: decoded.scalars,
+      useTypedArrays: true as const,
+    };
+    const colorMode = this.host.individualColorModes?.[session.fileIndex] ?? 'assigned';
+    this.host.applyColorModeToGeometry?.(tileData, geometry, colorMode);
     geometry.boundingBox = boxFromTuple(node.bbox);
     geometry.computeBoundingSphere();
 
@@ -246,6 +313,7 @@ export class ProgressivePlyClient {
       nodeId: node.id,
       points,
       voxel: null,
+      data: tileData,
       byteLength: node.byteLength,
       pointCount: node.pointCount,
       lastUsed: performance.now(),
@@ -281,27 +349,29 @@ export class ProgressivePlyClient {
         const center = worldBox.getCenter(new THREE.Vector3());
         candidates.push({ node, distance: Math.max(1e-6, center.distanceTo(this.host.camera.position)) });
       }
-      candidates.sort((a, b) => a.distance - b.distance);
-
-      const desired: ProgressiveNode[] = [];
-      let points = 0;
-      for (const candidate of candidates) {
-        if (desired.length >= 64) break;
-        if (points + candidate.node.pointCount > session.localPointBudget && desired.length > 0) break;
-        desired.push(candidate.node);
-        points += candidate.node.pointCount;
-      }
+      const desired = selectProgressiveNodes(
+        candidates,
+        session.localPointBudget,
+        session.localMemoryBudgetBytes,
+        64
+      );
       const ids = desired.map(node => node.id);
       const key = ids.join('|');
       const selected = new Set(ids);
+      session.desired = selected;
       for (const id of selected) {
         const resident = session.resident.get(id);
         if (resident) resident.lastUsed = now;
       }
       this.enforceBudget(session, selected);
-      if (key === session.desiredKey) continue;
-      session.desiredKey = key;
-      session.requestedGeneration++;
+      const changed = key !== session.desiredKey;
+      if (changed) {
+        session.desiredKey = key;
+        session.requestedGeneration++;
+        for (const pending of [...session.pending]) {
+          if (!selected.has(pending)) session.pending.delete(pending);
+        }
+      }
       const missing = ids.filter(id => !session.resident.has(id) && !session.pending.has(id));
       if (missing.length) {
         missing.forEach(id => session.pending.add(id));
@@ -309,10 +379,32 @@ export class ProgressivePlyClient {
           type: 'progressivePly:requestTiles',
           sessionId: session.sessionId,
           generation: session.requestedGeneration,
-          nodeIds: missing.slice(0, 32),
+          nodeIds: missing.slice(0, 64),
         });
       }
     }
+  }
+
+  syncColorMode(fileIndex: number, colorMode: string): void {
+    for (const session of this.sessions.values()) {
+      if (session.fileIndex !== fileIndex) continue;
+      const source = this.host.meshes[session.fileIndex];
+      if (!(source instanceof THREE.Points)) continue;
+      for (const resident of session.resident.values()) {
+        resident.points.material = source.material;
+        this.host.applyColorModeToGeometry?.(
+          resident.data,
+          resident.points.geometry,
+          colorMode
+        );
+        if (resident.voxel) {
+          // Rebuild instance colours from the newly selected point colours.
+          const { refreshVoxelColors } = require('./visualization/VoxelRenderer') as typeof import('./visualization/VoxelRenderer');
+          refreshVoxelColors(resident.voxel, resident.points);
+        }
+      }
+    }
+    this.host.requestRender?.();
   }
 
   syncVoxelMode(fileIndex: number): void {
@@ -390,6 +482,7 @@ export class ProgressivePlyClient {
   private evictAllFineTiles(session: ClientSession): void {
     for (const tile of [...session.resident.values()]) this.disposeTile(session, tile);
     session.pending.clear();
+    session.desired.clear();
     session.desiredKey = '';
   }
 
