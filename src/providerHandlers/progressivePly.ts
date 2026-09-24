@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import * as readline from 'readline';
-import { parsePlyChunkWasm } from '../wasmPointcloud';
+import { parsePlyChunkWasm, type WasmPlyChunk } from '../wasmPointcloud';
 
 export type ProgressivePlyEncoding =
   | 'ascii'
@@ -502,32 +502,32 @@ function syntheticBinaryPlyHeader(
 }
 
 function copyWasmPoint(
-  parsed: ReturnType<typeof parsePlyChunkWasm> & {},
+  parsed: WasmPlyChunk,
   local: number,
   probe: ProgressivePlyProbe,
   target: CanonicalPoint
 ): CanonicalPoint {
   const p3 = local * 3;
-  target.x = parsed!.positionsArray[p3];
-  target.y = parsed!.positionsArray[p3 + 1];
-  target.z = parsed!.positionsArray[p3 + 2];
-  if (parsed!.colorsArray) {
-    target.r = parsed!.colorsArray[p3];
-    target.g = parsed!.colorsArray[p3 + 1];
-    target.b = parsed!.colorsArray[p3 + 2];
+  target.x = parsed.positionsArray[p3];
+  target.y = parsed.positionsArray[p3 + 1];
+  target.z = parsed.positionsArray[p3 + 2];
+  if (parsed.colorsArray) {
+    target.r = parsed.colorsArray[p3];
+    target.g = parsed.colorsArray[p3 + 1];
+    target.b = parsed.colorsArray[p3 + 2];
   } else {
     target.r = target.g = target.b = 255;
   }
-  if (parsed!.normalsArray) {
-    target.nx = parsed!.normalsArray[p3];
-    target.ny = parsed!.normalsArray[p3 + 1];
-    target.nz = parsed!.normalsArray[p3 + 2];
+  if (parsed.normalsArray) {
+    target.nx = parsed.normalsArray[p3];
+    target.ny = parsed.normalsArray[p3 + 1];
+    target.nz = parsed.normalsArray[p3 + 2];
   } else {
     target.nx = target.ny = target.nz = 0;
   }
-  target.intensity = parsed!.intensityArray?.[local] ?? 0;
+  target.intensity = parsed.intensityArray?.[local] ?? 0;
   for (let scalar = 0; scalar < probe.scalarNames.length; scalar++) {
-    target.scalars[scalar] = parsed!.scalarFields[probe.scalarNames[scalar]]?.[local] ?? 0;
+    target.scalars[scalar] = parsed.scalarFields[probe.scalarNames[scalar]]?.[local] ?? 0;
   }
   return target;
 }
