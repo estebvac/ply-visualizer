@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { SpatialData } from './interfaces';
+import { createVoxelMesh } from './visualization/VoxelRenderer';
 
 /**
  * Per-file solid/wireframe/points/normals render-mode toggles and the mesh
@@ -10,14 +11,17 @@ export interface RenderModeHost {
   solidVisible: boolean[];
   wireframeVisible: boolean[];
   pointsVisible: boolean[];
+  voxelsVisible: boolean[];
   normalsVisible: boolean[];
   meshes: (THREE.Mesh | THREE.Points | THREE.LineSegments | null)[];
   multiMaterialGroups: (THREE.Group | null)[];
   materialMeshes: (THREE.Object3D[] | null)[];
   vertexPointsObjects: (THREE.Points | null)[];
+  voxelObjects: (THREE.InstancedMesh | null)[];
   normalsVisualizers: (THREE.LineSegments | null)[];
   fileVisibility: boolean[];
   pointSizes: number[];
+  voxelSizes: number[];
   allowTransparency: boolean;
   scene: THREE.Scene;
   /** Present on the full visualizer host; drives the per-file splat mode. */
@@ -66,28 +70,32 @@ export function toggleUniversalRenderMode(
       toggleWireframeRendering(host, fileIndex);
       break;
     case 'points':
-      if (host.splatMode?.canEnable(data)) {
-        // Gaussian files use Points/Splats as an exclusive mode selector.
-        // File visibility is controlled by the checkbox, so selecting the
-        // already-active Points mode must not hide the file.
-        host.pointsVisible[fileIndex] = true;
-        if (host.splatMode.isActive(fileIndex)) {
-          host.splatMode.disable(fileIndex);
-        } else {
-          updateMeshVisibilityAndMaterial(host, fileIndex);
-          host.requestRender();
-        }
+      // Points, voxels, and splats are alternate visualizations of the same
+      // point-cloud source. Selecting Points disables the other two rather than
+      // hiding the file when Points is already active.
+      host.pointsVisible[fileIndex] = true;
+      host.voxelsVisible[fileIndex] = false;
+      if (host.splatMode?.isActive(fileIndex)) {
+        host.splatMode.disable(fileIndex);
       } else {
-        togglePointsRendering(host, fileIndex);
+        updateMeshVisibilityAndMaterial(host, fileIndex);
+        host.requestRender();
       }
+      break;
+    case 'voxels':
+      toggleVoxelRendering(host, fileIndex);
       break;
     case 'normals':
       toggleNormalsRendering(host, fileIndex);
       break;
     case 'splat':
-      // Async (first use lazy-loads Spark); the manager refreshes visibility
-      // and button states itself once the state actually flips.
+      // Async (first use lazy-loads Spark); keep all point-cloud visualizations
+      // mutually exclusive.
       if (!host.splatMode?.isActive(fileIndex)) {
+        host.voxelsVisible[fileIndex] = false;
+        host.pointsVisible[fileIndex] = false;
+        const voxels = host.voxelObjects[fileIndex];
+        if (voxels) voxels.visible = false;
         void host.splatMode?.toggle(fileIndex);
       }
       return;
@@ -157,6 +165,42 @@ export function togglePointsRendering(host: RenderModeHost, fileIndex: number): 
 
   // Toggle points visibility state
   host.pointsVisible[fileIndex] = !host.pointsVisible[fileIndex];
+  if (host.pointsVisible[fileIndex]) {
+    host.voxelsVisible[fileIndex] = false;
+    if (host.splatMode?.isActive(fileIndex)) host.splatMode.disable(fileIndex);
+  }
+
+  updateMeshVisibilityAndMaterial(host, fileIndex);
+  host.requestRender();
+}
+
+export function toggleVoxelRendering(host: RenderModeHost, fileIndex: number): void {
+  if (fileIndex < 0 || fileIndex >= host.spatialFiles.length) return;
+
+  const source = host.meshes[fileIndex];
+  if (!(source instanceof THREE.Points)) return;
+
+  while (host.voxelsVisible.length <= fileIndex) host.voxelsVisible.push(false);
+  while (host.voxelObjects.length <= fileIndex) host.voxelObjects.push(null);
+  while (host.voxelSizes.length <= fileIndex) host.voxelSizes.push(0.1);
+
+  host.voxelsVisible[fileIndex] = !host.voxelsVisible[fileIndex];
+
+  if (host.voxelsVisible[fileIndex]) {
+    host.pointsVisible[fileIndex] = false;
+    if (host.splatMode?.isActive(fileIndex)) host.splatMode.disable(fileIndex);
+
+    if (!host.voxelObjects[fileIndex]) {
+      const voxels = createVoxelMesh(source, host.voxelSizes[fileIndex] || 0.1);
+      voxels.matrix.copy(source.matrix);
+      voxels.matrixAutoUpdate = false;
+      voxels.matrixWorldNeedsUpdate = true;
+      host.voxelObjects[fileIndex] = voxels;
+      host.scene.add(voxels);
+    }
+  } else {
+    host.pointsVisible[fileIndex] = true;
+  }
 
   updateMeshVisibilityAndMaterial(host, fileIndex);
   host.requestRender();
@@ -199,6 +243,7 @@ export function updateMeshVisibilityAndMaterial(host: RenderModeHost, fileIndex:
   const solidVisible = host.solidVisible[fileIndex] ?? true;
   const wireframeVisible = host.wireframeVisible[fileIndex] ?? false;
   const pointsVisible = host.pointsVisible[fileIndex] ?? true;
+  const voxelsVisible = host.voxelsVisible[fileIndex] ?? false;
   const fileVisible = host.fileVisibility[fileIndex] ?? true;
 
   // Set visibility for the target (mesh or multi-material group)
@@ -207,7 +252,11 @@ export function updateMeshVisibilityAndMaterial(host: RenderModeHost, fileIndex:
     // the file) but stay loaded: picking/measurement iterate the meshes via
     // fileVisibility, not mesh.visible, so they keep working on the centers.
     const splatActive = !!host.splatMode?.isActive(fileIndex);
-    mesh.visible = pointsVisible && fileVisible && !splatActive;
+    mesh.visible = pointsVisible && fileVisible && !splatActive && !voxelsVisible;
+    const voxels = host.voxelObjects[fileIndex];
+    if (voxels) {
+      voxels.visible = voxelsVisible && fileVisible && !splatActive;
+    }
     host.splatMode?.syncVisibility(fileIndex);
   } else {
     // Triangle mesh or multi-material group case
@@ -501,9 +550,13 @@ export function updateUniversalRenderButtonStates(host: RenderModeHost): void {
         isActive = host.wireframeVisible[fileIndex] ?? false;
         break;
       case 'points':
-        isActive = host.splatMode?.canEnable(host.spatialFiles[fileIndex])
-          ? !host.splatMode.isActive(fileIndex)
-          : (host.pointsVisible[fileIndex] ?? true);
+        isActive =
+          (host.pointsVisible[fileIndex] ?? true) &&
+          !(host.voxelsVisible[fileIndex] ?? false) &&
+          !host.splatMode?.isActive(fileIndex);
+        break;
+      case 'voxels':
+        isActive = host.voxelsVisible[fileIndex] ?? false;
         break;
       case 'normals':
         isActive = host.normalsVisible[fileIndex] ?? false;
