@@ -274,6 +274,90 @@ test.describe('Standard Orbit navigation', () => {
     expect(delta3(after.target, before.target)).toBeLessThan(1e-6);
   });
 
+
+  test('camera presets and XYZ edits stay synchronized with Standard Orbit', async ({ page }) => {
+    await loadSampleMesh(page);
+    await page.click('[data-tab="camera"]');
+
+    const beforeAxis = await cameraState(page);
+    await page
+      .getByRole('button', { name: 'View from +X toward the rotation center' })
+      .click();
+    const afterAxis = await cameraState(page);
+    expect(delta3(afterAxis.target, beforeAxis.target)).toBeLessThan(1e-6);
+    expect(Math.abs(afterAxis.distance - beforeAxis.distance)).toBeLessThan(1e-4);
+
+    const beforeIso = await cameraState(page);
+    await page
+      .getByRole('button', { name: 'Isometric view from +X, −Y, +Z' })
+      .click();
+    const afterIso = await cameraState(page);
+    expect(delta3(afterIso.target, beforeIso.target)).toBeLessThan(1e-6);
+    expect(Math.abs(afterIso.distance - beforeIso.distance)).toBeLessThan(1e-4);
+
+    const xInput = page.getByLabel('Camera X position');
+    const newX = afterIso.position[0] + Math.max(afterIso.distance * 0.1, 0.1);
+    await xInput.fill(String(newX));
+    await xInput.press('Enter');
+
+    const afterXYZ = await cameraState(page);
+    expect(delta3(afterXYZ.target, afterIso.target)).toBeLessThan(1e-6);
+    expect(delta3(afterXYZ.position, afterIso.position)).toBeGreaterThan(1e-4);
+
+    const beforeOrbit = await cameraState(page);
+    await dragCanvas(page, 'left', 60, -30);
+    const afterOrbit = await cameraState(page);
+    expect(delta3(afterOrbit.position, beforeOrbit.position)).toBeGreaterThan(1e-4);
+    expect(delta3(afterOrbit.target, beforeOrbit.target)).toBeLessThan(1e-5);
+    expect(Math.abs(afterOrbit.distance - beforeOrbit.distance)).toBeLessThan(1e-4);
+  });
+
+  test('legacy controls preserve camera state when returning to Standard Orbit', async ({ page }) => {
+    await loadSampleMesh(page);
+
+    const snapshot = () =>
+      page.evaluate(() => {
+        const v: any = (window as any).visualizer;
+        return {
+          position: v.camera.position.toArray(),
+          target: v.controls.target.toArray(),
+          up: v.camera.up.toArray(),
+          fov: v.camera.fov,
+          near: v.camera.near,
+          far: v.camera.far,
+        };
+      });
+
+    await page.click('[data-tab="controls"]');
+    const advanced = page.locator('#advanced-navigation');
+    if (!(await advanced.getAttribute('open'))) {
+      await advanced.locator('summary').click();
+    }
+
+    for (const legacyButton of [
+      '#trackball-controls',
+      '#inverse-trackball-controls',
+      '#arcball-controls',
+    ]) {
+      const before = await snapshot();
+      await page.locator(legacyButton).click();
+      await page.locator('#orbit-controls').click();
+      const after = await snapshot();
+
+      expect(delta3(after.position, before.position)).toBeLessThan(1e-6);
+      expect(delta3(after.target, before.target)).toBeLessThan(1e-6);
+      expect(delta3(after.up, before.up)).toBeLessThan(1e-6);
+      expect(after.fov).toBe(before.fov);
+      expect(after.near).toBe(before.near);
+      expect(after.far).toBe(before.far);
+
+      const orbitConfig = await getNavigationState(page);
+      expect(orbitConfig.controlType).toBe('orbit');
+      expect(orbitConfig.enableDamping).toBe(false);
+      expect(orbitConfig.screenSpacePanning).toBe(true);
+    }
+  });
+
   test('suppresses the context menu only on the navigation canvas', async ({ page }) => {
     await loadSampleMesh(page);
 
