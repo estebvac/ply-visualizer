@@ -361,43 +361,123 @@ function normalizedColor(value: number, property: ProgressivePlyProperty | undef
   return Math.max(0, Math.min(255, Math.round(scaled)));
 }
 
-function buildPointFromValues(
-  probe: ProgressivePlyProbe,
-  valueFor: (property: ProgressivePlyProperty, index: number) => number
-): CanonicalPoint {
-  const byName = new Map<string, { property: ProgressivePlyProperty; index: number }>();
-  probe.properties.forEach((property, index) =>
-    byName.set(property.name.toLowerCase(), { property, index })
-  );
-  const get = (...names: string[]) => {
-    for (const name of names) {
-      const entry = byName.get(name);
-      if (entry) return valueFor(entry.property, entry.index);
-    }
-    return 0;
-  };
-  const rp = byName.get('red') ?? byName.get('r');
-  const gp = byName.get('green') ?? byName.get('g');
-  const bp = byName.get('blue') ?? byName.get('b');
-  const scalarIndex = new Map(probe.properties.map((property, index) => [property.name, index]));
+interface DecodeEntry {
+  property: ProgressivePlyProperty;
+  index: number;
+}
 
-  return {
-    x: get('x'),
-    y: get('y'),
-    z: get('z'),
-    r: normalizedColor(rp ? valueFor(rp.property, rp.index) : 255, rp?.property),
-    g: normalizedColor(gp ? valueFor(gp.property, gp.index) : 255, gp?.property),
-    b: normalizedColor(bp ? valueFor(bp.property, bp.index) : 255, bp?.property),
-    nx: get('nx'),
-    ny: get('ny'),
-    nz: get('nz'),
-    intensity: get('intensity'),
-    scalars: probe.scalarNames.map(name => {
-      const index = scalarIndex.get(name);
-      const property = index === undefined ? undefined : probe.properties[index];
-      return property && index !== undefined ? valueFor(property, index) : 0;
-    }),
+interface DecodePlan {
+  x?: DecodeEntry;
+  y?: DecodeEntry;
+  z?: DecodeEntry;
+  red?: DecodeEntry;
+  green?: DecodeEntry;
+  blue?: DecodeEntry;
+  nx?: DecodeEntry;
+  ny?: DecodeEntry;
+  nz?: DecodeEntry;
+  intensity?: DecodeEntry;
+  scalars: DecodeEntry[];
+}
+
+function compileDecodePlan(probe: ProgressivePlyProbe): DecodePlan {
+  const byName = new Map<string, DecodeEntry>();
+  probe.properties.forEach((property, index) => {
+    byName.set(property.name.toLowerCase(), { property, index });
+  });
+  const first = (...names: string[]) => {
+    for (const name of names) {
+      const entry = byName.get(name.toLowerCase());
+      if (entry) return entry;
+    }
+    return undefined;
   };
+  return {
+    x: first('x'),
+    y: first('y'),
+    z: first('z'),
+    red: first('red', 'r'),
+    green: first('green', 'g'),
+    blue: first('blue', 'b'),
+    nx: first('nx'),
+    ny: first('ny'),
+    nz: first('nz'),
+    intensity: first('intensity'),
+    scalars: probe.scalarNames
+      .map(name => byName.get(name.toLowerCase()))
+      .filter((entry): entry is DecodeEntry => !!entry),
+  };
+}
+
+function emptyCanonicalPoint(scalarCount: number): CanonicalPoint {
+  return {
+    x: 0,
+    y: 0,
+    z: 0,
+    r: 255,
+    g: 255,
+    b: 255,
+    nx: 0,
+    ny: 0,
+    nz: 0,
+    intensity: 0,
+    scalars: new Array<number>(scalarCount).fill(0),
+  };
+}
+
+function decodeAsciiPoint(
+  tokens: string[],
+  plan: DecodePlan,
+  target: CanonicalPoint
+): CanonicalPoint {
+  const value = (entry: DecodeEntry | undefined, fallback = 0) =>
+    entry ? Number(tokens[entry.index] ?? fallback) : fallback;
+  target.x = value(plan.x);
+  target.y = value(plan.y);
+  target.z = value(plan.z);
+  target.r = normalizedColor(value(plan.red, 255), plan.red?.property);
+  target.g = normalizedColor(value(plan.green, 255), plan.green?.property);
+  target.b = normalizedColor(value(plan.blue, 255), plan.blue?.property);
+  target.nx = value(plan.nx);
+  target.ny = value(plan.ny);
+  target.nz = value(plan.nz);
+  target.intensity = value(plan.intensity);
+  for (let i = 0; i < plan.scalars.length; i++) {
+    target.scalars[i] = value(plan.scalars[i]);
+  }
+  return target;
+}
+
+function decodeBinaryPoint(
+  buffer: Buffer,
+  recordOffset: number,
+  plan: DecodePlan,
+  littleEndian: boolean,
+  target: CanonicalPoint
+): CanonicalPoint {
+  const value = (entry: DecodeEntry | undefined, fallback = 0) =>
+    entry
+      ? readNumeric(
+          buffer,
+          recordOffset + entry.property.offset,
+          entry.property.type,
+          littleEndian
+        )
+      : fallback;
+  target.x = value(plan.x);
+  target.y = value(plan.y);
+  target.z = value(plan.z);
+  target.r = normalizedColor(value(plan.red, 255), plan.red?.property);
+  target.g = normalizedColor(value(plan.green, 255), plan.green?.property);
+  target.b = normalizedColor(value(plan.blue, 255), plan.blue?.property);
+  target.nx = value(plan.nx);
+  target.ny = value(plan.ny);
+  target.nz = value(plan.nz);
+  target.intensity = value(plan.intensity);
+  for (let i = 0; i < plan.scalars.length; i++) {
+    target.scalars[i] = value(plan.scalars[i]);
+  }
+  return target;
 }
 
 async function scanPly(
@@ -407,6 +487,9 @@ async function scanPly(
   cancelled: () => boolean
 ): Promise<number> {
   let valid = 0;
+  const plan = compileDecodePlan(probe);
+  const point = emptyCanonicalPoint(plan.scalars.length);
+
   if (probe.encoding === 'ascii') {
     const stream = fs.createReadStream(uri.fsPath, { start: probe.headerBytes, encoding: 'utf8' });
     const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -418,7 +501,7 @@ async function scanPly(
         const trimmed = line.trim();
         if (!trimmed) continue;
         const tokens = trimmed.split(/\s+/);
-        const point = buildPointFromValues(probe, (_property, index) => Number(tokens[index] ?? 0));
+        decodeAsciiPoint(tokens, plan, point);
         if (Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z)) {
           onPoint(point, sourceIndex);
           valid++;
@@ -452,9 +535,7 @@ async function scanPly(
       if (complete <= 0) break;
       for (let local = 0; local < complete; local++) {
         const recordOffset = local * probe.vertexStride;
-        const point = buildPointFromValues(probe, property =>
-          readNumeric(buffer, recordOffset + property.offset, property.type, littleEndian)
-        );
+        decodeBinaryPoint(buffer, recordOffset, plan, littleEndian, point);
         if (Number.isFinite(point.x) && Number.isFinite(point.y) && Number.isFinite(point.z)) {
           onPoint(point, sourceIndex + local);
           valid++;
