@@ -772,9 +772,21 @@ export class ProgressivePlySessionManager {
     await fs.promises.rm(tileDir, { recursive: true, force: true });
     await fs.promises.mkdir(tileDir, { recursive: true });
 
-    type TileState = { id: string; ix: number; iy: number; iz: number; count: number; buffered: number; buffer: Buffer; file: string };
+    type TileState = {
+      id: string;
+      ix: number;
+      iy: number;
+      iz: number;
+      count: number;
+      buffered: number;
+      buffer: Buffer | null;
+      file: string;
+      lastUsed: number;
+    };
     const chunkPoints = Math.max(256, Math.min(4096, Math.floor((512 * 1024) / recordStride)));
     const tiles = new Map<string, TileState>();
+    const activeBuffers = new Set<TileState>();
+    const MAX_ACTIVE_TILE_BUFFERS = 64;
     let processed = 0;
     const emitProgress = () => {
       void session.panel.webview.postMessage({
@@ -786,9 +798,31 @@ export class ProgressivePlySessionManager {
     };
 
     const flush = (tile: TileState) => {
-      if (tile.buffered <= 0) return;
+      if (tile.buffered <= 0 || !tile.buffer) return;
       fs.appendFileSync(tile.file, tile.buffer.subarray(0, tile.buffered * recordStride));
       tile.buffered = 0;
+    };
+
+    const ensureBuffer = (tile: TileState): Buffer => {
+      if (tile.buffer) {
+        tile.lastUsed = processed;
+        return tile.buffer;
+      }
+      if (activeBuffers.size >= MAX_ACTIVE_TILE_BUFFERS) {
+        let oldest: TileState | undefined;
+        for (const candidate of activeBuffers) {
+          if (!oldest || candidate.lastUsed < oldest.lastUsed) oldest = candidate;
+        }
+        if (oldest) {
+          flush(oldest);
+          oldest.buffer = null;
+          activeBuffers.delete(oldest);
+        }
+      }
+      tile.buffer = Buffer.allocUnsafe(chunkPoints * recordStride);
+      tile.lastUsed = processed;
+      activeBuffers.add(tile);
+      return tile.buffer;
     };
 
     await scanPly(
@@ -810,21 +844,28 @@ export class ProgressivePlySessionManager {
             iz,
             count: 0,
             buffered: 0,
-            buffer: Buffer.allocUnsafe(chunkPoints * recordStride),
+            buffer: null,
             file,
+            lastUsed: processed,
           };
           tiles.set(id, tile);
         }
-        writeCanonical(tile.buffer, tile.buffered * recordStride, point, probe);
+        const tileBuffer = ensureBuffer(tile);
+        writeCanonical(tileBuffer, tile.buffered * recordStride, point, probe);
         tile.buffered++;
         tile.count++;
+        tile.lastUsed = processed;
         if (tile.buffered >= chunkPoints) flush(tile);
         processed++;
         if (processed % 1_000_000 === 0) emitProgress();
       },
       () => session.cancelled
     );
-    for (const tile of tiles.values()) flush(tile);
+    for (const tile of tiles.values()) {
+      flush(tile);
+      tile.buffer = null;
+    }
+    activeBuffers.clear();
     if (session.cancelled) return;
 
     const children = [...tiles.values()]
