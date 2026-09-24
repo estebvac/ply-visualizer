@@ -8,6 +8,7 @@ export interface CameraViewAnimationHost {
     update(): void;
   };
   requestRender(): void;
+  controlType?: string;
 }
 
 export class CameraViewAnimator {
@@ -58,7 +59,9 @@ export class CameraViewAnimator {
       const currentDirection = from.clone().applyQuaternion(partial).normalize();
 
       host.camera.position.copy(target).addScaledVector(currentDirection, distance);
-      host.camera.up.copy(NAVIGATION_UP);
+      if (host.controlType === 'orbit') {
+        host.camera.up.copy(NAVIGATION_UP);
+      }
       host.controls.target.copy(target);
       host.controls.update();
       host.requestRender();
@@ -69,7 +72,9 @@ export class CameraViewAnimator {
       }
 
       host.camera.position.copy(target).addScaledVector(to, distance);
-      host.camera.up.copy(NAVIGATION_UP);
+      if (host.controlType === 'orbit') {
+        host.camera.up.copy(NAVIGATION_UP);
+      }
       host.controls.target.copy(target);
       host.controls.update();
       host.requestRender();
