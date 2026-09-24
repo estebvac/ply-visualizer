@@ -240,5 +240,43 @@ test('capture narrow-panel isometric ViewCube visual reference', async ({ page }
 
   const wrap = page.locator('[data-view-cube-wrap]');
   await expect(wrap).toBeVisible();
+
+  const diagnostics = await page.evaluate(() => {
+    const v: any = (window as any).visualizer;
+    const cube = document.querySelector('[data-view-cube]') as HTMLElement;
+    const scene = document.querySelector('[data-view-cube-scene]') as HTMLElement;
+    const faces = [...document.querySelectorAll('[data-view-face]')] as HTMLElement[];
+
+    return {
+      camera: {
+        position: v.camera.position.toArray(),
+        target: v.controls.target.toArray(),
+        up: v.camera.up.toArray(),
+        quaternion: v.camera.quaternion.toArray(),
+      },
+      scene: {
+        rect: scene.getBoundingClientRect().toJSON(),
+        perspective: getComputedStyle(scene).perspective,
+      },
+      cube: {
+        rect: cube.getBoundingClientRect().toJSON(),
+        inlineTransform: cube.style.transform,
+        computedTransform: getComputedStyle(cube).transform,
+      },
+      faces: faces.map(face => ({
+        id: face.dataset.viewFace,
+        rect: face.getBoundingClientRect().toJSON(),
+        inlineTransform: face.style.transform,
+        computedTransform: getComputedStyle(face).transform,
+        background: getComputedStyle(face).backgroundColor,
+        backfaceVisibility: getComputedStyle(face).backfaceVisibility,
+      })),
+    };
+  });
+
+  fs.writeFileSync(
+    path.join(artifactsDir, 'view-cube-reference.json'),
+    JSON.stringify(diagnostics, null, 2)
+  );
   await wrap.screenshot({ path: path.join(artifactsDir, 'view-cube-reference.png') });
 });
