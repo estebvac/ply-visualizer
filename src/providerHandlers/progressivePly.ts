@@ -1120,7 +1120,7 @@ export class ProgressivePlySessionManager {
         const baseId = `l${depth}_${ix}_${iy}_${iz}`;
         let tile = activeTiles.get(baseId);
         if (!tile || tile.count >= maxPointsPerNode) {
-          if (tile) flush(tile);
+          if (tile) flush(tile, true);
           tile = createTile(baseId, ix, iy, iz);
         }
 
