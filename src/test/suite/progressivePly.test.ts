@@ -6,13 +6,13 @@ import { parseProgressivePlyHeader } from '../../progressivePly/header';
 import {
   estimateDecodedPlyBytes,
   shouldUseProgressivePly,
+  supportsProgressivePlyUri,
 } from '../../progressivePly/routing';
 import {
   buildProgressiveCache,
   buildProgressivePreview,
   readProgressiveTile,
 } from '../../progressivePly/cache';
-import { supportsProgressivePlyUri } from '../../progressivePly/service';
 
 function makeBigEndianBinaryPly(pointCount = 64): Buffer {
   const header = Buffer.from(
