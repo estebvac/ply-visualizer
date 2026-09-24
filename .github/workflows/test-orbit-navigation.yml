@@ -1,0 +1,44 @@
+name: Test Orbit navigation
+
+on:
+  push:
+    branches:
+      - feature/orbitcontrols-navigation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.32.1 --activate
+
+      - name: Install dependencies with one webview dependency tree
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm add @sparkjsdev/spark@2.1.0 --ignore-scripts
+          git checkout -- package.json pnpm-lock.yaml
+          rm -rf engine/node_modules
+          ln -s ../node_modules engine/node_modules
+
+      - name: Compile
+        run: pnpm run compile
+
+      - name: Install Playwright Chromium
+        run: cd engine && pnpm exec playwright install --with-deps chromium
+
+      - name: Run focused Orbit navigation tests
+        run: cd engine && pnpm exec playwright test test/orbit-navigation.spec.ts --project=chromium
