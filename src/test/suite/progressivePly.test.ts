@@ -380,4 +380,50 @@ suite('Progressive PLY remote loading', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+  test('does not publish a cache if the source PLY changes during indexing', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ply-progressive-stale-'));
+    const filePath = path.join(dir, 'changing.ply');
+    const cacheDir = path.join(dir, 'cache');
+    fs.writeFileSync(filePath, makeBinaryPly(8_000));
+    try {
+      const header = parseProgressivePlyHeader(fs.readFileSync(filePath).subarray(0, 4096));
+      const options = {
+        previewPoints: 128,
+        tilePoints: 128,
+        lodSamplePoints: 32,
+        maxDepth: 4,
+        chunkBytes: 2048,
+      };
+      const preview = await buildProgressivePreview(filePath, header, options);
+      const stat = fs.statSync(filePath);
+      let touched = false;
+      await assert.rejects(
+        () =>
+          buildProgressiveCache(
+            filePath,
+            cacheDir,
+            header,
+            { size: stat.size, mtime: stat.mtimeMs },
+            preview,
+            options,
+            (phase, fraction) => {
+              if (!touched && phase === 'index' && fraction > 0.25) {
+                touched = true;
+                const changed = new Date(Date.now() + 5_000);
+                fs.utimesSync(filePath, changed, changed);
+              }
+            }
+          ),
+        /changed while progressive cache was being built/
+      );
+      assert.strictEqual(fs.existsSync(cacheDir), false);
+      assert.strictEqual(
+        fs.readdirSync(dir).some(name => name.startsWith('cache.tmp-')),
+        false
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
 });
