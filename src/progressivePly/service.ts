@@ -234,7 +234,8 @@ export class ProgressivePlyService {
       },
       async partial => {
         if (!session.cancelled) await this.postPreview(session, metadata, partial, false);
-      }
+      },
+      () => session.cancelled
     );
     if (session.cancelled) return true;
     await this.postPreview(session, metadata, previewResult.preview, true);
@@ -258,7 +259,8 @@ export class ProgressivePlyService {
             fraction,
           });
         }
-      }
+      },
+      () => session.cancelled
     )
       .then(async manifest => {
         session.manifest = manifest;
