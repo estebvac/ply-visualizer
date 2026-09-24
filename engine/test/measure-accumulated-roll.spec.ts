@@ -46,6 +46,11 @@ async function setup(page: Page, mode: 'trackball' | 'inverse-trackball-controls
   await page.evaluate(() => {
     const v: any = (window as any).visualizer;
     v.controls.target.set(0, 0, 0);
+    // Preserve the historical camera calibration for these legacy-control
+    // regression tests. Standard Orbit uses 60° in production; Trackball
+    // comparison baselines were written and tuned against the old 75° FOV.
+    v.camera.fov = 75;
+    v.camera.updateProjectionMatrix();
     v.camera.position.set(3, 0, 0);
     v.camera.up.set(0, 1, 0);
     v.camera.lookAt(0, 0, 0);
