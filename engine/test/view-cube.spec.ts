@@ -1,4 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
+import fs from 'fs';
 import path from 'path';
 
 async function loadSampleMesh(page: Page) {
@@ -28,27 +29,113 @@ async function cameraState(page: Page) {
   });
 }
 
+async function invokeView(page: Page, name: string) {
+  await page
+    .getByRole('button', { name, exact: true })
+    .evaluate((el: HTMLButtonElement) => el.click());
+  await page.waitForFunction(() => !(window as any).visualizer.cameraViewAnimator.isAnimating);
+  await page.waitForTimeout(100);
+}
+
+async function faceAtCubeCenter(page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    const scene = document.querySelector('[data-view-cube-scene]') as HTMLElement | null;
+    if (!scene) return null;
+    const rect = scene.getBoundingClientRect();
+    const el = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    return (el?.closest('[data-view-face]') as HTMLElement | null)?.dataset.viewFace ?? null;
+  });
+}
+
 function delta3(a: number[], b: number[]) {
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 }
 
-test('Camera tab renders a six-face CSS 3D view cube', async ({ page }) => {
+test('Camera tab renders one six-plane CSS 3D cube with invisible edge/corner hit regions', async ({ page }) => {
   await loadSampleMesh(page);
+
   await expect(page.locator('[data-view-cube]')).toBeVisible();
-  for (const face of ['+x', '-x', '+y', '-y', '+z', '-z']) {
-    await expect(page.locator(`[data-view-face="${face}"]`)).toHaveCount(1);
+  await expect(page.locator('[data-view-face]')).toHaveCount(6);
+  await expect(page.locator('[data-view-edge]')).toHaveCount(12);
+  await expect(page.locator('[data-view-corner]')).toHaveCount(8);
+
+  const geometry = await page.evaluate(() => {
+    const scene = document.querySelector('[data-view-cube-scene]') as HTMLElement;
+    const cube = document.querySelector('[data-view-cube]') as HTMLElement;
+    const faces = [...document.querySelectorAll('[data-view-face]')] as HTMLElement[];
+    const hitRegions = [...document.querySelectorAll('.cube-hit-region')] as HTMLElement[];
+    const sceneStyle = getComputedStyle(scene);
+    const cubeStyle = getComputedStyle(cube);
+
+    return {
+      scene: {
+        width: scene.getBoundingClientRect().width,
+        height: scene.getBoundingClientRect().height,
+        perspective: sceneStyle.perspective,
+      },
+      cube: {
+        width: cube.getBoundingClientRect().width,
+        height: cube.getBoundingClientRect().height,
+        transformStyle: cubeStyle.transformStyle,
+      },
+      faces: faces.map(face => {
+        const style = getComputedStyle(face);
+        return {
+          width: parseFloat(style.width),
+          height: parseFloat(style.height),
+          backfaceVisibility: style.backfaceVisibility,
+          opacity: style.opacity,
+        };
+      }),
+      hitRegions: hitRegions.map(hit => {
+        const style = getComputedStyle(hit);
+        return {
+          opacity: style.opacity,
+          backgroundColor: style.backgroundColor,
+          borderWidth: style.borderWidth,
+        };
+      }),
+    };
+  });
+
+  expect(geometry.scene.width).toBeCloseTo(136, 0);
+  expect(geometry.scene.height).toBeCloseTo(136, 0);
+  expect(parseFloat(geometry.scene.perspective)).toBeCloseTo(228, 0);
+  expect(geometry.cube.transformStyle).toBe('preserve-3d');
+
+  for (const face of geometry.faces) {
+    expect(face.width).toBeCloseTo(76, 0);
+    expect(face.height).toBeCloseTo(76, 0);
+    expect(face.backfaceVisibility).toBe('hidden');
+    expect(face.opacity).toBe('1');
   }
-  await expect(page.locator('[data-view-direction]')).toHaveCount(20);
+
+  for (const hit of geometry.hitRegions) {
+    expect(hit.opacity).toBe('0');
+    expect(hit.borderWidth).toBe('0px');
+  }
 });
+
+for (const [label, id] of [
+  ['View from +X', '+x'],
+  ['View from −X', '-x'],
+  ['View from +Y', '+y'],
+  ['View from −Y', '-y'],
+  ['View from +Z', '+z'],
+  ['View from −Z', '-z'],
+] as const) {
+  test(`${label} puts the matching cube face at the gizmo center`, async ({ page }) => {
+    await loadSampleMesh(page);
+    await invokeView(page, label);
+    expect(await faceAtCubeCenter(page)).toBe(id);
+  });
+}
 
 test('animated view snap preserves target, distance, and +Z up', async ({ page }) => {
   await loadSampleMesh(page);
   const before = await cameraState(page);
 
-  await page
-    .getByRole('button', { name: 'View from +X', exact: true })
-    .evaluate((el: HTMLButtonElement) => el.click());
-  await page.waitForFunction(() => !(window as any).visualizer.cameraViewAnimator.isAnimating);
+  await invokeView(page, 'View from +X');
 
   const after = await cameraState(page);
   expect(delta3(after.target, before.target)).toBeLessThan(1e-6);
@@ -91,13 +178,54 @@ test('view cube mirrors manual orbit and manual orbit cancels a snap', async ({ 
   expect(state.position.every(Number.isFinite)).toBe(true);
 });
 
-test('visible active cube target accepts a pointer click', async ({ page }) => {
+test('a visible front cube face accepts a real pointer click', async ({ page }) => {
   await loadSampleMesh(page);
-  const active = page.locator('[data-view-cube] .active').first();
-  await expect(active).toBeVisible();
-  await active.click();
+  await invokeView(page, 'View from +Z');
+
+  const face = page.getByRole('button', { name: 'View from +Z', exact: true });
+  await expect(face).toBeVisible();
+  await face.click({ position: { x: 38, y: 38 } });
   await page.waitForFunction(() => !(window as any).visualizer.cameraViewAnimator.isAnimating);
+
   const state = await cameraState(page);
   expect(state.position.every(Number.isFinite)).toBe(true);
   expect(state.target.every(Number.isFinite)).toBe(true);
+  expect(await faceAtCubeCenter(page)).toBe('+z');
+});
+
+test('cube stays inside its own narrow Camera-panel layout and help text begins below it', async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 720 });
+  await loadSampleMesh(page);
+
+  const layout = await page.evaluate(() => {
+    const wrap = document.querySelector('[data-view-cube-wrap]') as HTMLElement;
+    const scene = document.querySelector('[data-view-cube-scene]') as HTMLElement;
+    const hint = wrap.querySelector('.view-hint') as HTMLElement;
+    const wrapRect = wrap.getBoundingClientRect();
+    const sceneRect = scene.getBoundingClientRect();
+    const hintRect = hint.getBoundingClientRect();
+
+    return {
+      wrap: { left: wrapRect.left, right: wrapRect.right, top: wrapRect.top, bottom: wrapRect.bottom },
+      scene: { left: sceneRect.left, right: sceneRect.right, top: sceneRect.top, bottom: sceneRect.bottom },
+      hint: { left: hintRect.left, right: hintRect.right, top: hintRect.top, bottom: hintRect.bottom },
+    };
+  });
+
+  expect(layout.scene.left).toBeGreaterThanOrEqual(layout.wrap.left - 0.5);
+  expect(layout.scene.right).toBeLessThanOrEqual(layout.wrap.right + 0.5);
+  expect(layout.hint.top).toBeGreaterThanOrEqual(layout.scene.bottom + 6);
+});
+
+test('capture narrow-panel isometric ViewCube visual reference', async ({ page }) => {
+  await page.setViewportSize({ width: 760, height: 720 });
+  await loadSampleMesh(page);
+  await invokeView(page, 'View from +X -Y +Z corner');
+
+  const artifactsDir = path.resolve('artifacts');
+  fs.mkdirSync(artifactsDir, { recursive: true });
+
+  const wrap = page.locator('[data-view-cube-wrap]');
+  await expect(wrap).toBeVisible();
+  await wrap.screenshot({ path: path.join(artifactsDir, 'view-cube-reference.png') });
 });
