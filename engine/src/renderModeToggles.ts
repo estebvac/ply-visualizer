@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { SpatialData } from './interfaces';
+import { canVoxelizePointCloud } from './renderModeOptions';
 import { createVoxelMesh } from './visualization/VoxelRenderer';
 
 /**
@@ -70,16 +71,21 @@ export function toggleUniversalRenderMode(
       toggleWireframeRendering(host, fileIndex);
       break;
     case 'points':
-      // Points, voxels, and splats are alternate visualizations of the same
-      // point-cloud source. Selecting Points disables the other two rather than
-      // hiding the file when Points is already active.
-      host.pointsVisible[fileIndex] = true;
-      host.voxelsVisible[fileIndex] = false;
-      if (host.splatMode?.isActive(fileIndex)) {
-        host.splatMode.disable(fileIndex);
+      if (canVoxelizePointCloud(data) || host.splatMode?.canEnable(data)) {
+        // Points, voxels, and splats are alternate visualizations of a point
+        // cloud. Selecting Points returns to the source points rather than
+        // toggling the whole file off. Mesh vertex-points keep their historical
+        // independent toggle behavior below.
+        host.pointsVisible[fileIndex] = true;
+        host.voxelsVisible[fileIndex] = false;
+        if (host.splatMode?.isActive(fileIndex)) {
+          host.splatMode.disable(fileIndex);
+        } else {
+          updateMeshVisibilityAndMaterial(host, fileIndex);
+          host.requestRender();
+        }
       } else {
-        updateMeshVisibilityAndMaterial(host, fileIndex);
-        host.requestRender();
+        togglePointsRendering(host, fileIndex);
       }
       break;
     case 'voxels':
@@ -89,13 +95,15 @@ export function toggleUniversalRenderMode(
       toggleNormalsRendering(host, fileIndex);
       break;
     case 'splat':
-      // Async (first use lazy-loads Spark); keep all point-cloud visualizations
-      // mutually exclusive.
+      // Async (first use lazy-loads Spark). Leave source points logically
+      // enabled: splatActive itself hides them, so a failed/disabled splat
+      // falls back to Points instead of making the file disappear.
       if (!host.splatMode?.isActive(fileIndex)) {
         host.voxelsVisible[fileIndex] = false;
-        host.pointsVisible[fileIndex] = false;
+        host.pointsVisible[fileIndex] = true;
         const voxels = host.voxelObjects[fileIndex];
         if (voxels) voxels.visible = false;
+        updateMeshVisibilityAndMaterial(host, fileIndex);
         void host.splatMode?.toggle(fileIndex);
       }
       return;
