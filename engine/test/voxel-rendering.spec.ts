@@ -32,6 +32,12 @@ test('point cloud can switch Points -> Voxels -> Points and resize voxels', asyn
 
   await expect(page.locator('#file-list .file-item')).toHaveCount(1, { timeout: 15_000 });
 
+  const fileContent = page.locator('#file-content-0');
+  if (!(await fileContent.isVisible())) {
+    await page.locator('.collapse-toggle[data-file-index="0"]').click();
+  }
+  await expect(fileContent).toBeVisible();
+
   const voxelButton = page.locator('.render-mode-btn[data-mode="voxels"]').first();
   await expect(voxelButton).toBeVisible();
   await voxelButton.click();
