@@ -13,6 +13,7 @@ export interface ProgressivePlyRoutingHeader {
   scalarFieldNames: string[];
   isGaussianSplat: boolean;
   fixedVertexStride: number | null;
+  vertexDataStartsAtBody: boolean;
 }
 
 export const DEFAULT_PROGRESSIVE_PLY_ROUTING: ProgressivePlyRoutingConfig = {
@@ -40,7 +41,8 @@ export function shouldUseProgressivePly(
     header.faceCount !== 0 ||
     header.vertexCount <= 0 ||
     header.isGaussianSplat ||
-    !header.fixedVertexStride
+    !header.fixedVertexStride ||
+    !header.vertexDataStartsAtBody
   ) {
     return false;
   }
