@@ -11,6 +11,7 @@ import {
   DepthConversionResult,
 } from './interfaces';
 import { CustomArcballControls, TurntableControls } from './controls';
+import { configureStandardOrbitControls } from './orbitNavigation';
 import { initializeThemes, getThemeByName, applyTheme, getCurrentThemeName } from './themes';
 import { RotationCenterManager, RotationCenterMode } from './RotationCenterManager';
 import { MeasurementManager } from './MeasurementManager';
@@ -125,7 +126,7 @@ class PointCloudVisualizer {
 
   // Camera control state
   controlType: 'trackball' | 'orbit' | 'inverse-trackball' | 'arcball' | 'cloudcompare' =
-    'trackball';
+    'orbit';
   screenSpaceScaling: boolean = false;
   allowTransparency: boolean = false;
 
@@ -681,12 +682,7 @@ class PointCloudVisualizer {
       cc.worldUp.copy(this.camera.up.lengthSq() > 0 ? this.camera.up : new THREE.Vector3(0, 1, 0));
     } else {
       this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-      const orbitControls = this.controls as OrbitControls;
-      orbitControls.enableDamping = true;
-      orbitControls.dampingFactor = 0.2;
-      orbitControls.screenSpacePanning = false;
-      orbitControls.minDistance = 0.001;
-      orbitControls.maxDistance = 50000; // Increased to match camera far plane
+      configureStandardOrbitControls(this.controls as OrbitControls);
     }
 
     // Set up axes visibility for all control types
