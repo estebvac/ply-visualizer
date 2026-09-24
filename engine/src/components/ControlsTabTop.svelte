@@ -369,6 +369,8 @@
     <div><strong>Left drag</strong> — Orbit</div>
     <div><strong>Middle drag / Wheel</strong> — Zoom</div>
     <div><strong>Right drag</strong> — Pan</div>
+    <div><strong>Arrow keys</strong> — Pan</div>
+    <div><strong>Shift/Ctrl + Arrow</strong> — Rotate</div>
     <div><strong>Double-click</strong> — Set pivot</div>
     <div><strong>Shift + Double-click</strong> — Measure</div>
     <div><strong>F</strong> — Fit to View</div>
