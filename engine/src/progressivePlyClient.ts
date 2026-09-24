@@ -173,6 +173,7 @@ export class ProgressivePlyClient {
         data.sourcePointCount ?? data.metadata?.sourcePointCount;
     }
     this.host.requestRender();
+    if (manifest.depth > 0) this.updateCamera(true);
   }
 
   handleManifest(message: any): void {
