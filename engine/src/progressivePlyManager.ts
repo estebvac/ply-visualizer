@@ -54,6 +54,7 @@ interface ProgressiveSession {
   memoryBudgetBytes: number;
   pointBudget: number;
   bytesPerPoint: number;
+  activePayloadBytes: number;
   manifest: ProgressiveManifest | null;
   tileCache: Map<string, CachedTile>;
   selected: string[];
@@ -215,13 +216,13 @@ export class ProgressivePlyManager {
       scalarFieldNames.length * 4;
     const memoryBudgetBytes =
       Math.max(64, Number(message.localMemoryBudgetMiB ?? 256)) * 1024 * 1024;
-    // Resident tile payloads and the merged render payload coexist. Leave a
-    // third share for color-mode attributes, transient replacement geometry,
-    // and JS/Three.js overhead so the configured budget remains a real bound
-    // rather than just an LRU target.
+    // Selected tile payloads, the current render payload, and the next merged
+    // render payload coexist briefly during refinement. Restrict the visible
+    // point budget to one quarter of the configured local budget so that
+    // replacement does not require a source-sized transient allocation.
     const memoryBoundPoints = Math.max(
       50_000,
-      Math.floor(memoryBudgetBytes / Math.max(1, bytesPerPoint * 3))
+      Math.floor(memoryBudgetBytes / Math.max(1, bytesPerPoint * 4))
     );
     const requestedPointBudget = Math.max(
       50_000,
@@ -243,6 +244,7 @@ export class ProgressivePlyManager {
       memoryBudgetBytes,
       pointBudget: Math.min(requestedPointBudget, memoryBoundPoints),
       bytesPerPoint,
+      activePayloadBytes: 0,
       manifest: null,
       tileCache: new Map(),
       selected: [],
@@ -261,6 +263,7 @@ export class ProgressivePlyManager {
     if (!session) return;
     const payload = payloadFromMessage(message.payload);
     session.previewPayload = payload;
+    session.activePayloadBytes = payloadBytes(payload);
     if (!session.previewCreated) {
       const data: SpatialData = {
         vertices: [],
@@ -483,12 +486,54 @@ export class ProgressivePlyManager {
     return worldSize * pixelsPerWorld;
   }
 
+  private estimatedTileBytes(session: ProgressiveSession, tileId: string): number {
+    const manifest = session.manifest;
+    if (!manifest) return session.bytesPerPoint;
+    let points = 0;
+    if (tileId.startsWith('node:')) {
+      const node = manifest.nodes[tileId.slice('node:'.length)];
+      points = node?.sampleCount ?? 0;
+    } else if (tileId.startsWith('leaf:')) {
+      const [, nodeId, pageText] = tileId.split(':');
+      const node = manifest.nodes[nodeId];
+      const page = Number(pageText);
+      if (node && Number.isInteger(page) && page >= 0) {
+        points = Math.max(
+          0,
+          Math.min(manifest.tilePoints, node.sourceCount - page * manifest.tilePoints)
+        );
+      }
+    }
+    return Math.max(session.bytesPerPoint, points * session.bytesPerPoint);
+  }
+
   private requestMissing(session: ProgressiveSession): void {
     const missing = session.selected.filter(
       id => !session.tileCache.has(id) && !session.pending.has(id)
     );
     if (missing.length === 0) return;
-    const batch = missing.slice(0, 32);
+
+    // Keep each extension->webview burst small even when the selected view has
+    // many leaf pages. Individual tiles are already capped remotely; this cap
+    // prevents 32 maximum-size messages from being queued at once.
+    const maxBatchBytes = 32 * 1024 * 1024;
+    const maxBatchTiles = 8;
+    const batch: string[] = [];
+    let estimatedBytes = 0;
+    for (const id of missing) {
+      const tileBytes = this.estimatedTileBytes(session, id);
+      if (
+        batch.length > 0 &&
+        (batch.length >= maxBatchTiles || estimatedBytes + tileBytes > maxBatchBytes)
+      ) {
+        break;
+      }
+      batch.push(id);
+      estimatedBytes += tileBytes;
+      if (batch.length >= maxBatchTiles || estimatedBytes >= maxBatchBytes) break;
+    }
+    if (batch.length === 0) batch.push(missing[0]);
+
     for (const id of batch) session.pending.add(id);
     this.host.vscode.postMessage({
       type: 'progressivePly:requestTiles',
@@ -501,13 +546,26 @@ export class ProgressivePlyManager {
   private evictTiles(session: ProgressiveSession): void {
     let bytes = 0;
     for (const tile of session.tileCache.values()) bytes += tile.bytes;
-    if (bytes <= session.memoryBudgetBytes) return;
+
+    // The currently rendered payload is retained by SpatialData/BufferGeometry,
+    // and a replacement payload is allocated before the old geometry becomes
+    // collectible. Reserve half of the configured budget for active/transient
+    // render data and constrain the reusable tile cache to the remainder.
+    const cacheBudget = Math.max(
+      16 * 1024 * 1024,
+      Math.min(
+        Math.floor(session.memoryBudgetBytes * 0.45),
+        Math.max(0, session.memoryBudgetBytes - session.activePayloadBytes * 2)
+      )
+    );
+    if (bytes <= cacheBudget) return;
+
     const selected = new Set(session.selected);
     const candidates = [...session.tileCache.entries()]
       .filter(([id]) => !selected.has(id))
       .sort((a, b) => a[1].lastUsed - b[1].lastUsed);
     for (const [id, tile] of candidates) {
-      if (bytes <= session.memoryBudgetBytes) break;
+      if (bytes <= cacheBudget) break;
       session.tileCache.delete(id);
       bytes -= tile.bytes;
     }
@@ -562,6 +620,12 @@ export class ProgressivePlyManager {
         positions[i + 2] += dz;
       }
     }
+    session.activePayloadBytes =
+      positions.byteLength +
+      (payload.colors?.byteLength ?? 0) +
+      (payload.normals?.byteLength ?? 0) +
+      (payload.intensity?.byteLength ?? 0) +
+      Object.values(payload.scalarFields).reduce((sum, values) => sum + values.byteLength, 0);
     data.positionsArray = positions;
     data.colorsArray = payload.colors;
     data.normalsArray = payload.normals;
