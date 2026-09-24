@@ -35,6 +35,7 @@ export interface ProgressivePlyOpenMetadata {
   fileName: string;
   shortPath: string;
   loadStartedAt: number;
+  isAddFile?: boolean;
 }
 
 const MAX_HEADER_BYTES = 1024 * 1024;
@@ -199,6 +200,7 @@ export class ProgressivePlyService {
       pointBudget: vscode.workspace
         .getConfiguration('plyViewer.largePly')
         .get<number>('visiblePointBudget', 4_000_000),
+      isAddFile: !!metadata.isAddFile,
       loadStartedAt: metadata.loadStartedAt,
     });
 
@@ -360,6 +362,7 @@ export class ProgressivePlyService {
       hasIntensity: session.header.hasIntensity,
       scalarFieldNames: session.header.scalarFieldNames,
       payload: payloadMessage(payload),
+      isAddFile: !!metadata.isAddFile,
       final,
     });
   }
