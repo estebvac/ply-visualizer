@@ -99,9 +99,23 @@ suite('Point Cloud Editor Provider Advanced Test Suite', () => {
     assert.strictEqual(
       webviewOptions.retainContextWhenHidden,
       true,
-      'Context should be retained for performance'
+      '3D camera and GPU scene must remain alive while the custom editor tab is hidden'
     );
     assert.ok(Array.isArray(webviewOptions.localResourceRoots), 'Resource roots should be defined');
+  });
+
+  test('Should retain the real custom editor webview context while hidden', () => {
+    assert.ok(extension, 'Extension should be available');
+
+    const extensionSource = fs.readFileSync(
+      path.join(extension!.extensionPath, 'src', 'extension.ts'),
+      'utf8'
+    );
+
+    assert.ok(
+      /registerCustomEditorProvider\([\s\S]*retainContextWhenHidden:\s*true/.test(extensionSource),
+      'Custom editor registration must retain the webview context while hidden'
+    );
   });
 
   test('Should handle webview panel creation', () => {
@@ -291,8 +305,14 @@ suite('Point Cloud Editor Provider Advanced Test Suite', () => {
       'plyViewer.defaultPointSize': { type: 'number', default: 5.0 },
       'plyViewer.enableGamma': { type: 'boolean', default: true },
       'plyViewer.maxFileSize': { type: 'number', default: 100 }, // MB
-      'plyViewer.cameraControls': { type: 'string', default: 'trackball' },
+      'plyViewer.cameraControls': { type: 'string', default: 'orbit' },
     };
+
+    assert.strictEqual(
+      configOptions['plyViewer.cameraControls'].default,
+      'orbit',
+      'Standard Orbit should be the documented default camera control'
+    );
 
     Object.entries(configOptions).forEach(([key, config]) => {
       assert.ok(key.startsWith('plyViewer.'), `Config key ${key} should have proper prefix`);
