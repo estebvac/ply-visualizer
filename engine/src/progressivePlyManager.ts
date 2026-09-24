@@ -611,6 +611,11 @@ export class ProgressivePlyManager {
       offset += payload.count;
     }
     this.applyPayload(session, merged);
+    // Once a real cache-backed LOD selection is installed, the initial preview
+    // is no longer needed as a second resident copy. Hidden views can request
+    // the root node from the remote cache instead.
+    session.previewPayload = null;
+    this.evictTiles(session);
   }
 
   private applyPayload(session: ProgressiveSession, payload: PointPayload): void {
