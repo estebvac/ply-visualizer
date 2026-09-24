@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { viewerState } from './state/viewer.svelte';
+import { NAVIGATION_UP } from './cameraOrientation';
 
 export interface CameraConventionHost {
   camera: THREE.PerspectiveCamera;
@@ -8,9 +9,12 @@ export interface CameraConventionHost {
   requestRender(): void;
   updateAxesForCameraConvention(convention: 'opencv' | 'opengl'): void;
   showCameraConventionFeedback(convention: string): void;
+  controlType?: string;
+  cameraViewAnimator?: { cancel(): void };
 }
 
 export function setOpenCVCameraConvention(host: CameraConventionHost): void {
+  host.cameraViewAnimator?.cancel();
   console.log('📷 Setting camera to OpenCV convention (Y-down, Z-forward)');
 
   // OpenCV convention: Y-down, Z-forward
@@ -19,8 +23,11 @@ export function setOpenCVCameraConvention(host: CameraConventionHost): void {
   // Store current target position
   const currentTarget = host.controls.target.clone();
 
-  // Set up vector to Y-down
-  host.camera.up.set(0, -1, 0);
+  if (host.controlType === 'orbit') {
+    host.camera.up.copy(NAVIGATION_UP);
+  } else {
+    host.camera.up.set(0, -1, 0);
+  }
 
   // Calculate current camera direction relative to target
   const distance = host.camera.position.distanceTo(currentTarget);
@@ -46,6 +53,7 @@ export function setOpenCVCameraConvention(host: CameraConventionHost): void {
 }
 
 export function setOpenGLCameraConvention(host: CameraConventionHost): void {
+  host.cameraViewAnimator?.cancel();
   console.log('📷 Setting camera to OpenGL convention (Y-up, Z-backward)');
 
   // OpenGL convention: Y-up, Z-backward
@@ -54,8 +62,11 @@ export function setOpenGLCameraConvention(host: CameraConventionHost): void {
   // Store current target position
   const currentTarget = host.controls.target.clone();
 
-  // Set up vector to Y-up
-  host.camera.up.set(0, 1, 0);
+  if (host.controlType === 'orbit') {
+    host.camera.up.copy(NAVIGATION_UP);
+  } else {
+    host.camera.up.set(0, 1, 0);
+  }
 
   // Calculate current camera direction relative to target
   const distance = host.camera.position.distanceTo(currentTarget);
