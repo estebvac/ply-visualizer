@@ -515,7 +515,7 @@ class PointCloudVisualizer {
     }
 
     this.camera = new THREE.PerspectiveCamera(
-      60,
+      75,
       container.clientWidth / container.clientHeight,
       0.001,
       1000000 // Further increased far plane for disparity files
