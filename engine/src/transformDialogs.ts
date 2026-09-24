@@ -7,6 +7,7 @@ import {
 } from './utils/matrix';
 import VectorInputDialog from './components/VectorInputDialog.svelte';
 import CameraVectorDialog from './components/CameraVectorDialog.svelte';
+import { NAVIGATION_UP } from './cameraOrientation';
 
 export interface TransformDialogsHost {
   camera: THREE.PerspectiveCamera;
@@ -16,6 +17,12 @@ export interface TransformDialogsHost {
   updateMatrixTextarea(fileIndex: number): void;
   updateCameraControlsPanel(): void;
   updateRotationOriginButtonState(): void;
+  controlType?: string;
+  cameraViewAnimator?: { cancel(): void };
+}
+
+function stabilizeStandardOrbit(host: TransformDialogsHost): void {
+  if (host.controlType === 'orbit') host.camera.up.copy(NAVIGATION_UP);
 }
 
 function mountDialog<Props extends Record<string, any>>(Component: any, props: Props): () => void {
@@ -114,6 +121,7 @@ export function showCameraPositionDialog(host: TransformDialogsHost): void {
     resetValue: '0 0 0',
     errorMessage: 'Please enter exactly 3 numbers for position (X Y Z)',
     onApply: (values: number[], constraint: string) => {
+      host.cameraViewAnimator?.cancel();
       const [x, y, z] = values;
       const currentQuaternion = host.camera.quaternion.clone();
       const currentTarget = host.controls.target.clone();
@@ -130,6 +138,7 @@ export function showCameraPositionDialog(host: TransformDialogsHost): void {
         host.camera.lookAt(currentTarget);
       }
 
+      stabilizeStandardOrbit(host);
       host.controls.update();
       host.updateCameraControlsPanel();
     },
@@ -158,6 +167,7 @@ export function showCameraRotationDialog(host: TransformDialogsHost): void {
     resetValue: '0 0 0',
     errorMessage: 'Please enter exactly 3 numbers for rotation (X Y Z degrees)',
     onApply: (values: number[], constraint: string) => {
+      host.cameraViewAnimator?.cancel();
       const [x, y, z] = values;
       const currentPosition = host.camera.position.clone();
       const currentTarget = host.controls.target.clone();
@@ -189,6 +199,7 @@ export function showCameraRotationDialog(host: TransformDialogsHost): void {
         host.camera.lookAt(currentTarget);
       }
 
+      stabilizeStandardOrbit(host);
       host.controls.update();
       host.updateCameraControlsPanel();
     },
@@ -212,6 +223,7 @@ export function showRotationCenterDialog(host: TransformDialogsHost): void {
     resetValue: '0 0 0',
     errorMessage: 'Please enter exactly 3 numbers for center (X Y Z)',
     onApply: (values: number[], constraint: string) => {
+      host.cameraViewAnimator?.cancel();
       const [x, y, z] = values;
       const currentPosition = host.camera.position.clone();
       const currentQuaternion = host.camera.quaternion.clone();
@@ -230,6 +242,7 @@ export function showRotationCenterDialog(host: TransformDialogsHost): void {
         host.camera.lookAt(host.controls.target);
       }
 
+      stabilizeStandardOrbit(host);
       host.controls.update();
       host.updateCameraControlsPanel();
 
