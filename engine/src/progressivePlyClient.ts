@@ -255,12 +255,8 @@ export class ProgressivePlyClient {
     const node = session.nodeById.get(message.nodeId);
     if (node) session.pending.delete(node.id);
     if (!node || session.hidden || !session.desired.has(node.id)) return;
-    if (
-      Number.isFinite(Number(message.generation)) &&
-      Number(message.generation) < session.requestedGeneration
-    ) {
-      return;
-    }
+    // Tile contents are immutable by node ID. An older request generation is
+    // still useful when the node remains desired after a camera update.
     const raw = asArrayBuffer(message.buffer);
     if (!raw) return;
 
