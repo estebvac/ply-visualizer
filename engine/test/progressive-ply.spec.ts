@@ -1,5 +1,10 @@
 import { expect, test } from '@playwright/test';
-import { decodeProgressiveTile, type ProgressiveManifest } from '../src/progressivePlyClient';
+import {
+  decodeProgressiveTile,
+  selectProgressiveNodes,
+  type ProgressiveManifest,
+  type ProgressiveNode,
+} from '../src/progressivePlyClient';
 
 test('progressive tile decoder preserves packed attributes without source-sized allocation', () => {
   const stride = 12 + 3 + 12 + 4 + 4;
@@ -50,4 +55,30 @@ test('progressive tile decoder preserves packed attributes without source-sized 
   expect(Array.from(decoded.normals ?? [])).toEqual([4, 5, 6, 14, 15, 16]);
   expect(Array.from(decoded.intensity ?? [])).toEqual([7, 17]);
   expect(Array.from(decoded.scalars.quality)).toEqual([8, 18]);
+});
+
+
+test('LOD selection obeys both point and local byte budgets', () => {
+  const node = (id: string, points: number, bytes: number): ProgressiveNode => ({
+    id,
+    level: 2,
+    bbox: [0, 0, 0, 1, 1, 1],
+    pointCount: points,
+    byteLength: bytes,
+    children: [],
+    tileFile: `${id}.tile`,
+  });
+  const selected = selectProgressiveNodes(
+    [
+      { node: node('near', 100, 1000), distance: 1 },
+      { node: node('middle-too-large', 100, 5000), distance: 2 },
+      { node: node('far', 100, 1000), distance: 3 },
+    ],
+    250,
+    2500,
+    64
+  );
+  expect(selected.map(value => value.id)).toEqual(['near', 'far']);
+  expect(selected.reduce((sum, value) => sum + value.pointCount, 0)).toBeLessThanOrEqual(250);
+  expect(selected.reduce((sum, value) => sum + value.byteLength, 0)).toBeLessThanOrEqual(2500);
 });
