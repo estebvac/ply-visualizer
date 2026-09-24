@@ -380,6 +380,40 @@ test.describe('Standard Orbit navigation', () => {
   });
 
 
+  for (const preset of [
+    ['positive-x', 'View from +X toward the rotation center'],
+    ['negative-x', 'View from −X toward the rotation center'],
+    ['positive-y', 'View from +Y toward the rotation center'],
+    ['negative-y', 'View from −Y toward the rotation center'],
+    ['positive-z', 'View from +Z toward the rotation center'],
+    ['negative-z', 'View from −Z toward the rotation center'],
+  ] as const) {
+    test(`${preset[0]} preset is independent of previous camera preset`, async ({ page }) => {
+      await loadSampleMesh(page);
+      await page.click('[data-tab="camera"]');
+
+      await page.getByRole('button', { name: 'View from +X toward the rotation center' }).click();
+      await page.getByRole('button', { name: preset[1] }).click();
+      const first = await cameraState(page);
+      const firstCenter = await targetScreenOffset(page);
+
+      await page.getByRole('button', { name: 'View from −Y toward the rotation center' }).click();
+      await page.getByRole('button', { name: preset[1] }).click();
+      const second = await cameraState(page);
+      const secondCenter = await targetScreenOffset(page);
+
+      expect(delta3(first.position, second.position)).toBeLessThan(1e-5);
+      expect(delta3(first.up, second.up)).toBeLessThan(1e-8);
+      expect(delta3(first.target, second.target)).toBeLessThan(1e-6);
+      expect(Math.abs(first.distance - second.distance)).toBeLessThan(1e-4);
+      expect(Math.hypot(firstCenter.dx, firstCenter.dy)).toBeLessThan(1);
+      expect(Math.hypot(secondCenter.dx, secondCenter.dy)).toBeLessThan(1);
+      expect(second.up[0]).toBeCloseTo(0, 8);
+      expect(second.up[1]).toBeCloseTo(0, 8);
+      expect(second.up[2]).toBeCloseTo(1, 8);
+    });
+  }
+
   test('camera presets and XYZ edits stay synchronized with Standard Orbit', async ({ page }) => {
     await loadSampleMesh(page);
     await page.click('[data-tab="camera"]');
