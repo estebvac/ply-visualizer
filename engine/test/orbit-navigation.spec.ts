@@ -104,7 +104,7 @@ async function loadSampleMesh(page: Page) {
 }
 
 async function clickView(page: Page, name: string) {
-  await page.getByRole('button', { name }).click();
+  await page.getByRole('button', { name, exact: true }).click();
   await page.waitForFunction(() => !(window as any).visualizer.cameraViewAnimator?.isAnimating);
 }
 
