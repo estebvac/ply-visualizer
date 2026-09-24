@@ -852,6 +852,15 @@ export async function buildProgressiveCache(
     }
   }
 
+  if (isCancelled?.()) throw new Error('Progressive PLY load cancelled');
+  const finalStat = await fs.promises.stat(filePath);
+  if (
+    finalStat.size !== stat.size ||
+    Math.abs(finalStat.mtimeMs - stat.mtime) > 1
+  ) {
+    throw new Error('Source PLY changed while progressive cache was being built');
+  }
+
   const manifest: ProgressivePlyManifest = {
     version: 1,
     source: {
