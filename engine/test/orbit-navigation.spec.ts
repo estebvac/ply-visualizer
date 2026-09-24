@@ -7,11 +7,17 @@ async function getNavigationState(page: Page) {
     return {
       controlType: v.controlType,
       enableDamping: v.controls?.enableDamping,
+      dampingFactor: v.controls?.dampingFactor,
       enableRotate: v.controls?.enableRotate,
       enablePan: v.controls?.enablePan,
       enableZoom: v.controls?.enableZoom,
       screenSpacePanning: v.controls?.screenSpacePanning,
       zoomToCursor: v.controls?.zoomToCursor,
+      cursorStyle: v.controls?.cursorStyle,
+      maxPolarAngle: v.controls?.maxPolarAngle,
+      keyPanSpeed: v.controls?.keyPanSpeed,
+      keyRotateSpeed: v.controls?.keyRotateSpeed,
+      fov: v.camera?.fov,
       mouseButtons: { ...v.controls?.mouseButtons },
       minDistance: v.controls?.minDistance,
       maxDistance: v.controls?.maxDistance,
@@ -109,18 +115,24 @@ test.describe('Standard Orbit navigation', () => {
     const state = await getNavigationState(page);
 
     expect(state.controlType).toBe('orbit');
-    expect(state.enableDamping).toBe(false);
+    expect(state.enableDamping).toBe(true);
+    expect(state.dampingFactor).toBeCloseTo(0.05);
     expect(state.enableRotate).toBe(true);
     expect(state.enablePan).toBe(true);
     expect(state.enableZoom).toBe(true);
-    expect(state.screenSpacePanning).toBe(true);
+    expect(state.screenSpacePanning).toBe(false);
     expect(state.zoomToCursor).toBe(false);
+    expect(state.cursorStyle).toBe('grab');
+    expect(state.maxPolarAngle).toBeCloseTo(Math.PI / 2);
+    expect(state.keyPanSpeed).toBe(7);
+    expect(state.keyRotateSpeed).toBe(1);
+    expect(state.fov).toBe(60);
     expect(state.mouseButtons).toEqual({ LEFT: 0, MIDDLE: 1, RIGHT: 2 });
     expect(state.minDistance).toBeCloseTo(0.001);
     expect(state.maxDistance).toBe(50000);
   });
 
-  test('uses LMB orbit, MMB dolly, RMB pan, wheel dolly, and no inertia', async ({ page }) => {
+  test('uses LMB orbit, MMB dolly, RMB pan, wheel dolly, and damped inertia', async ({ page }) => {
     await loadSampleMesh(page);
 
     const before = await cameraState(page);
@@ -150,16 +162,63 @@ test.describe('Standard Orbit navigation', () => {
     const afterWheel = await cameraState(page);
     expect(Math.abs(afterWheel.distance - afterRight.distance)).toBeGreaterThan(1e-4);
 
+    const released = await cameraState(page);
+    await page.waitForTimeout(50);
+    const duringDamping = await cameraState(page);
+    expect(
+      delta3(duringDamping.position, released.position) +
+        delta3(duringDamping.target, released.target)
+    ).toBeGreaterThan(1e-7);
+
+    await page.waitForTimeout(1000);
     const settled = await cameraState(page);
     await page.waitForTimeout(300);
     const later = await cameraState(page);
-    expect(delta3(later.position, settled.position)).toBeLessThan(1e-6);
-    expect(delta3(later.target, settled.target)).toBeLessThan(1e-6);
+    expect(delta3(later.position, settled.position)).toBeLessThan(1e-5);
+    expect(delta3(later.target, settled.target)).toBeLessThan(1e-5);
 
     const upLength = Math.hypot(...later.up);
     expect(upLength).toBeGreaterThan(0.999);
     expect(upLength).toBeLessThan(1.001);
     expect(delta3(later.up, before.up)).toBeLessThan(1e-6);
+  });
+
+
+  test('arrow keys pan and modified arrow keys rotate like the official example', async ({ page }) => {
+    await loadSampleMesh(page);
+
+    const beforePan = await cameraState(page);
+    await page.keyboard.press('ArrowRight');
+    await page.waitForTimeout(80);
+    const afterPan = await cameraState(page);
+
+    expect(delta3(afterPan.target, beforePan.target)).toBeGreaterThan(1e-5);
+    expect(Math.abs(afterPan.distance - beforePan.distance)).toBeLessThan(1e-4);
+
+    const beforeRotate = await cameraState(page);
+    await page.keyboard.press('Shift+ArrowRight');
+    await page.waitForTimeout(80);
+    const afterRotate = await cameraState(page);
+
+    expect(delta3(afterRotate.position, beforeRotate.position)).toBeGreaterThan(1e-5);
+    expect(delta3(afterRotate.target, beforeRotate.target)).toBeLessThan(1e-5);
+    expect(Math.abs(afterRotate.distance - beforeRotate.distance)).toBeLessThan(1e-4);
+  });
+
+  test('arrow keys do not move the camera while editing a camera input', async ({ page }) => {
+    await loadSampleMesh(page);
+    await page.click('[data-tab="camera"]');
+
+    const input = page.locator('#fov-input');
+    await input.focus();
+    const before = await cameraState(page);
+
+    await page.keyboard.press('ArrowRight');
+    await page.waitForTimeout(80);
+
+    const after = await cameraState(page);
+    expect(delta3(after.position, before.position)).toBeLessThan(1e-6);
+    expect(delta3(after.target, before.target)).toBeLessThan(1e-6);
   });
 
   test('double-click sets pivot without moving camera and Shift + double-click measures', async ({
@@ -353,8 +412,8 @@ test.describe('Standard Orbit navigation', () => {
 
       const orbitConfig = await getNavigationState(page);
       expect(orbitConfig.controlType).toBe('orbit');
-      expect(orbitConfig.enableDamping).toBe(false);
-      expect(orbitConfig.screenSpacePanning).toBe(true);
+      expect(orbitConfig.enableDamping).toBe(true);
+      expect(orbitConfig.screenSpacePanning).toBe(false);
     }
   });
 
