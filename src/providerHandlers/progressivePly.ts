@@ -635,6 +635,13 @@ async function scanPly(
   return valid;
 }
 
+function cloneCanonicalPoint(point: CanonicalPoint): CanonicalPoint {
+  return {
+    ...point,
+    scalars: [...point.scalars],
+  };
+}
+
 function canonicalStride(probe: ProgressivePlyProbe): number {
   return decodedBytesPerPoint(probe);
 }
@@ -906,17 +913,41 @@ export class ProgressivePlySessionManager {
     let maxX = Number.NEGATIVE_INFINITY;
     let maxY = Number.NEGATIVE_INFINITY;
     let maxZ = Number.NEGATIVE_INFINITY;
+    let minXPoint: CanonicalPoint | undefined;
+    let minYPoint: CanonicalPoint | undefined;
+    let minZPoint: CanonicalPoint | undefined;
+    let maxXPoint: CanonicalPoint | undefined;
+    let maxYPoint: CanonicalPoint | undefined;
+    let maxZPoint: CanonicalPoint | undefined;
 
     const validCount = await scanPly(
       session.uri,
       probe,
       (point, sourceIndex) => {
-        minX = Math.min(minX, point.x);
-        minY = Math.min(minY, point.y);
-        minZ = Math.min(minZ, point.z);
-        maxX = Math.max(maxX, point.x);
-        maxY = Math.max(maxY, point.y);
-        maxZ = Math.max(maxZ, point.z);
+        if (point.x < minX) {
+          minX = point.x;
+          minXPoint = cloneCanonicalPoint(point);
+        }
+        if (point.y < minY) {
+          minY = point.y;
+          minYPoint = cloneCanonicalPoint(point);
+        }
+        if (point.z < minZ) {
+          minZ = point.z;
+          minZPoint = cloneCanonicalPoint(point);
+        }
+        if (point.x > maxX) {
+          maxX = point.x;
+          maxXPoint = cloneCanonicalPoint(point);
+        }
+        if (point.y > maxY) {
+          maxY = point.y;
+          maxYPoint = cloneCanonicalPoint(point);
+        }
+        if (point.z > maxZ) {
+          maxZ = point.z;
+          maxZPoint = cloneCanonicalPoint(point);
+        }
         if (sourceIndex % stride === 0 && previewCount < capacity) {
           writeCanonical(preview, previewCount * recordStride, point, probe);
           previewCount++;
@@ -933,6 +964,30 @@ export class ProgressivePlySessionManager {
       () => session.cancelled
     );
     if (!Number.isFinite(minX)) throw new Error('PLY contains no finite XYZ points');
+
+    // Force the bounded preview to carry the exact source extents. This makes
+    // the first fit-to-view correct even when a rare extreme point was not on
+    // the deterministic sampling stride.
+    const extrema = [
+      minXPoint,
+      minYPoint,
+      minZPoint,
+      maxXPoint,
+      maxYPoint,
+      maxZPoint,
+    ].filter((value): value is CanonicalPoint => !!value);
+    const unique = new Map<string, CanonicalPoint>();
+    for (const point of extrema) {
+      unique.set(`${point.x}|${point.y}|${point.z}`, point);
+    }
+    let slot = Math.max(0, previewCount - unique.size);
+    for (const point of unique.values()) {
+      if (slot >= capacity) break;
+      writeCanonical(preview, slot * recordStride, point, probe);
+      slot++;
+    }
+    previewCount = Math.max(previewCount, slot);
+
     return {
       bbox: [minX, minY, minZ, maxX, maxY, maxZ],
       previewBuffer: preview.subarray(0, previewCount * recordStride),
