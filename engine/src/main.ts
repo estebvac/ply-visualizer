@@ -13,6 +13,7 @@ import {
 import { CustomArcballControls, TurntableControls } from './controls';
 import { configureStandardOrbitControls } from './orbitNavigation';
 import { resetStandardOrbitUp } from './cameraOrientation';
+import { CameraViewAnimator } from './CameraViewAnimator';
 import { initializeThemes, getThemeByName, applyTheme, getCurrentThemeName } from './themes';
 import { RotationCenterManager, RotationCenterMode } from './RotationCenterManager';
 import { MeasurementManager } from './MeasurementManager';
@@ -124,6 +125,7 @@ class PointCloudVisualizer {
   private contextLost = false;
   controls!: TrackballControls | OrbitControls | CustomArcballControls | TurntableControls;
   private inverseTrackballPointerDownHandler: (() => void) | null = null;
+  readonly cameraViewAnimator = new CameraViewAnimator();
 
   // Camera control state
   controlType: 'trackball' | 'orbit' | 'inverse-trackball' | 'arcball' | 'cloudcompare' =
@@ -621,6 +623,8 @@ class PointCloudVisualizer {
   }
 
   initializeControls(): void {
+    this.cameraViewAnimator.cancel();
+
     // Store current camera state before disposing old controls
     const currentCameraPosition = this.camera.position.clone();
     const currentTarget = this.controls ? this.controls.target.clone() : new THREE.Vector3(0, 0, 0);
@@ -703,6 +707,10 @@ class PointCloudVisualizer {
     }
     this.controls.target.copy(currentTarget);
     this.controls.update();
+
+    if (this.controlType === 'orbit') {
+      this.controls.addEventListener('start', () => this.cameraViewAnimator.cancel());
+    }
 
     // Initialize rotation center tracking
     this.lastRotationCenter.copy(this.controls.target);
@@ -1430,6 +1438,8 @@ class PointCloudVisualizer {
   }
 
   private resetCameraToDefault(): void {
+    this.cameraViewAnimator.cancel();
+
     // Reset FOV and camera orientation
     this.camera.fov = 75;
     this.camera.updateProjectionMatrix();
@@ -1454,6 +1464,7 @@ class PointCloudVisualizer {
   }
 
   private onDoubleClick(event: MouseEvent): void {
+    this.cameraViewAnimator.cancel();
     if (!this.selectionManager) {
       return;
     }
@@ -2427,6 +2438,7 @@ class PointCloudVisualizer {
   }
 
   private fitCameraToAllObjects(): void {
+    this.cameraViewAnimator.cancel();
     if (
       this.meshes.length === 0 &&
       this.poseGroups.length === 0 &&
