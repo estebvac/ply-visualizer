@@ -12,6 +12,7 @@ import {
   buildProgressivePreview,
   readProgressiveTile,
 } from '../../progressivePly/cache';
+import { supportsProgressivePlyUri } from '../../progressivePly/service';
 
 function makeBinaryPly(pointCount = 2048): Buffer {
   const header = Buffer.from(
@@ -82,6 +83,79 @@ suite('Progressive PLY remote loading', () => {
     );
   });
 
+  test('does not consume binary body bytes that happen to equal CR/LF', () => {
+    const headerBytes = Buffer.from(
+      [
+        'ply',
+        'format binary_little_endian 1.0',
+        'element vertex 1',
+        'property float x',
+        'property float y',
+        'property float z',
+        'element face 0',
+        'property list uchar int vertex_indices',
+        'end_header',
+        '',
+      ].join('\n'),
+      'ascii'
+    );
+    const body = Buffer.alloc(12);
+    body[0] = 0x0a;
+    body[1] = 0x0d;
+    const parsed = parseProgressivePlyHeader(Buffer.concat([headerBytes, body]));
+    assert.strictEqual(parsed.headerBytes, headerBytes.byteLength);
+  });
+
+  test('routes Remote-SSH PLY URIs to the remote progressive path', () => {
+    assert.strictEqual(
+      supportsProgressivePlyUri({
+        scheme: 'vscode-remote',
+        fsPath: '/remote/workspace/cloud.ply',
+      }),
+      true
+    );
+    assert.strictEqual(
+      supportsProgressivePlyUri({ scheme: 'file', fsPath: '/tmp/cloud.PLY' }),
+      true
+    );
+    assert.strictEqual(
+      supportsProgressivePlyUri({ scheme: 'untitled', fsPath: '/tmp/cloud.ply' }),
+      false
+    );
+  });
+
+  test('keeps meshes, ASCII clouds, splats, and variable-width vertices off the progressive path', () => {
+    const base = {
+      format: 'binary_little_endian' as const,
+      vertexCount: 10_000_000,
+      faceCount: 0,
+      hasColors: true,
+      hasNormals: false,
+      hasIntensity: false,
+      scalarFieldNames: [] as string[],
+      isGaussianSplat: false,
+      fixedVertexStride: 15,
+    };
+    const force = { fileSizeThresholdBytes: 1, decodedBytesThresholdBytes: 1 };
+    assert.strictEqual(shouldUseProgressivePly(1024, base, force), true);
+    assert.strictEqual(
+      shouldUseProgressivePly(1024, { ...base, format: 'ascii' }, force),
+      false
+    );
+    assert.strictEqual(
+      shouldUseProgressivePly(1024, { ...base, faceCount: 1 }, force),
+      false
+    );
+    assert.strictEqual(
+      shouldUseProgressivePly(1024, { ...base, isGaussianSplat: true }, force),
+      false
+    );
+    assert.strictEqual(
+      shouldUseProgressivePly(1024, { ...base, fixedVertexStride: null }, force),
+      false
+    );
+  });
+
   test('builds preview and persistent LOD tiles without loading the whole file into webview memory', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ply-progressive-'));
     const filePath = path.join(dir, 'large.ply');
@@ -129,6 +203,46 @@ suite('Progressive PLY remote loading', () => {
       assert.ok(page.count <= options.tilePoints);
       assert.strictEqual(page.colors?.length, page.count * 3);
       assert.strictEqual(page.intensity?.length, page.count);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('cleans incomplete cache directories when cancelled', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ply-progressive-cancel-'));
+    const filePath = path.join(dir, 'large.ply');
+    const cacheDir = path.join(dir, 'cache');
+    fs.writeFileSync(filePath, makeBinaryPly(4096));
+    try {
+      const header = parseProgressivePlyHeader(fs.readFileSync(filePath).subarray(0, 4096));
+      const options = {
+        previewPoints: 64,
+        tilePoints: 64,
+        lodSamplePoints: 32,
+        maxDepth: 4,
+        chunkBytes: 1024,
+      };
+      const preview = await buildProgressivePreview(filePath, header, options);
+      const stat = fs.statSync(filePath);
+      await assert.rejects(
+        () =>
+          buildProgressiveCache(
+            filePath,
+            cacheDir,
+            header,
+            { size: stat.size, mtime: stat.mtimeMs },
+            preview,
+            options,
+            undefined,
+            () => true
+          ),
+        /cancelled/
+      );
+      assert.strictEqual(fs.existsSync(cacheDir), false);
+      assert.strictEqual(
+        fs.readdirSync(dir).some(name => name.startsWith('cache.tmp-')),
+        false
+      );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
