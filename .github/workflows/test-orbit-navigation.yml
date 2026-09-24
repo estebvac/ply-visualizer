@@ -38,14 +38,13 @@ jobs:
           rm -rf engine/node_modules
           ln -s ../node_modules engine/node_modules
 
-      - name: Compile VS Code bundle
-        run: pnpm run compile
+      - name: Compile extension and tests
+        run: pnpm run compile:all
 
-      - name: Build standalone engine for Playwright
-        run: cd engine && pnpm run build
+      - name: Install Xvfb for VS Code Electron
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
 
-      - name: Install Playwright Chromium
-        run: cd engine && pnpm exec playwright install --with-deps chromium
-
-      - name: Run focused Orbit navigation tests
-        run: cd engine && pnpm exec playwright test test/orbit-navigation.spec.ts --project=chromium --grep "camera presets and XYZ|legacy controls preserve"
+      - name: Run extension-host tests
+        run: xvfb-run -a pnpm test
