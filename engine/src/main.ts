@@ -136,7 +136,10 @@ import {
   scannerCapturePointFor,
   shouldApplySavedViewConvention,
   shouldOrientZUp,
+  resetStandardOrbitUp,
 } from './cameraOrientation';
+import { configureStandardOrbitControls } from './orbitNavigation';
+import { CameraViewAnimator } from './CameraViewAnimator';
 import { applyFixedClipPlanes, FIXED_CAMERA_FAR, FIXED_CAMERA_NEAR } from './cameraClipping';
 import * as axesFeature from './axesFeature';
 import * as transformationMatrix from './transformationMatrix';
@@ -264,9 +267,10 @@ class PointCloudVisualizer {
     | CustomArcballControls
     | TurntableControls
     | VirtualBallControls;
+  readonly cameraViewAnimator = new CameraViewAnimator();
 
   // Camera control state
-  controlType: 'trackball' | 'orbit' | 'legacy-trackball' | 'arcball' = 'legacy-trackball';
+  controlType: 'trackball' | 'orbit' | 'legacy-trackball' | 'arcball' = 'orbit';
   screenSpaceScaling: boolean = false;
   allowTransparency: boolean = false;
 
@@ -858,6 +862,8 @@ class PointCloudVisualizer {
   }
 
   initializeControls(): void {
+    this.cameraViewAnimator.cancel();
+
     // Store current camera state before disposing old controls
     const currentCameraPosition = this.camera.position.clone();
     const currentTarget = this.controls ? this.controls.target.clone() : new THREE.Vector3(0, 0, 0);
@@ -911,23 +917,28 @@ class PointCloudVisualizer {
       // Apply preference
       arc.invertRotation = this.arcballInvertRotation;
     } else {
+      // Standard Orbit uses one immutable navigation frame: +Z world-up.
+      resetStandardOrbitUp(this.camera);
       this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-      const orbitControls = this.controls as OrbitControls;
-      orbitControls.enableDamping = true;
-      orbitControls.dampingFactor = 0.2;
-      orbitControls.screenSpacePanning = false;
-      orbitControls.minDistance = 0.001;
-      orbitControls.maxDistance = 50000; // Increased to match camera far plane
+      configureStandardOrbitControls(this.controls as OrbitControls);
     }
 
     // Set up axes visibility for all control types
     this.setupAxesVisibility();
 
-    // Restore camera state to prevent jumps
+    // Restore camera state to prevent jumps. Standard Orbit deliberately does
+    // not restore a historical camera.up: its navigation frame is always +Z.
     this.camera.position.copy(currentCameraPosition);
-    this.camera.up.copy(currentUp);
+    if (this.controlType === 'orbit') {
+      resetStandardOrbitUp(this.camera);
+    } else {
+      this.camera.up.copy(currentUp);
+    }
     this.controls.target.copy(currentTarget);
     this.controls.update();
+    if (this.controlType === 'orbit') {
+      this.controls.addEventListener('start', () => this.cameraViewAnimator.cancel());
+    }
     const safeRect = this.screenAnchor?.getSafeRect();
     if (safeRect) {
       this.applyControlScreenRegion(safeRect);
@@ -1610,6 +1621,8 @@ class PointCloudVisualizer {
   }
 
   private resetCameraToDefault(): void {
+    this.cameraViewAnimator.cancel();
+
     // Reset FOV and camera orientation
     this.camera.fov = 75;
     this.camera.updateProjectionMatrix();
@@ -1661,6 +1674,7 @@ class PointCloudVisualizer {
   }
 
   private async onDoubleClick(event: MouseEvent): Promise<void> {
+    this.cameraViewAnimator.cancel();
     if (!this.selectionManager) {
       return;
     }
@@ -1883,7 +1897,14 @@ class PointCloudVisualizer {
         e.target instanceof HTMLTextAreaElement ||
         e.target instanceof HTMLSelectElement
       ) {
+        if (e.key.startsWith('Arrow')) {
+          e.stopPropagation();
+        }
         return;
+      }
+
+      if (this.controlType === 'orbit' && e.key.startsWith('Arrow')) {
+        this.cameraViewAnimator.cancel();
       }
 
       // Every shortcut here is a bare letter, so anything with a modifier
@@ -2801,6 +2822,7 @@ class PointCloudVisualizer {
   }
 
   private fitCameraToAllObjects(): void {
+    this.cameraViewAnimator.cancel();
     if (
       this.meshes.length === 0 &&
       this.poseGroups.length === 0 &&
