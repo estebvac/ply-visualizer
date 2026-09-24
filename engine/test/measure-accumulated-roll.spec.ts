@@ -25,80 +25,19 @@ async function setup(page: Page, mode: 'trackball' | 'inverse-trackball-controls
   await page.waitForTimeout(1500);
   await page.click('[data-tab="controls"]');
   await page.waitForTimeout(300);
-  await page.locator('#advanced-navigation > summary').click();
   if (mode === 'inverse-trackball-controls') {
     await page.click('#inverse-trackball-controls');
-  } else {
-    await page.click('#trackball-controls');
+    await page.waitForTimeout(300);
   }
-  await page.waitForTimeout(300);
-
-  // This suite validates legacy rotation/inversion math, not momentum.
-  // Disable Trackball's test-time damping so independent runs are deterministic.
-  await page.evaluate(() => {
-    const v: any = (window as any).visualizer;
-    if ('staticMoving' in v.controls) {
-      v.controls.staticMoving = true;
-      v.controls.dynamicDampingFactor = 0;
-    }
-  });
-
   await page.evaluate(() => {
     const v: any = (window as any).visualizer;
     v.controls.target.set(0, 0, 0);
-    // Preserve the historical camera calibration for these legacy-control
-    // regression tests. Standard Orbit uses 60° in production; Trackball
-    // comparison baselines were written and tuned against the old 75° FOV.
-    v.camera.fov = 75;
-    v.camera.updateProjectionMatrix();
     v.camera.position.set(3, 0, 0);
     v.camera.up.set(0, 1, 0);
     v.camera.lookAt(0, 0, 0);
     v.controls.update();
   });
   await page.waitForTimeout(100);
-}
-
-
-async function waitForCameraSettled(page: Page, epsilon = 1e-5, timeoutMs = 4000) {
-  const state = () =>
-    page.evaluate(() => {
-      const v: any = (window as any).visualizer;
-      return {
-        pos: v.camera.position.toArray() as number[],
-        target: v.controls.target.toArray() as number[],
-      };
-    });
-
-  const deadline = Date.now() + timeoutMs;
-  let previous = await state();
-  let stableSamples = 0;
-
-  while (Date.now() < deadline) {
-    await page.waitForTimeout(80);
-    const current = await state();
-    const motion =
-      Math.hypot(
-        current.pos[0] - previous.pos[0],
-        current.pos[1] - previous.pos[1],
-        current.pos[2] - previous.pos[2]
-      ) +
-      Math.hypot(
-        current.target[0] - previous.target[0],
-        current.target[1] - previous.target[1],
-        current.target[2] - previous.target[2]
-      );
-
-    if (motion < epsilon) {
-      stableSamples += 1;
-      if (stableSamples >= 3) return;
-    } else {
-      stableSamples = 0;
-    }
-    previous = current;
-  }
-
-  throw new Error('Trackball camera did not settle within the expected damping window');
 }
 
 // Installs an incremental swing-twist accumulator that observes the real,
@@ -214,7 +153,7 @@ async function dragCircular(page: Page, cx: number, cy: number, totalDegrees: nu
     await page.waitForTimeout(8);
   }
   await page.mouse.up();
-  await waitForCameraSettled(page);
+  await page.waitForTimeout(150);
 }
 
 const rollSweeps = [90, 180, 270, 370];
@@ -242,11 +181,11 @@ for (const degrees of rollSweeps) {
     );
 
     expect(Math.sign(rollNormal)).not.toBe(Math.sign(rollInverse));
-    // The core invariant for this legacy mode is the mirrored roll direction.
-    // Magnitude is only a coarse sanity check because Trackball's internal
-    // incremental rebase path is not perfectly symmetric at large sweeps.
+    // With a valid path-correct measurement, the inversion should also be
+    // close in magnitude (same gesture, same accumulation method) - not just
+    // opposite in sign.
     expect(Math.abs(Math.abs(rollNormal) - Math.abs(rollInverse))).toBeLessThan(
-      Math.abs(rollNormal) * 0.75 + 0.3
+      Math.abs(rollNormal) * 0.5 + 0.2
     );
   });
 }
