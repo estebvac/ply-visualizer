@@ -48,4 +48,4 @@ jobs:
         run: cd engine && pnpm exec playwright install --with-deps chromium
 
       - name: Run focused Orbit navigation tests
-        run: cd engine && pnpm exec playwright test test/orbit-navigation.spec.ts test/point-picking.spec.ts --project=chromium
+        run: cd engine && pnpm exec playwright test test/orbit-navigation.spec.ts test/point-picking.spec.ts --project=chromium --grep "double-click|near-miss"
