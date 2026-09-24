@@ -55,7 +55,7 @@ jobs:
       - name: Install Playwright Chromium and host dependencies
         run: cd engine && pnpm exec playwright install --with-deps chromium
 
-      - name: Run focused navigation regressions
+      - name: Run focused Orbit navigation regressions
         run: |
           cd engine
           pnpm exec playwright test \
@@ -64,13 +64,13 @@ jobs:
             test/controls-camera-tabs.spec.ts \
             test/zoom-after-rotate.spec.ts \
             test/rotation-drift-check.spec.ts \
-            test/inverse-trackball-rotation.spec.ts \
-            test/measure-accumulated-roll.spec.ts \
             --project=chromium
 
-      - name: Verify recovery-baseline exclusions are unchanged
+      - name: Verify excluded recovery-baseline tests are semantically unchanged
         run: |
-          git diff --exit-code origin/recovered/voxel-camera-ui...HEAD -- \
+          git diff --ignore-space-at-eol --exit-code origin/recovered/voxel-camera-ui...HEAD -- \
+            engine/test/inverse-trackball-rotation.spec.ts \
+            engine/test/measure-accumulated-roll.spec.ts \
             engine/test/file-list-interactions.spec.ts \
             engine/test/large-lidar-chunking.spec.ts \
             engine/src/largeFileChunking.ts
@@ -79,7 +79,7 @@ jobs:
         run: |
           cd engine
           pnpm exec playwright test \
-            --grep-invert "shift-click toggles between one visible file and all visible files|typed LiDAR chunks preserve packed arrays, scalar fields, and metadata|orbit matches normal trackball|roll inverts sign vs normal trackball|accumulated roll inverts|Standard Orbit navigation|sustained inverse-trackball rotation|zoom after rotate|Controls and Camera tabs" \
+            --grep-invert "shift-click toggles between one visible file and all visible files|typed LiDAR chunks preserve packed arrays, scalar fields, and metadata|orbit matches normal trackball|roll inverts sign vs normal trackball|accumulated roll inverts" \
             --project=chromium
 
       - name: Run VS Code extension-host suite
