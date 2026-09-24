@@ -1,4 +1,4 @@
-name: Orbit and ViewCube baseline
+name: Orbit, ViewCube, and Voxels baseline
 
 on:
   push:
@@ -31,6 +31,6 @@ jobs:
       - name: Install Chromium
         run: npm exec -- playwright install --with-deps chromium
 
-      - name: Verify Standard Orbit and ViewCube baseline
+      - name: Verify Standard Orbit, ViewCube, and voxel baseline
         working-directory: engine
-        run: npm exec -- playwright test test/view-cube-transform.spec.ts test/view-cube-baseline.spec.ts --workers=1 --retries=0 --timeout=15000
+        run: npm exec -- playwright test test/view-cube-transform.spec.ts test/view-cube-baseline.spec.ts test/voxel-rendering.spec.ts --workers=1 --retries=0 --timeout=30000
