@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import {
   createVoxelMesh,
   disposeVoxelMesh,
+  refreshVoxelColors,
   updateVoxelSize,
 } from './visualization/VoxelRenderer';
 
@@ -398,8 +399,6 @@ export class ProgressivePlyClient {
           colorMode
         );
         if (resident.voxel) {
-          // Rebuild instance colours from the newly selected point colours.
-          const { refreshVoxelColors } = require('./visualization/VoxelRenderer') as typeof import('./visualization/VoxelRenderer');
           refreshVoxelColors(resident.voxel, resident.points);
         }
       }
