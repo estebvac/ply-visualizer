@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: orbit-navigation-${{ github.ref }}-${{ github.sha }}
-  cancel-in-progress: false
+  group: orbit-navigation-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   full-verification:
@@ -64,17 +64,37 @@ jobs:
             test/controls-camera-tabs.spec.ts \
             test/zoom-after-rotate.spec.ts \
             test/rotation-drift-check.spec.ts \
+            test/inverse-trackball-rotation.spec.ts \
+            test/measure-accumulated-roll.spec.ts \
             --project=chromium
 
-      - name: Verify excluded recovery-baseline files are unchanged
+      - name: Verify recovery-baseline exclusions are unchanged
         run: |
           git diff --exit-code origin/recovered/voxel-camera-ui...HEAD -- \
-            engine/src/controls.ts \
-            engine/test/inverse-trackball-rotation.spec.ts \
-            engine/test/measure-accumulated-roll.spec.ts \
             engine/test/file-list-interactions.spec.ts \
             engine/test/large-lidar-chunking.spec.ts \
             engine/src/largeFileChunking.ts
 
-      - name: Run engine browser suite excluding verified recovery-baseline failures
+      - name: Run remaining engine browser suite
         run: |
+          cd engine
+          pnpm exec playwright test \
+            --grep-invert "shift-click toggles between one visible file and all visible files|typed LiDAR chunks preserve packed arrays, scalar fields, and metadata|orbit matches normal trackball|roll inverts sign vs normal trackball|accumulated roll inverts|Standard Orbit navigation|sustained inverse-trackball rotation|zoom after rotate|Controls and Camera tabs" \
+            --project=chromium
+
+      - name: Run VS Code extension-host suite
+        run: xvfb-run -a pnpm test
+
+      - name: Package feature VSIX
+        run: |
+          mkdir -p artifacts
+          pnpm dlx @vscode/vsce package --out artifacts/ply-visualizer-orbitcontrols-navigation.vsix
+          sha256sum artifacts/ply-visualizer-orbitcontrols-navigation.vsix | tee artifacts/SHA256SUMS
+
+      - name: Upload feature VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ply-visualizer-orbitcontrols-navigation
+          path: |
+            artifacts/ply-visualizer-orbitcontrols-navigation.vsix
+            artifacts/SHA256SUMS
