@@ -2,7 +2,7 @@
   import { viewerState } from '../state/viewer.svelte';
   import { captureScreenshot, copyCameraStateToClipboard } from '../utils/viewCapture';
   import { setCameraPosition } from '../cameraViews';
-  import ViewOrientationSelector from './ViewOrientationSelector.svelte';
+  import ViewCube from './ViewCube.svelte';
 
   let { host }: { host: any } = $props();
 
@@ -39,6 +39,7 @@
   ]);
 
   function updatePositionAxis(axis: PositionAxis, value: number): boolean {
+    host.cameraViewAnimator?.cancel();
     if (!Number.isFinite(value)) {
       return false;
     }
@@ -145,6 +146,7 @@
   }
 
   function onResetCamera() {
+    host.cameraViewAnimator?.cancel();
     host.resetCameraToDefault();
   }
   function onModifyPosition() {
@@ -160,7 +162,7 @@
 
 <div class="camera-controls-section">
   <span style="font-size:10px;font-weight:bold;">View Orientation:</span>
-  <ViewOrientationSelector {host} />
+  <ViewCube {host} />
 </div>
 
 <div class="camera-controls-section">
