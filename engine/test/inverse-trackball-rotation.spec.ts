@@ -21,11 +21,13 @@ async function setup(page: Page, mode: 'trackball' | 'inverse-trackball-controls
   await page.click('[data-tab="controls"]');
   await page.waitForTimeout(300);
 
+  await page.locator('#advanced-navigation > summary').click();
   if (mode === 'inverse-trackball-controls') {
-    await page.locator('#advanced-navigation > summary').click();
     await page.click('#inverse-trackball-controls');
-    await page.waitForTimeout(300);
+  } else {
+    await page.click('#trackball-controls');
   }
+  await page.waitForTimeout(300);
 
   // Deterministic starting pose so normal vs. inverse comparisons are apples
   // to apples, independent of file-load timing / auto-fit jitter.
@@ -204,7 +206,15 @@ for (const [dirName, dirX, dirY] of directions) {
       );
       const afterInverse = await getCamState(page);
 
-      expect(before1.pos, 'both runs start from the same deterministic pose').toEqual(before2.pos);
+      const startPoseDelta = Math.hypot(
+        before1.pos[0] - before2.pos[0],
+        before1.pos[1] - before2.pos[1],
+        before1.pos[2] - before2.pos[2]
+      );
+      expect(
+        startPoseDelta,
+        'both runs start from the same deterministic pose within floating-point tolerance'
+      ).toBeLessThan(1e-12);
       expect(isFinite3(afterNormal.pos)).toBe(true);
       expect(isFinite3(afterInverse.pos)).toBe(true);
 
