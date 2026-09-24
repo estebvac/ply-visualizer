@@ -29,6 +29,17 @@ async function setup(page: Page, mode: 'trackball' | 'inverse-trackball-controls
   }
   await page.waitForTimeout(300);
 
+  // These suites validate legacy rotation/inversion math, not momentum.
+  // Disable Trackball's test-time damping so two independent runs compare
+  // the same drag path instead of different animation-frame decay histories.
+  await page.evaluate(() => {
+    const v: any = (window as any).visualizer;
+    if ('staticMoving' in v.controls) {
+      v.controls.staticMoving = true;
+      v.controls.dynamicDampingFactor = 0;
+    }
+  });
+
   // Deterministic starting pose so normal vs. inverse comparisons are apples
   // to apples, independent of file-load timing / auto-fit jitter.
   await page.evaluate(() => {
