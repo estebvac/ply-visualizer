@@ -841,10 +841,10 @@ export class ProgressivePlySessionManager {
     const { probe, config, cacheDir } = session;
     const recordStride = canonicalStride(probe);
     const messageLimitedTarget = Math.max(
-      10_000,
+      1,
       Math.floor((config.maxTileMessageBytes * 0.75) / recordStride)
     );
-    const tileTarget = Math.max(10_000, Math.min(config.tileTargetPoints, messageLimitedTarget));
+    const tileTarget = Math.max(1, Math.min(config.tileTargetPoints, messageLimitedTarget));
     const desiredLeaves = Math.max(1, Math.ceil(validCount / tileTarget));
     const desiredResolution = Math.max(1, Math.ceil(Math.cbrt(desiredLeaves)));
     const depth = Math.min(6, Math.max(0, Math.ceil(Math.log2(desiredResolution))));
@@ -855,19 +855,31 @@ export class ProgressivePlySessionManager {
 
     type TileState = {
       id: string;
+      baseId: string;
       ix: number;
       iy: number;
       iz: number;
+      segment: number;
       count: number;
       buffered: number;
-      buffer: Buffer | null;
+      buffer: Buffer;
       file: string;
-      lastUsed: number;
     };
-    const chunkPoints = Math.max(256, Math.min(4096, Math.floor((512 * 1024) / recordStride)));
-    const tiles = new Map<string, TileState>();
-    const activeBuffers = new Set<TileState>();
-    const MAX_ACTIVE_TILE_BUFFERS = 64;
+    const maxPointsPerNode = Math.max(
+      1,
+      Math.floor(config.maxTileMessageBytes / recordStride)
+    );
+    const chunkPoints = Math.max(
+      1,
+      Math.min(
+        4096,
+        maxPointsPerNode,
+        Math.max(1, Math.floor((512 * 1024) / recordStride))
+      )
+    );
+    const activeTiles = new Map<string, TileState>();
+    const segmentCounters = new Map<string, number>();
+    const allTiles: TileState[] = [];
     let processed = 0;
     const emitProgress = () => {
       void session.panel.webview.postMessage({
@@ -879,31 +891,37 @@ export class ProgressivePlySessionManager {
     };
 
     const flush = (tile: TileState) => {
-      if (tile.buffered <= 0 || !tile.buffer) return;
+      if (tile.buffered <= 0) return;
       fs.appendFileSync(tile.file, tile.buffer.subarray(0, tile.buffered * recordStride));
       tile.buffered = 0;
     };
 
-    const ensureBuffer = (tile: TileState): Buffer => {
-      if (tile.buffer) {
-        tile.lastUsed = processed;
-        return tile.buffer;
-      }
-      if (activeBuffers.size >= MAX_ACTIVE_TILE_BUFFERS) {
-        let oldest: TileState | undefined;
-        for (const candidate of activeBuffers) {
-          if (!oldest || candidate.lastUsed < oldest.lastUsed) oldest = candidate;
-        }
-        if (oldest) {
-          flush(oldest);
-          oldest.buffer = null;
-          activeBuffers.delete(oldest);
-        }
-      }
-      tile.buffer = Buffer.allocUnsafe(chunkPoints * recordStride);
-      tile.lastUsed = processed;
-      activeBuffers.add(tile);
-      return tile.buffer;
+    const createTile = (
+      baseId: string,
+      ix: number,
+      iy: number,
+      iz: number
+    ): TileState => {
+      const segment = segmentCounters.get(baseId) ?? 0;
+      segmentCounters.set(baseId, segment + 1);
+      const id = `${baseId}_p${segment}`;
+      const file = path.join(tileDir, `${id}.tile`);
+      fs.rmSync(file, { force: true });
+      const tile: TileState = {
+        id,
+        baseId,
+        ix,
+        iy,
+        iz,
+        segment,
+        count: 0,
+        buffered: 0,
+        buffer: Buffer.allocUnsafe(chunkPoints * recordStride),
+        file,
+      };
+      activeTiles.set(baseId, tile);
+      allTiles.push(tile);
+      return tile;
     };
 
     await scanPly(
@@ -913,51 +931,31 @@ export class ProgressivePlySessionManager {
         const ix = safeCell(point.x, bbox[0], bbox[3], resolution);
         const iy = safeCell(point.y, bbox[1], bbox[4], resolution);
         const iz = safeCell(point.z, bbox[2], bbox[5], resolution);
-        const id = `l${depth}_${ix}_${iy}_${iz}`;
-        let tile = tiles.get(id);
-        if (!tile) {
-          const file = path.join(tileDir, `${id}.tile`);
-          fs.rmSync(file, { force: true });
-          tile = {
-            id,
-            ix,
-            iy,
-            iz,
-            count: 0,
-            buffered: 0,
-            buffer: null,
-            file,
-            lastUsed: processed,
-          };
-          tiles.set(id, tile);
+        const baseId = `l${depth}_${ix}_${iy}_${iz}`;
+        let tile = activeTiles.get(baseId);
+        if (!tile || tile.count >= maxPointsPerNode) {
+          if (tile) flush(tile);
+          tile = createTile(baseId, ix, iy, iz);
         }
-        const tileBuffer = ensureBuffer(tile);
-        writeCanonical(tileBuffer, tile.buffered * recordStride, point, probe);
+
+        writeCanonical(tile.buffer, tile.buffered * recordStride, point, probe);
         tile.buffered++;
         tile.count++;
-        tile.lastUsed = processed;
         if (tile.buffered >= chunkPoints) flush(tile);
         processed++;
         if (processed % 1_000_000 === 0) emitProgress();
       },
       () => session.cancelled
     );
-    for (const tile of tiles.values()) {
-      flush(tile);
-      tile.buffer = null;
-    }
-    activeBuffers.clear();
+    for (const tile of activeTiles.values()) flush(tile);
     if (session.cancelled) return;
 
-    const children = [...tiles.values()]
-      .filter(tile => tile.count > 0)
-      .map(tile => tile.id)
-      .sort();
+    const populatedTiles = allTiles.filter(tile => tile.count > 0);
+    const children = populatedTiles.map(tile => tile.id).sort();
     rootNode.children = children;
     const nodes: ProgressivePlyNodeManifest[] = [
       rootNode,
-      ...[...tiles.values()]
-        .filter(tile => tile.count > 0)
+      ...populatedTiles
         .sort((a, b) => a.id.localeCompare(b.id))
         .map(tile => ({
           id: tile.id,
@@ -969,6 +967,14 @@ export class ProgressivePlySessionManager {
           tileFile: path.relative(cacheDir, tile.file).replace(/\\/g, '/'),
         })),
     ];
+
+    for (const node of nodes) {
+      if (node.id !== rootNode.id && node.byteLength > config.maxTileMessageBytes) {
+        throw new Error(
+          `Progressive tile ${node.id} exceeds message cap: ${node.byteLength} > ${config.maxTileMessageBytes}`
+        );
+      }
+    }
 
     const manifest: ProgressivePlyManifest = {
       version: 1,
