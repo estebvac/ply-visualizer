@@ -106,21 +106,24 @@ function buildOptions(header: ProgressivePlyHeader): ProgressivePlyBuildOptions 
   // clouds with many scalar fields. The viewer still needs room for geometry,
   // colors, tile cache, and Three.js overhead.
   const previewPoints = Math.max(
-    10_000,
+    1_000,
     Math.min(
       configuredPreviewPoints,
       Math.floor(localBudgetBytes / Math.max(1, normalizedBytesPerPoint * 4))
     )
   );
+  // The transfer cap is a hard safety property, even for unusual PLY schemas
+  // with hundreds of scalar attributes. Internal tile size may therefore fall
+  // below the user-facing configuration minimum.
   const boundedTilePoints = Math.max(
-    10_000,
+    1_000,
     Math.min(configuredTilePoints, Math.floor(TILE_MESSAGE_BYTES / normalizedBytesPerPoint))
   );
   return {
     ...DEFAULT_PROGRESSIVE_BUILD_OPTIONS,
     previewPoints,
     tilePoints: boundedTilePoints,
-    lodSamplePoints: Math.min(lodSamplePoints, boundedTilePoints),
+    lodSamplePoints: Math.max(1_000, Math.min(lodSamplePoints, boundedTilePoints)),
   };
 }
 
