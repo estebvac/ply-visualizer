@@ -90,7 +90,10 @@ test('standard LMB orbit keeps the current pivot and distance', async ({ page })
   await page.waitForSelector('#three-canvas');
   await page.waitForFunction(() => Boolean((window as any).visualizer?.controls));
 
-  await page.click('[data-tab="files"]');
+  const filesTab = page.locator('[data-tab="files"]');
+  if ((await filesTab.getAttribute('aria-pressed')) !== 'true') {
+    await filesTab.click();
+  }
   await page.locator('#hiddenFileInput').setInputFiles({
     name: 'orbit-test.ply',
     mimeType: 'application/octet-stream',
