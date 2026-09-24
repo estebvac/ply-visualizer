@@ -3837,6 +3837,7 @@ class PointCloudVisualizer {
       return;
     }
 
+    this.progressivePly.removeFile(fileIndex);
     this.spatialFiles[fileIndex]?.sceneModel?.dispose();
     // Remove mesh from scene
     const mesh = this.meshes[fileIndex];
