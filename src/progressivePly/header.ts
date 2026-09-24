@@ -22,6 +22,7 @@ export interface ProgressivePlyHeader {
   vertexCount: number;
   faceCount: number;
   vertexStride: number | null;
+  vertexDataStartsAtBody: boolean;
   properties: ProgressivePlyProperty[];
   hasColors: boolean;
   hasNormals: boolean;
@@ -83,6 +84,8 @@ export function parseProgressivePlyHeader(bytes: Uint8Array): ProgressivePlyHead
   let faceCount = 0;
   let currentElement = '';
   let vertexSeen = false;
+  let recordsBeforeVertex = 0;
+  let vertexDataStartsAtBody = true;
   let vertexStride: number | null = 0;
   const properties: ProgressivePlyProperty[] = [];
   const comments: string[] = [];
@@ -106,8 +109,14 @@ export function parseProgressivePlyHeader(bytes: Uint8Array): ProgressivePlyHead
       if (currentElement === 'vertex') {
         vertexCount = count;
         vertexSeen = true;
-      } else if (currentElement === 'face') {
-        faceCount = count;
+        vertexDataStartsAtBody = recordsBeforeVertex === 0;
+      } else {
+        if (!vertexSeen && Number.isFinite(count) && count > 0) {
+          recordsBeforeVertex += count;
+        }
+        if (currentElement === 'face') {
+          faceCount = count;
+        }
       }
     } else if (tokens[0] === 'property' && currentElement === 'vertex') {
       if (tokens[1] === 'list') {
@@ -162,6 +171,7 @@ export function parseProgressivePlyHeader(bytes: Uint8Array): ProgressivePlyHead
     vertexCount,
     faceCount,
     vertexStride,
+    vertexDataStartsAtBody,
     properties,
     hasColors,
     hasNormals,
