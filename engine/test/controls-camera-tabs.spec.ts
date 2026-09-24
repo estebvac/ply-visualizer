@@ -45,6 +45,10 @@ test('Phase 4: controls tab, camera tab, and stats render and respond', async ({
   const opencvBtn = page.locator('#opencv-convention');
   await opencvBtn.click();
   await expect(opencvBtn).toHaveClass(/active/);
+  const orbitUp = await page.evaluate(() => (window as any).visualizer.camera.up.toArray());
+  expect(orbitUp[0]).toBeCloseTo(0, 8);
+  expect(orbitUp[1]).toBeCloseTo(0, 8);
+  expect(orbitUp[2]).toBeCloseTo(1, 8);
 
   // Switch to Camera tab
   await page.click('[data-tab="camera"]');
