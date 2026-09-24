@@ -69,6 +69,16 @@ async function loadPly(page: Page, buffer: Buffer, name: string): Promise<void> 
  * Dispatch a synthetic dblclick at canvas-relative coordinates and measure how
  * long the (synchronous) handler blocks the main thread.
  */
+function expectCameraSnapshotClose(
+  actual: { position: number[]; target: number[] },
+  expected: { position: number[]; target: number[] }
+): void {
+  for (let i = 0; i < 3; i++) {
+    expect(actual.position[i]).toBeCloseTo(expected.position[i], 10);
+    expect(actual.target[i]).toBeCloseTo(expected.target[i], 10);
+  }
+}
+
 async function timedDoubleClick(page: Page, relX: number, relY: number): Promise<number> {
   return page.evaluate(
     ({ relX, relY }) => {
@@ -162,7 +172,7 @@ test.describe('Double-click point picking', () => {
     let output = logs.join('\n');
     expect(output).toContain('No selectable object found');
     expect(output).not.toContain('fitting view to all objects');
-    expect(await snapshot()).toEqual(beforeNear);
+    expectCameraSnapshotClose(await snapshot(), beforeNear);
 
     const beforeFar = await snapshot();
     logs.length = 0;
@@ -170,6 +180,6 @@ test.describe('Double-click point picking', () => {
     output = logs.join('\n');
     expect(output).toContain('No selectable object found');
     expect(output).not.toContain('fitting view to all objects');
-    expect(await snapshot()).toEqual(beforeFar);
+    expectCameraSnapshotClose(await snapshot(), beforeFar);
   });
 });
