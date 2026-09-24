@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 test('verified Orbit/ViewCube baseline renders and snaps around the current target', async ({ page }) => {
-  await page.goto('/3d-visualizer/');
+  await page.goto('/');
   await page.waitForSelector('#three-canvas');
   await page.waitForFunction(() => Boolean((window as any).visualizer?.controls));
 
@@ -68,7 +68,7 @@ test('verified Orbit/ViewCube baseline renders and snaps around the current targ
 
 
 test('standard LMB orbit keeps the current pivot and distance', async ({ page }) => {
-  await page.goto('/3d-visualizer/');
+  await page.goto('/');
   await page.waitForSelector('#three-canvas');
   await page.waitForFunction(() => Boolean((window as any).visualizer?.controls));
 
