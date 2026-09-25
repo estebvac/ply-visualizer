@@ -173,6 +173,7 @@ suite('Point Cloud Editor Provider Advanced Test Suite', () => {
       getShortPath: (value: string) => path.basename(value),
       logPerf: () => undefined,
       setLoadStartedAt: () => undefined,
+      tryOpenProgressivePly: async () => false,
       tryAutoLoadMtl: async () => undefined,
     };
     const webviewPanel = {
@@ -234,6 +235,7 @@ suite('Point Cloud Editor Provider Advanced Test Suite', () => {
       logPerf: () => undefined,
       setLoadStartedAt: () => undefined,
       retainVolumeSession: (_panel: vscode.WebviewPanel, key: string) => retained.push(key),
+      tryOpenProgressivePly: async () => false,
       tryAutoLoadMtl: async () => undefined,
     };
     const webviewPanel = {
