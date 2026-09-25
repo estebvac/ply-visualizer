@@ -160,6 +160,55 @@ suite('Point Cloud Editor Provider Advanced Test Suite', () => {
     );
   });
 
+  test('Should route added PLY files through progressive loading before any legacy read', async () => {
+    const fileName = `progressive-add-${process.pid}-${Date.now()}.ply`;
+    const filePath = path.join(os.tmpdir(), fileName);
+    const messages: any[] = [];
+    const progressiveCalls: any[] = [];
+    const host = {
+      getShortPath: (value: string) => path.basename(value),
+      logPerf: () => undefined,
+      setLoadStartedAt: () => undefined,
+      tryOpenProgressivePly: async (
+        documentUri: vscode.Uri,
+        _panel: vscode.WebviewPanel,
+        metadata: any
+      ) => {
+        progressiveCalls.push({ documentUri, metadata });
+        return true;
+      },
+      tryAutoLoadMtl: async () => undefined,
+    };
+    const webviewPanel = {
+      webview: {
+        postMessage: async (message: any) => {
+          messages.push(message);
+          return true;
+        },
+      },
+    } as unknown as vscode.WebviewPanel;
+
+    // Deliberately do not create the file. If handleAddFileFromPath performs
+    // any legacy full-file read before the progressive hook, this call would
+    // fail on ENOENT instead of being handled by the hook.
+    await handleAddFileFromPath(host, webviewPanel, filePath);
+
+    assert.strictEqual(progressiveCalls.length, 1);
+    assert.strictEqual(progressiveCalls[0].documentUri.fsPath, filePath);
+    assert.strictEqual(progressiveCalls[0].metadata.fileName, fileName);
+    assert.strictEqual(progressiveCalls[0].metadata.shortPath, fileName);
+    assert.strictEqual(progressiveCalls[0].metadata.isAddFile, true);
+    assert.ok(
+      messages.some(message => message.type === 'startLoading' && message.fileName === fileName)
+    );
+    assert.ok(
+      !messages.some(message =>
+        ['ultimateRawBinaryData', 'binarySpatialData', 'multiSpatialData'].includes(message.type)
+      ),
+      'legacy full-file transfer must not run after progressive routing accepts the PLY'
+    );
+  });
+
   test('Should add a KITTI BIN file to an existing scene', async () => {
     const fileName = `add-kitti-test-${process.pid}-${Date.now()}.bin`;
     const filePath = path.join(os.tmpdir(), fileName);
