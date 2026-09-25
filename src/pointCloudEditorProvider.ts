@@ -65,6 +65,8 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
     retainVolumeSession: (webviewPanel, key) => {
       this.panelVolumeSessions.get(webviewPanel)?.add(key);
     },
+    tryOpenProgressivePly: (documentUri, panel, metadata) =>
+      this.progressivePlyService.maybeOpen(documentUri, panel, metadata),
     tryAutoLoadMtl: (webviewPanel, objUri, parsedObjData, fileIndex) =>
       this.tryAutoLoadMtl(webviewPanel, objUri, parsedObjData, fileIndex),
   };
