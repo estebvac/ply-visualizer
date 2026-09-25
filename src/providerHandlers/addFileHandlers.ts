@@ -42,7 +42,7 @@ export interface AddFileHost {
   logPerf(line: string): void;
   setLoadStartedAt(ts: number): void;
   retainVolumeSession?(webviewPanel: vscode.WebviewPanel, key: string): void;
-  tryOpenProgressivePly?(
+  tryOpenProgressivePly(
     documentUri: vscode.Uri,
     panel: vscode.WebviewPanel,
     metadata: { fileName: string; shortPath: string; loadStartedAt: number; isAddFile?: boolean }
@@ -225,7 +225,7 @@ export async function handleAddFile(
         // streamed progressively; only normal-size files take the legacy full-read path.
         if (fileExtension === '.ply') {
           if (
-            await host.tryOpenProgressivePly?.(files[i], webviewPanel, {
+            await host.tryOpenProgressivePly(files[i], webviewPanel, {
               fileName,
               shortPath,
               loadStartedAt,
