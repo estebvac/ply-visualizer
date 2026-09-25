@@ -208,3 +208,226 @@ test('progressive PLY manager bounds point residency and request bursts', async 
     }
   }
 });
+
+
+test('progressive PLY refinement rebuilds voxels and drops fine tiles when hidden', async () => {
+  const originalWindow = (globalThis as any).window;
+  Object.defineProperty(globalThis, 'window', {
+    value: globalThis,
+    configurable: true,
+  });
+
+  const messages: any[] = [];
+  const spatialFiles: any[] = [];
+  const meshes: THREE.Object3D[] = [];
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 10_000);
+  camera.position.set(0, -10, 5);
+  camera.lookAt(0, 0, 0);
+  camera.updateMatrixWorld(true);
+
+  const host: any = {
+    spatialFiles,
+    meshes,
+    camera,
+    renderer: { domElement: { clientHeight: 720 } },
+    vscode: { postMessage: (message: any) => messages.push(message) },
+    scene,
+    voxelObjects: [],
+    voxelsVisible: [],
+    voxelSizes: [],
+    individualColorModes: [],
+    displayFiles: async (items: any[]) => {
+      for (const data of items) {
+        spatialFiles.push(data);
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(data.positionsArray, 3));
+        const points = new THREE.Points(
+          geometry,
+          new THREE.PointsMaterial({ vertexColors: true })
+        );
+        meshes.push(points);
+        scene.add(points);
+      }
+    },
+    addNewFiles: (items: any[]) => {
+      for (const data of items) {
+        spatialFiles.push(data);
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(data.positionsArray, 3));
+        const points = new THREE.Points(
+          geometry,
+          new THREE.PointsMaterial({ vertexColors: true })
+        );
+        meshes.push(points);
+        scene.add(points);
+      }
+    },
+    onFileColorModeChange: (fileIndex: number) => {
+      const data = spatialFiles[fileIndex];
+      const mesh = meshes[fileIndex] as THREE.Points;
+      if (data.colorsArray) {
+        mesh.geometry.setAttribute(
+          'color',
+          new THREE.BufferAttribute(data.colorsArray, 3, true)
+        );
+      }
+    },
+    requestRender: () => undefined,
+    showError: () => undefined,
+  };
+
+  try {
+    const manager = new ProgressivePlyManager(host);
+    await manager.handleMessage({
+      type: 'progressivePly:start',
+      sessionId: 'hidden',
+      fileName: 'hidden.ply',
+      shortPath: 'remote/hidden.ply',
+      fileSizeInBytes: 1_000_000_000,
+      sourcePointCount: 50_000_000,
+      format: 'binary_little_endian',
+      hasColors: true,
+      hasNormals: false,
+      hasIntensity: false,
+      scalarFieldNames: [],
+      localMemoryBudgetMiB: 64,
+      pointBudget: 1_000_000,
+    });
+
+    await manager.handleMessage({
+      type: 'progressivePly:preview',
+      sessionId: 'hidden',
+      payload: {
+        count: 4,
+        positions: new Float32Array([
+          0, 0, 0,
+          1, 0, 0,
+          0, 1, 0,
+          0, 0, 1,
+        ]),
+        colors: new Uint8Array([
+          255, 0, 0,
+          0, 255, 0,
+          0, 0, 255,
+          255, 255, 0,
+        ]),
+        normals: null,
+        intensity: null,
+        scalarFields: {},
+        sourceOrigin: [0, 0, 0],
+      },
+    });
+
+    const session = (manager as any).sessions.get('hidden');
+    session.manifest = {
+      sourceOrigin: [0, 0, 0],
+      bounds: [-1, -1, -1, 1, 1, 1],
+      tilePoints: 200_000,
+      hasColors: true,
+      hasNormals: false,
+      hasIntensity: false,
+      scalarFieldNames: [],
+      nodes: {
+        '': {
+          id: '',
+          level: 0,
+          bounds: [-1, -1, -1, 1, 1, 1],
+          sourceCount: 50_000_000,
+          sampleCount: 3,
+          children: ['0'],
+          leafPageCount: 0,
+        },
+        '0': {
+          id: '0',
+          level: 1,
+          bounds: [-1, -1, -1, 0, 0, 0],
+          sourceCount: 200_000,
+          sampleCount: 3,
+          children: [],
+          leafPageCount: 1,
+        },
+      },
+    };
+
+    host.voxelsVisible[0] = true;
+    host.voxelSizes[0] = 0.25;
+    session.selected = ['node:'];
+    session.generation = 1;
+
+    await manager.handleMessage({
+      type: 'progressivePly:tile',
+      sessionId: 'hidden',
+      generation: 1,
+      tileId: 'node:',
+      payload: {
+        count: 3,
+        positions: new Float32Array([
+          -0.5, 0, 0,
+          0.5, 0, 0,
+          0, 0.5, 0,
+        ]),
+        colors: new Uint8Array([
+          255, 0, 0,
+          0, 255, 0,
+          0, 0, 255,
+        ]),
+        normals: null,
+        intensity: null,
+        scalarFields: {},
+        sourceOrigin: [0, 0, 0],
+      },
+    });
+
+    expect((meshes[0] as THREE.Points).geometry.getAttribute('position').count).toBe(3);
+    expect(host.voxelObjects[0]).toBeInstanceOf(THREE.InstancedMesh);
+    expect(host.voxelObjects[0].count).toBe(3);
+
+    const root = session.tileCache.get('node:');
+    expect(root).toBeTruthy();
+    session.tileCache.set('node:0', {
+      payload: root.payload,
+      bytes: 24 * 1024 * 1024,
+      lastUsed: 1,
+    });
+    session.tileCache.set('leaf:0:0', {
+      payload: root.payload,
+      bytes: 24 * 1024 * 1024,
+      lastUsed: 2,
+    });
+    session.selected = ['node:'];
+    (manager as any).evictTiles(session);
+    expect(session.tileCache.has('node:')).toBe(true);
+    expect(session.tileCache.size).toBeLessThan(3);
+
+    session.tileCache.set('node:0', {
+      payload: root.payload,
+      bytes: 1024,
+      lastUsed: 3,
+    });
+    session.selected = ['node:0'];
+    messages.length = 0;
+    await manager.handleMessage({
+      type: 'progressivePly:panelVisibility',
+      visible: false,
+    });
+
+    expect(session.selected).toEqual(['node:']);
+    expect([...session.tileCache.keys()]).toEqual(['node:']);
+    expect(host.voxelObjects[0].count).toBe(3);
+    expect(messages.some(message =>
+      message.type === 'progressivePly:requestTiles' && message.tileIds.length === 0
+    )).toBe(true);
+
+    manager.dispose();
+  } finally {
+    if (originalWindow === undefined) {
+      delete (globalThis as any).window;
+    } else {
+      Object.defineProperty(globalThis, 'window', {
+        value: originalWindow,
+        configurable: true,
+      });
+    }
+  }
+});
