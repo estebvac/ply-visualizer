@@ -730,18 +730,10 @@
               "items": {
                 "maxItems": 3,
                 "minItems": 3,
-                "prefixItems": [
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "number"
-                  }
-                ],
-                "type": "array"
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
               },
               "maxItems": 20000,
               "minItems": 1,
@@ -754,18 +746,10 @@
                   "items": {
                     "maxItems": 3,
                     "minItems": 3,
-                    "prefixItems": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "number"
-                      }
-                    ],
-                    "type": "array"
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
                   },
                   "maxItems": 20000,
                   "minItems": 1,
@@ -784,18 +768,10 @@
                   "items": {
                     "maxItems": 3,
                     "minItems": 3,
-                    "prefixItems": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "number"
-                      }
-                    ],
-                    "type": "array"
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
                   },
                   "maxItems": 20000,
                   "minItems": 1,
@@ -814,18 +790,10 @@
                   "items": {
                     "maxItems": 3,
                     "minItems": 3,
-                    "prefixItems": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "number"
-                      }
-                    ],
-                    "type": "array"
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
                   },
                   "maxItems": 20000,
                   "minItems": 1,
@@ -934,18 +902,10 @@
               "items": {
                 "maxItems": 3,
                 "minItems": 3,
-                "prefixItems": [
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "number"
-                  },
-                  {
-                    "type": "number"
-                  }
-                ],
-                "type": "array"
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
               },
               "maxItems": 20000,
               "minItems": 1,
@@ -958,18 +918,10 @@
                   "items": {
                     "maxItems": 3,
                     "minItems": 3,
-                    "prefixItems": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "number"
-                      }
-                    ],
-                    "type": "array"
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
                   },
                   "maxItems": 20000,
                   "minItems": 1,
@@ -988,18 +940,10 @@
                   "items": {
                     "maxItems": 3,
                     "minItems": 3,
-                    "prefixItems": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "number"
-                      }
-                    ],
-                    "type": "array"
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
                   },
                   "maxItems": 20000,
                   "minItems": 1,
@@ -1018,18 +962,10 @@
                   "items": {
                     "maxItems": 3,
                     "minItems": 3,
-                    "prefixItems": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "number"
-                      }
-                    ],
-                    "type": "array"
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
                   },
                   "maxItems": 20000,
                   "minItems": 1,
@@ -1128,18 +1064,10 @@
                 {
                   "maxItems": 3,
                   "minItems": 3,
-                  "prefixItems": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    }
-                  ],
-                  "type": "array"
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
                 },
                 {
                   "type": "null"
@@ -1153,18 +1081,10 @@
                 {
                   "maxItems": 3,
                   "minItems": 3,
-                  "prefixItems": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    }
-                  ],
-                  "type": "array"
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
                 },
                 {
                   "type": "null"
@@ -1178,18 +1098,10 @@
                 {
                   "maxItems": 3,
                   "minItems": 3,
-                  "prefixItems": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    }
-                  ],
-                  "type": "array"
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
                 },
                 {
                   "type": "null"
@@ -1203,18 +1115,10 @@
                 {
                   "maxItems": 3,
                   "minItems": 3,
-                  "prefixItems": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    }
-                  ],
-                  "type": "array"
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
                 },
                 {
                   "type": "null"
@@ -1355,18 +1259,10 @@
                 {
                   "maxItems": 3,
                   "minItems": 3,
-                  "prefixItems": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    }
-                  ],
-                  "type": "array"
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
                 },
                 {
                   "type": "null"
@@ -1380,19 +1276,12 @@
                 {
                   "maxItems": 2,
                   "minItems": 2,
-                  "prefixItems": [
-                    {
-                      "maximum": 1,
-                      "minimum": 0,
-                      "type": "number"
-                    },
-                    {
-                      "maximum": 1,
-                      "minimum": 0,
-                      "type": "number"
-                    }
-                  ],
-                  "type": "array"
+                  "type": "array",
+                  "items": {
+                    "maximum": 1,
+                    "minimum": 0,
+                    "type": "number"
+                  }
                 },
                 {
                   "type": "null"
@@ -1748,18 +1637,10 @@
                 {
                   "maxItems": 3,
                   "minItems": 3,
-                  "prefixItems": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    }
-                  ],
-                  "type": "array"
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
                 },
                 {
                   "type": "null"
@@ -1785,21 +1666,10 @@
                 {
                   "maxItems": 4,
                   "minItems": 4,
-                  "prefixItems": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    }
-                  ],
-                  "type": "array"
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
                 },
                 {
                   "type": "null"
@@ -1848,18 +1718,10 @@
                 {
                   "maxItems": 3,
                   "minItems": 3,
-                  "prefixItems": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    }
-                  ],
-                  "type": "array"
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
                 },
                 {
                   "type": "null"
@@ -1919,18 +1781,10 @@
                 {
                   "maxItems": 3,
                   "minItems": 3,
-                  "prefixItems": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    }
-                  ],
-                  "type": "array"
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
                 },
                 {
                   "type": "null"
@@ -1944,18 +1798,10 @@
                 {
                   "maxItems": 3,
                   "minItems": 3,
-                  "prefixItems": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    }
-                  ],
-                  "type": "array"
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
                 },
                 {
                   "type": "null"
@@ -2200,18 +2046,10 @@
                   "items": {
                     "maxItems": 3,
                     "minItems": 3,
-                    "prefixItems": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "number"
-                      }
-                    ],
-                    "type": "array"
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
                   },
                   "maxItems": 256,
                   "minItems": 3,
@@ -2230,18 +2068,10 @@
                   "items": {
                     "maxItems": 3,
                     "minItems": 3,
-                    "prefixItems": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "number"
-                      }
-                    ],
-                    "type": "array"
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    }
                   },
                   "maxItems": 256,
                   "minItems": 3,
@@ -2290,20 +2120,13 @@
             "screen": {
               "maxItems": 2,
               "minItems": 2,
-              "prefixItems": [
-                {
-                  "maximum": 1,
-                  "minimum": 0,
-                  "type": "number"
-                },
-                {
-                  "maximum": 1,
-                  "minimum": 0,
-                  "type": "number"
-                }
-              ],
               "title": "Screen",
-              "type": "array"
+              "type": "array",
+              "items": {
+                "maximum": 1,
+                "minimum": 0,
+                "type": "number"
+              }
             },
             "detail": {
               "default": "summary",
@@ -2443,27 +2266,10 @@
                 {
                   "maxItems": 6,
                   "minItems": 6,
-                  "prefixItems": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    }
-                  ],
-                  "type": "array"
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
                 },
                 {
                   "type": "null"
@@ -2477,21 +2283,10 @@
                 {
                   "maxItems": 4,
                   "minItems": 4,
-                  "prefixItems": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "number"
-                    }
-                  ],
-                  "type": "array"
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
                 },
                 {
                   "type": "null"
@@ -2907,7 +2702,8 @@
     "desktop:build": "npm run build --workspace=visualizer-desktop --",
     "desktop:check": "npm run check --workspace=visualizer-desktop",
     "desktop:test": "npm run test --workspace=visualizer-desktop",
-    "test:vscode-agent": "npm run compile:all && node scripts/test-vscode-agent.cjs"
+    "test:vscode-agent": "npm run compile:all && node scripts/test-vscode-agent.cjs",
+    "check:vscode-tool-schemas": "node scripts/check-vscode-tool-schemas.cjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
