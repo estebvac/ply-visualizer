@@ -41,6 +41,9 @@ jobs:
       - name: Unit tests (no VS Code)
         run: npm run test:node
 
+      - name: Validate VS Code/Copilot tool schemas
+        run: npm run check:vscode-tool-schemas
+
       # Guards the packaging path, which is otherwise only exercised at release
       # time, and surfaces the VSIX size in the log so growth is visible.
       - name: Package VSIX
