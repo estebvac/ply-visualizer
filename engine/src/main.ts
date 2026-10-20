@@ -2471,286 +2471,342 @@ export class PointCloudVisualizer {
 
   private disposeMessageHandler: () => void = () => {};
 
-      try {
-        if (await this.progressivePlyManager.handleMessage(message)) {
+  private setupMessageHandler(): void {
+    // Progressive tile messages are intentionally handled before the fork's
+    // typed viewer router. The router safely ignores extension-specific
+    // progressivePly:* messages; their binary payload has its own validation.
+    const progressiveListener = (event: MessageEvent) => {
+      const message = event.data;
+      if (message && typeof message.type === 'string' && message.type.startsWith('progressivePly:')) {
+        void this.progressivePlyManager.handleMessage(message).catch(error =>
+          this.showError('Progressive PLY message failed: ' + String(error))
+        );
+      }
+    };
+    window.addEventListener('message', progressiveListener);
+    const disposeRoutedMessages = listenForViewerMessages(
+      this.fileEntries,
+      {
+        nativeAgentRequest: async message => {
+          await handleNativeAgentRequest(this, message);
+        },
+        registrationResult: async message => {
+          handleRegistrationExtensionResult(message);
           return;
-        }
-        switch (message.type) {
-          case 'nativeAgentRequest':
-            await handleNativeAgentRequest(this, message);
-            break;
-          case 'registrationResult':
-            handleRegistrationExtensionResult(message);
-            break;
           // Benchmark harness only (scripts/benchmark-vscode.mjs): runs one
           // scripted step of the load → align → recolour scenario. See
           // benchmarkScenario.ts for why this seam exists.
-          case 'benchmarkScenario':
-            await runBenchmarkScenario(this, message.step, message.anchorIndex ?? 0);
-            break;
-          case 'timing':
-            this.handleTimingMessage(message);
-            break;
-          case 'startLoading':
-            this.showImmediateLoading(message);
-            break;
-          case 'backgroundOperationComplete':
-            this.completeBackgroundOperation();
-            break;
-          case 'timingUpdate':
-            // Allow timing updates, suppress other spam
-            if (
-              typeof message.message === 'string' &&
-              message.message.includes('🧪 Header face types')
-            ) {
-              console.log(message.message);
+        },
+        benchmarkScenario: async message => {
+          await runBenchmarkScenario(this, message.step, message.anchorIndex ?? 0);
+        },
+        viewVisibility: async message => {
+          this.gpuResidency?.setHidden(!message.visible);
+        },
+        timing: async message => {
+          this.handleTimingMessage(message);
+        },
+        startLoading: async message => {
+          this.showImmediateLoading(message);
+        },
+        backgroundOperationComplete: async message => {
+          this.completeBackgroundOperation();
+        },
+        timingUpdate: async message => {
+          // Allow timing updates, suppress other spam
+          if (
+            typeof message.message === 'string' &&
+            message.message.includes('🧪 Header face types')
+          ) {
+            console.log(message.message);
+          }
+        },
+        loadingError: async message => {
+          const fileType = message.fileType || 'point cloud';
+          const fileName = message.fileName ? ` (${message.fileName})` : '';
+          this.showError(`Failed to load ${fileType} file${fileName}: ${message.error}`);
+        },
+        stonexColorReady: async message => {
+          stationPipelineFeature.applyLoadTimeColors(this, message.updates ?? []);
+        },
+        stationPipelineProgress: async message => {
+          stationPipelineFeature.reportStationPipelineProgress(message.message);
+        },
+        stationPipelineResult: async message => {
+          stationPipelineFeature.handleStationPipelineResult(this, message);
+        },
+        spatialData: async message => {
+          try {
+            // Both single and multi-file data are handled the same way now
+            const dataArray = Array.isArray(message.data) ? message.data : [message.data];
+            await this.loadWithPerf('ply', message, () => this.displayFiles(dataArray));
+          } catch (error) {
+            console.error('Error displaying PLY data:', error);
+            this.showError(
+              'Failed to display PLY data: ' +
+                (error instanceof Error ? error.message : String(error))
+            );
+          }
+        },
+        multiSpatialData: async message => {
+          try {
+            // Both single and multi-file data are handled the same way now
+            const dataArray = Array.isArray(message.data) ? message.data : [message.data];
+            await this.loadWithPerf('ply', message, () => this.displayFiles(dataArray));
+          } catch (error) {
+            console.error('Error displaying PLY data:', error);
+            this.showError(
+              'Failed to display PLY data: ' +
+                (error instanceof Error ? error.message : String(error))
+            );
+          }
+        },
+        sceneModelData: async message => {
+          await this.loadWithPerf('model', message, () => handleSceneModelMessage(this, message));
+        },
+        modelResourceResult: async message => {},
+        cadDecodeResult: async message => {},
+        splatContainerUri: async message => {
+          await handleSplatContainerUri(this, message);
+        },
+        ultimateRawBinaryData: async message => {
+          try {
+            await this.handleUltimateRawBinaryData(message);
+          } catch (error) {
+            console.error('Error handling ultimate raw binary data:', error);
+            this.showError(
+              'Failed to handle ultimate raw binary data: ' +
+                (error instanceof Error ? error.message : String(error))
+            );
+          }
+        },
+        ultimateRawBinaryUri: async message => {
+          await this.handleUltimateRawBinaryUri(message);
+        },
+        directTypedArrayData: async message => {
+          try {
+            await this.loadWithPerf('ply', message, () => this.handleDirectTypedArrayData(message));
+          } catch (error) {
+            console.error('Error handling direct TypedArray data:', error);
+            this.showError(
+              'Failed to handle direct TypedArray data: ' +
+                (error instanceof Error ? error.message : String(error))
+            );
+          }
+        },
+        binarySpatialData: async message => {
+          try {
+            await this.loadWithPerf('ply', message, () => this.handleBinarySpatialData(message));
+            stationPipelineFeature.flushPendingLoadTimeColors(this);
+          } catch (error) {
+            console.error('Error handling binary PLY data:', error);
+            this.showError(
+              'Failed to handle binary PLY data: ' +
+                (error instanceof Error ? error.message : String(error))
+            );
+          }
+        },
+        addFiles: async message => {
+          try {
+            this.addNewFiles(message.data);
+          } catch (error) {
+            console.error('Error adding new files:', error);
+            this.showError(
+              'Failed to add files: ' + (error instanceof Error ? error.message : String(error))
+            );
+          }
+        },
+        'sequence:init': async message => {
+          try {
+            this.initializeSequence(message.files as string[], message.wildcard as string);
+          } catch (error) {
+            console.error('Error starting sequence:', error);
+            this.showError(
+              'Failed to start sequence: ' +
+                (error instanceof Error ? error.message : String(error))
+            );
+          }
+        },
+        'sequence:file': message => sequencePlayback.handleSequenceFile(this, message),
+        'sequence:file:error': message => sequencePlayback.handleSequenceError(this, message),
+        fileRemoved: async message => {
+          try {
+            const spatialIndex =
+              this.fileEntries.kindAt(message.fileIndex) === 'spatial'
+                ? this.fileEntries.kindIndexAt(message.fileIndex)
+                : -1;
+            const progressiveSessionId =
+              spatialIndex >= 0
+                ? this.spatialFiles[spatialIndex]?.metadata?.progressivePlySessionId
+                : undefined;
+            if (typeof progressiveSessionId === 'string') {
+              this.progressivePlyManager.removeSession(progressiveSessionId);
             }
-            break;
-          case 'loadingError':
-            const fileType = message.fileType || 'point cloud';
-            const fileName = message.fileName ? ` (${message.fileName})` : '';
-            this.showError(`Failed to load ${fileType} file${fileName}: ${message.error}`);
-            break;
-          case 'stonexColorReady':
-            stationPipelineFeature.applyLoadTimeColors(this, message.updates ?? []);
-            break;
-          case 'stationPipelineProgress':
-            stationPipelineFeature.reportStationPipelineProgress(message.message);
-            break;
-          case 'stationPipelineResult':
-            stationPipelineFeature.handleStationPipelineResult(this, message);
-            break;
-          case 'spatialData':
-          case 'multiSpatialData':
-            try {
-              // Both single and multi-file data are handled the same way now
-              const dataArray = Array.isArray(message.data) ? message.data : [message.data];
-              await this.loadWithPerf('ply', message, () => this.displayFiles(dataArray));
-            } catch (error) {
-              console.error('Error displaying PLY data:', error);
-              this.showError(
-                'Failed to display PLY data: ' +
-                  (error instanceof Error ? error.message : String(error))
-              );
-            }
-            break;
-          case 'sceneModelData':
-            await this.loadWithPerf('model', message, () => handleSceneModelMessage(this, message));
-            break;
-          case 'modelResourceResult':
-          case 'cadDecodeResult':
-            break;
-          case 'splatContainerUri':
-            await handleSplatContainerUri(this, message);
-            break;
-          case 'ultimateRawBinaryData':
-            try {
-              await this.handleUltimateRawBinaryData(message);
-            } catch (error) {
-              console.error('Error handling ultimate raw binary data:', error);
-              this.showError(
-                'Failed to handle ultimate raw binary data: ' +
-                  (error instanceof Error ? error.message : String(error))
-              );
-            }
-            break;
-          case 'ultimateRawBinaryUri':
-            await this.handleUltimateRawBinaryUri(message);
-            break;
-          case 'directTypedArrayData':
-            try {
-              await this.loadWithPerf('ply', message, () =>
-                this.handleDirectTypedArrayData(message)
-              );
-            } catch (error) {
-              console.error('Error handling direct TypedArray data:', error);
-              this.showError(
-                'Failed to handle direct TypedArray data: ' +
-                  (error instanceof Error ? error.message : String(error))
-              );
-            }
-            break;
-          case 'binarySpatialData':
-            try {
-              await this.loadWithPerf('ply', message, () => this.handleBinarySpatialData(message));
-              stationPipelineFeature.flushPendingLoadTimeColors(this);
-            } catch (error) {
-              console.error('Error handling binary PLY data:', error);
-              this.showError(
-                'Failed to handle binary PLY data: ' +
-                  (error instanceof Error ? error.message : String(error))
-              );
-            }
-            break;
-          case 'addFiles':
-            try {
-              this.addNewFiles(message.data);
-            } catch (error) {
-              console.error('Error adding new files:', error);
-              this.showError(
-                'Failed to add files: ' + (error instanceof Error ? error.message : String(error))
-              );
-            }
-            break;
-          case 'sequence:init':
-            try {
-              this.initializeSequence(message.files as string[], message.wildcard as string);
-            } catch (error) {
-              console.error('Error starting sequence:', error);
-              this.showError(
-                'Failed to start sequence: ' +
-                  (error instanceof Error ? error.message : String(error))
-              );
-            }
-            break;
-          case 'sequence:file:ultimate':
-            await this.sequenceHandleUltimate(message);
-            break;
-          case 'sequence:file:ply':
-            await this.sequenceHandlePly(message);
-            break;
-          case 'sequence:file:xyz':
-            await this.sequenceHandleXyz(message);
-            break;
-          case 'sequence:file:obj':
-            await this.sequenceHandleObj(message);
-            break;
-          case 'sequence:file:stl':
-            await this.sequenceHandleStl(message);
-            break;
-          case 'sequence:file:depth':
-            await this.sequenceHandleDepth(message);
-            break;
-          case 'fileRemoved':
-            try {
-              const spatialIndex =
-                this.fileEntries.kindAt(message.fileIndex) === 'spatial'
-                  ? this.fileEntries.kindIndexAt(message.fileIndex)
-                  : -1;
-              const progressiveSessionId =
-                spatialIndex >= 0
-                  ? this.spatialFiles[spatialIndex]?.metadata?.progressivePlySessionId
-                  : undefined;
-              if (typeof progressiveSessionId === 'string') {
-                this.progressivePlyManager.removeSession(progressiveSessionId);
-              }
-              this.removeFileByIndex(message.fileIndex);
-            } catch (error) {
-              console.error('Error removing file:', error);
-              this.showError(
-                'Failed to remove file: ' + (error instanceof Error ? error.message : String(error))
-              );
-            }
-            break;
-          case 'startLargeFile':
-            this.handleStartLargeFile(message);
-            break;
-          case 'largeFileChunk':
-            this.handleLargeFileChunk(message);
-            break;
-          case 'largeFileComplete':
-            await this.handleLargeFileComplete(message);
-            break;
-          case 'cancelLargeFile':
-            largeFileChunking.handleCancelLargeFile(this, message);
-            break;
-          case 'depthData':
-            this.handleDepthData(message);
-            break;
-          case 'objData':
-            await this.loadWithPerf('obj', message, () => this.handleObjData(message));
-            break;
-          case 'stlData':
-            await this.loadWithPerf('stl', message, () => this.handleStlData(message));
-            break;
-          case 'xyzData':
-            await this.loadWithPerf('xyz', message, () => this.handleXyzData(message));
-            break;
-          case 'pcdData':
-            await this.loadWithPerf('pcd', message, () => this.handlePcdData(message));
-            break;
-          case 'ptsData':
-            await this.loadWithPerf('pts', message, () => this.handlePtsData(message));
-            break;
-          case 'kittiBinData':
-            await this.loadWithPerf('kitti-bin', message, () => this.handleKittiBinData(message));
-            break;
-          case 'offData':
-            await this.loadWithPerf('off', message, () => this.handleOffData(message));
-            break;
-          case 'gltfData':
-            await this.loadWithPerf('gltf', message, () => this.handleGltfData(message));
-            break;
-          case 'volumeData':
-            if (!acceptVolumeResponse(message.data?.metadata?.volumeSessionId, message.requestId)) {
-              break;
-            }
-            updateVolumeProgress(message.data?.metadata?.volumeSessionId, message.requestId, 1);
-            await this.loadWithPerf('volume', message, () => this.handleVolumeData(message));
-            break;
-          case 'volume:progress':
-            updateVolumeProgress(message.sessionId, message.requestId, message.fraction);
-            break;
-          case 'volume:error':
-            setVolumeError(message.sessionId, message.requestId, message.error);
-            break;
-          case 'colmapModelFiles':
-            await this.loadWithPerf('colmap', message, () => this.handleColmapModelFiles(message));
-            break;
-          case 'colmapImages':
-            await this.handleColmapImages(message);
-            break;
-          case 'npyData':
-            await this.loadWithPerf('npy', message, () => this.handleNpyData(message));
-            break;
-          case 'xyzVariantData':
-            await this.loadWithPerf('xyz', message, () => this.handleXyzVariantData(message));
-            break;
-          case 'cameraParams':
-            this.handleCameraParams(message);
-            break;
-          case 'cameraParamsCancelled':
-            this.handleCameraParamsCancelled(message.requestId);
-            break;
-          case 'datasetTexture':
-            this.handleDatasetTexture(message);
-            break;
-          case 'cameraParamsError':
-            this.handleCameraParamsError(message.error, message.requestId);
-            break;
-          case 'savePlyFileResult':
-            this.handleSaveSpatialFileResult(message);
-            break;
-          case 'colorImageData':
-            this.handleColorImageData(message);
-            break;
-          case 'defaultDepthSettings':
-            this.handleDefaultDepthSettings(message);
-            break;
-          case 'mtlData':
-            this.handleMtlData(message);
-            break;
-          case 'calibrationFileSelected':
-            this.handleCalibrationFileSelected(message);
-            break;
-          case 'poseData':
-            try {
-              await (this as any).handlePoseData(message);
-            } catch (error) {
-              console.error('Error handling pose data:', error);
-              this.showError(
-                'Failed to handle pose data: ' +
-                  (error instanceof Error ? error.message : String(error))
-              );
-            }
-            break;
-        }
-      } finally {
-        if (tracksBackgroundChange) {
-          uiState.backgroundChanges = Math.max(0, uiState.backgroundChanges - 1);
-        }
-      }
-    });
+            this.removeFileByIndex(message.fileIndex);
+          } catch (error) {
+            console.error('Error removing file:', error);
+            this.showError(
+              'Failed to remove file: ' + (error instanceof Error ? error.message : String(error))
+            );
+          }
+        },
+        startLargeFile: async message => {
+          this.handleStartLargeFile(message);
+        },
+        largeFileChunk: async message => {
+          this.handleLargeFileChunk(message);
+        },
+        largeFileComplete: async message => {
+          await this.handleLargeFileComplete(message);
+        },
+        cancelLargeFile: async message => {
+          largeFileChunking.handleCancelLargeFile(this, message);
+        },
+        depthData: async message => {
+          this.handleDepthData(message);
+        },
+        objData: async message => {
+          await this.loadWithPerf('obj', message, () => this.handleObjData(message));
+        },
+        stlData: async message => {
+          await this.loadWithPerf('stl', message, () => this.handleStlData(message));
+        },
+        xyzData: async message => {
+          await this.loadWithPerf('xyz', message, () => this.handleXyzData(message));
+        },
+        pcdData: async message => {
+          await this.loadWithPerf('pcd', message, () => this.handlePcdData(message));
+        },
+        ptsData: async message => {
+          await this.loadWithPerf('pts', message, () =>
+            formatDataHandlers.handlePointData(this, message)
+          );
+        },
+        kittiBinData: async message => {
+          await this.loadWithPerf('kitti-bin', message, () =>
+            formatDataHandlers.handlePointData(this, message)
+          );
+        },
+        offData: async message => {
+          await this.loadWithPerf('off', message, () => this.handleOffData(message));
+        },
+        gltfData: async message => {
+          await this.loadWithPerf('gltf', message, () => this.handleGltfData(message));
+        },
+        volumeData: async message => {
+          if (!acceptVolumeResponse(message.data?.metadata?.volumeSessionId, message.requestId)) {
+            return;
+          }
+          updateVolumeProgress(message.data?.metadata?.volumeSessionId, message.requestId ?? 0, 1);
+          await this.loadWithPerf('volume', message, () => this.handleVolumeData(message));
+        },
+        'volume:progress': async message => {
+          updateVolumeProgress(message.sessionId, message.requestId, message.fraction);
+        },
+        'volume:error': async message => {
+          setVolumeError(message.sessionId, message.requestId, message.error);
+        },
+        colmapModelFiles: async message => {
+          await this.loadWithPerf('colmap', message, () => this.handleColmapModelFiles(message));
+        },
+        colmapImages: async message => {
+          await this.handleColmapImages(message);
+        },
+        npyData: async message => {
+          await this.loadWithPerf('npy', message, () =>
+            formatDataHandlers.handlePointData(this, message)
+          );
+        },
+        browserFiles: async message => {
+          await browserFileDragDrop.handleBrowserFiles(
+            this,
+            message.files.map(file => new File([file.data as BlobPart], file.name))
+          );
+        },
+        fileData: async message => {
+          await this.loadWithPerf('file', message, () =>
+            formatDataHandlers.handleFileData(this, message)
+          );
+        },
+        xyzVariantData: async message => {
+          await this.loadWithPerf('xyz', message, () =>
+            formatDataHandlers.handlePointData(this, message)
+          );
+        },
+        pointStreamPart: async message => {
+          addPointStreamPart(message.streamId, message as unknown as PointStreamPart);
+        },
+        pointStreamCancel: async message => {
+          cancelPointStream(message.streamId);
+        },
+        pointStreamEnd: async message => {
+          // The closing message is an ordinary xyzVariantData without its
+          // arrays; with the joined parts filled in it is validated and
+          // handled exactly like one that arrived whole.
+          const closing = message.message as { data: Record<string, unknown> };
+          const flags = closing.data;
+          const arrays = finishPointStream(message.streamId) ?? {
+            positionsArray: new Float32Array(0),
+            colorsArray: flags.hasColors ? new Uint8Array(0) : null,
+            normalsArray: flags.hasNormals ? new Float32Array(0) : null,
+            intensityArray: flags.hasIntensity ? new Float32Array(0) : null,
+          };
+          const whole = readViewerMessage({
+            ...closing,
+            type: 'xyzVariantData',
+            data: { ...closing.data, ...arrays },
+          }) as MessageOf<'xyzVariantData'>;
+          // The PERF tag names the format; PTS streams through the same route.
+          const kind = (closing as { variant?: string }).variant === 'pts' ? 'pts' : 'xyz';
+          await this.loadWithPerf(kind, whole, () =>
+            formatDataHandlers.handlePointData(this, whole)
+          );
+        },
+        cameraParams: async message => {
+          this.handleCameraParams(message);
+        },
+        cameraParamsCancelled: async message => {
+          this.handleCameraParamsCancelled(message.requestId);
+        },
+        datasetTexture: async message => {
+          this.handleDatasetTexture(message);
+        },
+        cameraParamsError: async message => {
+          this.handleCameraParamsError(message.error, message.requestId);
+        },
+        savePlyFileResult: async message => {
+          this.handleSaveSpatialFileResult(message);
+        },
+        colorImageData: async message => {
+          this.handleColorImageData(message);
+        },
+        defaultDepthSettings: async message => {
+          this.handleDefaultDepthSettings(message);
+        },
+        mtlData: async message => {
+          this.handleMtlData(message);
+        },
+        calibrationFileSelected: async message => {
+          this.handleCalibrationFileSelected(message);
+        },
+        poseData: async message => {
+          try {
+            await (this as any).handlePoseData(message);
+          } catch (error) {
+            console.error('Error handling pose data:', error);
+            this.showError(
+              'Failed to handle pose data: ' +
+                (error instanceof Error ? error.message : String(error))
+            );
+          }
+        },
+      },
+      error => this.showError(error)
+    );
+    this.disposeMessageHandler = () => {
+      window.removeEventListener('message', progressiveListener);
+      disposeRoutedMessages();
+    };
   }
 
   private currentTiming: {
