@@ -1,6 +1,7 @@
 import type { FileEntryRegistry } from './state/fileEntries';
 import * as THREE from 'three';
 import { SpatialData } from './interfaces';
+import { hasCpuNormals } from './normalsVisualizer';
 import { canVoxelizePointCloud } from './renderModeOptions';
 import { createVoxelMesh } from './visualization/VoxelRenderer';
 
