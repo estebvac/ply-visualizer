@@ -39,6 +39,16 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // NPY and NPZ can contain point clouds, depth rasters or sparse semantic occupancy.
+  // Opt-in custom editor: VS Code's Open With menu offers the viewer without
+  // overriding another default NumPy editor chosen by the user.
+  context.subscriptions.push(
+    vscode.window.registerCustomEditorProvider('plyViewer.numpyEditor', provider, {
+      webviewOptions: { retainContextWhenHidden: true },
+      supportsMultipleEditorsPerDocument: false,
+    })
+  );
+
   // Generic text extensions are opt-in so ordinary CSV/TXT editing stays unchanged.
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider('plyViewer.textTable', provider, {
@@ -52,6 +62,8 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('plyViewer.openFile', (uri: vscode.Uri) => {
       const viewType = uri.fsPath.toLowerCase().endsWith('.bin')
         ? 'plyViewer.kittiBin'
+        : /\.(npy|npz)$/i.test(uri.fsPath)
+          ? 'plyViewer.numpyEditor'
         : requiresImportOptions(uri.fsPath)
           ? 'plyViewer.textTable'
           : 'plyViewer.plyEditor';
@@ -76,10 +88,12 @@ export function activate(context: vscode.ExtensionContext) {
     )
   );
 
-  // Register command for NPY/NPZ to Point Cloud conversion
+  // Keep the existing command identifier for keybindings and saved workflows.
+  // Opening is not necessarily a conversion: semantic occupancy NPZ already
+  // carries colored 3D geometry, while depth NPZ still prompts for calibration.
   context.subscriptions.push(
     vscode.commands.registerCommand('plyViewer.convertNpyToPointCloud', async (uri: vscode.Uri) => {
-      await handleDepthToPointCloudConversion(uri, 'NPY');
+      await vscode.commands.executeCommand('vscode.openWith', uri, 'plyViewer.numpyEditor');
     })
   );
 
