@@ -8,6 +8,39 @@ from pathlib import Path
 from mcp import Client
 from viz3d.mcp_server import create_server
 
+def vscode_tool_schema(value, path='schema'):
+    """Translate MCP JSON Schema into the subset accepted by VS Code/Copilot tools."""
+    if isinstance(value, list):
+        return [vscode_tool_schema(item, f'{path}[{index}]') for index, item in enumerate(value)]
+    if not isinstance(value, dict):
+        return value
+
+    normalized = {
+        key: vscode_tool_schema(item, f'{path}.{key}')
+        for key, item in value.items()
+        if key != 'prefixItems'
+    }
+    prefix_items = value.get('prefixItems')
+    if value.get('type') == 'array':
+        if prefix_items is not None:
+            translated = [
+                vscode_tool_schema(item, f'{path}.prefixItems[{index}]')
+                for index, item in enumerate(prefix_items)
+            ]
+            if not translated:
+                raise ValueError(f'{path}: empty prefixItems cannot be translated for VS Code')
+            first = translated[0]
+            if any(item != first for item in translated[1:]):
+                raise ValueError(
+                    f'{path}: heterogeneous tuple schema cannot be represented by VS Code items'
+                )
+            if 'items' in normalized and normalized['items'] != first:
+                raise ValueError(f'{path}: prefixItems conflicts with items')
+            normalized['items'] = first
+        if 'items' not in normalized:
+            raise ValueError(f'{path}: VS Code requires every array schema to define items')
+    return normalized
+
 async def main():
     root = Path(__file__).resolve().parents[1]
     async with Client(create_server([root], tools='full')) as client:
@@ -16,7 +49,7 @@ async def main():
     for tool in tools:
         if tool.name in ('read_viewer_data', 'submit_viewer_reply'):
             continue  # MCP App transport, not viewer operations.
-        schema = tool.input_schema.copy()
+        schema = vscode_tool_schema(tool.input_schema)
         schema['properties'].pop('open_browser', None)
         schema['additionalProperties'] = False
         if 'calibration' in schema['properties']:

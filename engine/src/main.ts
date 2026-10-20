@@ -141,6 +141,7 @@ import {
 } from './cameraOrientation';
 import { configureStandardOrbitControls } from './orbitNavigation';
 import { CameraViewAnimator } from './CameraViewAnimator';
+import { ProgressivePlyManager } from './progressivePlyManager';
 import { applyFixedClipPlanes, FIXED_CAMERA_FAR, FIXED_CAMERA_NEAR } from './cameraClipping';
 import * as axesFeature from './axesFeature';
 import * as transformationMatrix from './transformationMatrix';
@@ -269,6 +270,7 @@ class PointCloudVisualizer {
     | TurntableControls
     | VirtualBallControls;
   readonly cameraViewAnimator = new CameraViewAnimator();
+  readonly progressivePlyManager: ProgressivePlyManager;
 
   // Camera control state
   controlType: 'trackball' | 'orbit' | 'legacy-trackball' | 'arcball' = 'orbit';
@@ -623,6 +625,7 @@ class PointCloudVisualizer {
   readonly fileColors: [number, number, number][] = DEFAULT_COLORS.FILE_COLORS;
 
   constructor() {
+    this.progressivePlyManager = new ProgressivePlyManager(this);
     // Forward PERF lines to the extension's "3D Visualizer" Output channel.
     if (isVSCode) {
       setPerfSink((line: string) => this.vscode.postMessage({ type: 'perfLog', line }));
@@ -1140,6 +1143,7 @@ class PointCloudVisualizer {
       this.selectionManager = null;
     }
 
+    this.progressivePlyManager.dispose();
     this.webgpuVisibilityRenderer?.dispose();
     this.webgpuVisibilityRenderer = null;
 
@@ -1309,6 +1313,7 @@ class PointCloudVisualizer {
       // Update last known position and rotation
       this.lastCameraPosition.copy(this.camera.position);
       this.lastCameraQuaternion.copy(this.camera.quaternion);
+      this.progressivePlyManager.onCameraChanged();
 
       this.needsRender = true;
     }
@@ -1326,6 +1331,7 @@ class PointCloudVisualizer {
 
       // Update last known rotation center
       this.lastRotationCenter.copy(this.controls.target);
+      this.progressivePlyManager.onCameraChanged();
 
       this.needsRender = true;
     }
@@ -2328,6 +2334,9 @@ class PointCloudVisualizer {
       }
 
       try {
+        if (await this.progressivePlyManager.handleMessage(message)) {
+          return;
+        }
         switch (message.type) {
           case 'nativeAgentRequest':
             await handleNativeAgentRequest(this, message);
@@ -2476,6 +2485,17 @@ class PointCloudVisualizer {
             break;
           case 'fileRemoved':
             try {
+              const spatialIndex =
+                this.fileEntries.kindAt(message.fileIndex) === 'spatial'
+                  ? this.fileEntries.kindIndexAt(message.fileIndex)
+                  : -1;
+              const progressiveSessionId =
+                spatialIndex >= 0
+                  ? this.spatialFiles[spatialIndex]?.metadata?.progressivePlySessionId
+                  : undefined;
+              if (typeof progressiveSessionId === 'string') {
+                this.progressivePlyManager.removeSession(progressiveSessionId);
+              }
               this.removeFileByIndex(message.fileIndex);
             } catch (error) {
               console.error('Error removing file:', error);
@@ -3234,9 +3254,18 @@ class PointCloudVisualizer {
   }
 
   private requestRemoveFile(fileIndex: number): void {
+    const spatialIndex =
+      this.fileEntries.kindAt(fileIndex) === 'spatial'
+        ? this.fileEntries.kindIndexAt(fileIndex)
+        : -1;
+    const progressivePlySessionId =
+      spatialIndex >= 0
+        ? this.spatialFiles[spatialIndex]?.metadata?.progressivePlySessionId
+        : undefined;
     this.vscode.postMessage({
       type: 'removeFile',
-      fileIndex: fileIndex,
+      fileIndex,
+      progressivePlySessionId,
     });
   }
 
