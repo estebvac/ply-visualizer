@@ -135,8 +135,8 @@
     "wasm/tiff-decoder/src/lib.rs": "65dfed711980dc5016d65cd5c6ee77d45568f2d71c12502f436931f72dc3c33e"
   },
   "outputs": {
-    "engine/media/wasm/tiff_wasm.js": "9dffa09e28a6dbd955a0ddaef80ed28c7cecf7ffe9b2a3cad58aa93fd60eb1e9",
-    "engine/media/wasm/tiff_wasm_bg.wasm": "3c0c12343894c00ce072cd645cbfca6d93b13c4cad5a410f8b262d48927de8ce",
+    "engine/media/wasm/tiff_wasm.js": "9a23d2e53a7899896d3438edb4e06336c471265ebe9b339dd00fe2f9974718a2",
+    "engine/media/wasm/tiff_wasm_bg.wasm": "332ab17301fcf87b3b898abe90c2f1da46c11adc5635c463f97473736d455aeb",
     "wasm/pointcloud-parser/pkg-web/pointcloud_parser.d.ts": "76f4c4a529581fcab9da60308b7f53f72b1a2197ec9f9467a7f786033446c6df",
     "wasm/pointcloud-parser/pkg-web/pointcloud_parser.js": "61a87ca54c8e6de430a4d8bbb04edcdd8236a5ba25a7bf719fa4829be5f7a7b9",
     "wasm/pointcloud-parser/pkg-web/pointcloud_parser_bg.wasm": "d37e74d55b01eadfc153b58a254423fcd3811f598608fd510616d92192963972",
@@ -145,9 +145,9 @@
     "wasm/pointcloud-parser/pkg/pointcloud_parser.js": "1616d7b62f7407d7581946a8f8da3fae53cb27bebb5dfda35866925153de652a",
     "wasm/pointcloud-parser/pkg/pointcloud_parser_bg.wasm": "d37e74d55b01eadfc153b58a254423fcd3811f598608fd510616d92192963972",
     "wasm/pointcloud-parser/pkg/pointcloud_parser_bg.wasm.d.ts": "8cd99d745a8dc124d02c3d19116b43a767eb9a8cfc946fc1777bf5aae5ebeef6",
-    "wasm/tiff-decoder/pkg-nodejs/tiff_wasm.d.ts": "81bfd87cbdfeea5bf7069f6a3b2c8c19c33972a0b9d394df033ca2fd1d0cc5a2",
-    "wasm/tiff-decoder/pkg-nodejs/tiff_wasm.js": "3170eb4fead1dbadc3a57a4c2d14306fac7d8243cb216706c5cdb31480de81a7",
-    "wasm/tiff-decoder/pkg-nodejs/tiff_wasm_bg.wasm": "3eaab6b24e3e0d9b02821b834f8ab7212dec83ed6451d267e96200d623f280fe",
-    "wasm/tiff-decoder/pkg-nodejs/tiff_wasm_bg.wasm.d.ts": "3e9fcfe63e2d62269812c2e13600695089f2583f5cc62fb0f7dd559d11d9a5e4"
+    "wasm/tiff-decoder/pkg-nodejs/tiff_wasm.d.ts": "3e79904fd473c605f065507f4ea3445477f8a9f7727ee3f2a2a70a08095f65e3",
+    "wasm/tiff-decoder/pkg-nodejs/tiff_wasm.js": "ad263cbd974e89a9d8551fece580432b511669ef854b438eed789a16557fb573",
+    "wasm/tiff-decoder/pkg-nodejs/tiff_wasm_bg.wasm": "d96327efacfd161d7cf06dcb16c5efc8443f27b92a6375822818210a3502cf50",
+    "wasm/tiff-decoder/pkg-nodejs/tiff_wasm_bg.wasm.d.ts": "1ebddcbe2c445b0cd27d7311ec937b31ef4f9af1b50d46861b046d6d39722752"
   }
 }
