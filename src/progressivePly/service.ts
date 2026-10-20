@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { sendToWebview } from '../providerHandlers/webviewTransport';
 import {
   buildProgressiveCache,
   buildProgressivePreview,
@@ -205,7 +206,10 @@ export class ProgressivePlyService {
     }
     panelSet.add(session.id);
 
-    await panel.webview.postMessage({
+    // Wait for the viewer's message listener before establishing the session.
+    // Posting this during HTML startup can silently lose the start message,
+    // leaving later preview tiles without an active progressive session.
+    const accepted = await sendToWebview(panel, {
       type: 'progressivePly:start',
       sessionId: session.id,
       fileName: metadata.fileName,
@@ -227,6 +231,10 @@ export class ProgressivePlyService {
       isAddFile: !!metadata.isAddFile,
       loadStartedAt: metadata.loadStartedAt,
     });
+    if (!accepted) {
+      this.cancelSession(panel, session.id);
+      return true;
+    }
 
     const cached = await loadProgressiveManifest(directory);
     if (cached) {
