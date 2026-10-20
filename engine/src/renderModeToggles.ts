@@ -245,7 +245,7 @@ export function updateMeshVisibilityAndMaterial(host: RenderModeHost, fileIndex:
   const wireframeVisible = host.wireframeVisible[fileIndex] ?? false;
   const pointsVisible = host.pointsVisible[fileIndex] ?? true;
   const voxelsVisible = host.voxelsVisible[fileIndex] ?? false;
-  const fileVisible = host.fileVisibility[fileIndex] ?? true;
+  const fileVisible = host.fileEntries.require(fileIndex).state.visible ?? true;
 
   // Set visibility for the target (mesh or multi-material group)
   if (mesh && mesh.type === 'Points') {
