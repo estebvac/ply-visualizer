@@ -3450,7 +3450,7 @@ export class PointCloudVisualizer {
     });
   }
 
-  private requestRemoveFile(fileIndex: number): void {
+  requestRemoveFile(fileIndex: number): void {
     const spatialIndex =
       this.fileEntries.kindAt(fileIndex) === 'spatial'
         ? this.fileEntries.kindIndexAt(fileIndex)
