@@ -79,7 +79,8 @@ export interface ProgressivePlyViewerHost {
   voxelObjects: (THREE.InstancedMesh | null)[];
   voxelsVisible: boolean[];
   voxelSizes: number[];
-  fileEntries: FileEntryRegistry;
+  fileEntries?: FileEntryRegistry;
+  individualColorModes?: string[];
   displayFiles(dataArray: SpatialData[]): Promise<void>;
   addNewFiles(dataArray: SpatialData[]): void;
   onFileColorModeChange(fileIndex: number, value: string): void;
@@ -693,7 +694,7 @@ export class ProgressivePlyManager {
     mesh.geometry = geometry;
     oldGeometry.dispose();
 
-    const colorMode = this.host.fileEntries.require(fileIndex).state.colorMode ?? 'assigned';
+    const colorMode = this.host.fileEntries?.require(fileIndex).state.colorMode ?? this.host.individualColorModes?.[fileIndex] ?? 'assigned';
     this.host.onFileColorModeChange(fileIndex, colorMode);
 
     if (this.host.voxelsVisible[fileIndex]) {
