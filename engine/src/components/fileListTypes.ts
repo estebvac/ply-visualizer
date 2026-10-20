@@ -14,6 +14,10 @@ export interface FileItemHost {
   cameraShowCoords: readonly boolean[];
   cameraShowLabels: readonly boolean[];
   fileColors: [number, number, number][];
+  // Retained presentation modes for the production voxel renderer.
+  pointsVisible: boolean[];
+  voxelsVisible: boolean[];
+  voxelSizes: number[];
   poseConvention: readonly ('opencv' | 'opengl')[];
   poseMaxUncertaintyThreshold: readonly number[];
   poseMinScoreThreshold: readonly number[];
@@ -42,6 +46,7 @@ export interface FileItemHost {
   toggleFileVisibility(index: number): void;
   toggleUniversalRenderMode(index: number, mode: string): void;
   updatePointSize(index: number, size: number): void;
+  updateVoxelSize(index: number, size: number): void;
   updatePoseAppearance(index: number): void;
   updatePoseLabels(index: number): void;
   updatePoseScaling(index: number): void;
