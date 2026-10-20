@@ -231,7 +231,7 @@ test.describe('Scan-to-scan registration', () => {
     await expect(panel.locator('.registration-coarse')).toBeVisible();
 
     const before = await page.evaluate(
-      () => (window as any).visualizer.transformationMatrices[1].elements.slice() as number[]
+      () => (window as any).visualizer.fileEntries.require(1).transform.elements.slice() as number[]
     );
     expect(cornerDeviation(before, corner => corner)).toBeLessThan(1e-6);
 
@@ -249,7 +249,7 @@ test.describe('Scan-to-scan registration', () => {
     });
 
     const after = await page.evaluate(
-      () => (window as any).visualizer.transformationMatrices[1].elements.slice() as number[]
+      () => (window as any).visualizer.fileEntries.require(1).transform.elements.slice() as number[]
     );
     expect(cornerDeviation(after, expectedInverse)).toBeLessThan(0.05);
 
@@ -267,7 +267,7 @@ test.describe('Scan-to-scan registration', () => {
     await panel.locator('.registration-undo').click();
     await expect(panel.locator('.registration-result')).toContainText('Reverted');
     const reverted = await page.evaluate(
-      () => (window as any).visualizer.transformationMatrices[1].elements.slice() as number[]
+      () => (window as any).visualizer.fileEntries.require(1).transform.elements.slice() as number[]
     );
     expect(cornerDeviation(reverted, corner => corner)).toBeLessThan(1e-6);
   });
@@ -375,6 +375,9 @@ test.describe('Scan-to-scan registration', () => {
     await expect(page.locator('#file-1')).toBeChecked();
     await panel.locator('.registration-apply-coarse').click();
     await expect(panel.locator('.registration-result')).toContainText('Coarse match applied');
+    await expect
+      .poll(() => page.evaluate(() => (window as any).__plyRegistrationState.status))
+      .toContain('Check the three landmarks');
 
     // Coarse matching now ends as its own step: both clouds stay on screen so
     // the result can be judged, and nothing advances until asked.
@@ -385,7 +388,7 @@ test.describe('Scan-to-scan registration', () => {
     await expect(page.locator('#file-1')).toBeChecked();
 
     const after = await page.evaluate(
-      () => (window as any).visualizer.transformationMatrices[1].elements.slice() as number[]
+      () => (window as any).visualizer.fileEntries.require(1).transform.elements.slice() as number[]
     );
     expect(cornerDeviation(after, expectedInverse)).toBeLessThan(0.01);
 
@@ -453,7 +456,7 @@ test.describe('Scan-to-scan registration', () => {
     // Redoing starts a fresh set of landmarks rather than resetting the cloud:
     // the transform that was already applied stays on screen.
     const applied = await page.evaluate(
-      () => (window as any).visualizer.transformationMatrices[1].elements.slice() as number[]
+      () => (window as any).visualizer.fileEntries.require(1).transform.elements.slice() as number[]
     );
     await panel.locator('.registration-redo-coarse').click();
     await expect
@@ -461,7 +464,7 @@ test.describe('Scan-to-scan registration', () => {
       .toBe('coarse-fixed');
     await expect(panel.locator('.coarse-residual')).toHaveCount(0);
     const kept = await page.evaluate(
-      () => (window as any).visualizer.transformationMatrices[1].elements.slice() as number[]
+      () => (window as any).visualizer.fileEntries.require(1).transform.elements.slice() as number[]
     );
     expect(kept).toEqual(applied);
   });
@@ -537,7 +540,7 @@ test.describe('Scan-to-scan registration', () => {
     // With two clouds loaded "all others" is the same single cloud, so the
     // answer must still be the station offset.
     const after = await page.evaluate(
-      () => (window as any).visualizer.transformationMatrices[1].elements.slice() as number[]
+      () => (window as any).visualizer.fileEntries.require(1).transform.elements.slice() as number[]
     );
     expect(cornerDeviation(after, expectedInverse)).toBeLessThan(0.05);
   });
@@ -574,8 +577,11 @@ test.describe('Scan-to-scan registration', () => {
     }
 
     await expect(panel.locator('.registration-result')).toContainText('Live fit from 3 fine pairs');
+    await expect
+      .poll(() => page.evaluate(() => (window as any).__plyRegistrationState.status))
+      .toContain('double-click another feature');
     const after = await page.evaluate(
-      () => (window as any).visualizer.transformationMatrices[1].elements.slice() as number[]
+      () => (window as any).visualizer.fileEntries.require(1).transform.elements.slice() as number[]
     );
     expect(cornerDeviation(after, expectedInverse)).toBeLessThan(0.01);
   });
@@ -597,15 +603,42 @@ test.describe('Scan-to-scan registration', () => {
     await panel.locator('.registration-needs-coarse').click();
 
     const canvas = page.locator('#three-canvas');
-    const box = (await canvas.boundingBox())!;
-    const centre = { x: box.width / 2, y: box.height / 2 };
+    // The canvas centre can lie outside the isolated cloud or under the open
+    // alignment menu. Exercise the gesture on a projected, unobstructed point.
+    const pickPosition = () =>
+      page.evaluate(() => {
+        const viewer = (window as any).visualizer;
+        const canvas = viewer.renderer.domElement as HTMLCanvasElement;
+        const rect = canvas.getBoundingClientRect();
+        const object = viewer.fileEntries.require(0).spatial.object;
+        const positions = object.geometry.getAttribute('position');
+        for (let index = 0; index < positions.count; index += 101) {
+          const point = object.position.clone().fromBufferAttribute(positions, index);
+          object.localToWorld(point).project(viewer.camera);
+          if (point.z < -1 || point.z > 1) {
+            continue;
+          }
+          const x = ((point.x + 1) * rect.width) / 2;
+          const y = ((1 - point.y) * rect.height) / 2;
+          if (
+            x > 10 &&
+            x < rect.width - 10 &&
+            y > 10 &&
+            y < rect.height - 10 &&
+            document.elementFromPoint(rect.left + x, rect.top + y) === canvas
+          ) {
+            return { x, y };
+          }
+        }
+        throw new Error('No unobstructed fixture point is on screen');
+      });
 
-    await canvas.dblclick({ position: centre });
+    await canvas.dblclick({ position: await pickPosition() });
     expect(
       await page.evaluate(() => (window as any).__plyRegistrationState?.coarseFixedCount ?? -1)
     ).toBe(0);
 
-    await canvas.dblclick({ position: centre, modifiers: ['ControlOrMeta'] });
+    await canvas.dblclick({ position: await pickPosition(), modifiers: ['ControlOrMeta'] });
     await expect
       .poll(() => page.evaluate(() => (window as any).__plyRegistrationState?.coarseFixedCount))
       .toBe(1);

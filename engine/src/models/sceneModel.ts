@@ -1,3 +1,4 @@
+import type { FileEntryRegistry } from '../state/fileEntries';
 import * as THREE from 'three';
 import type { SpatialData } from '../interfaces';
 import { createModelPlayback } from '../state/modelPlayback.svelte';
@@ -161,30 +162,17 @@ export function modelSpatialData(model: SceneModel, fileName: string, size: numb
   };
 }
 
-export function createModelObject(
-  data: SpatialData,
-  geometry: THREE.BufferGeometry,
-  material: THREE.Material | THREE.Material[]
-): THREE.Mesh {
-  // An invisible Mesh parent keeps the established geometry/bounds/transform
-  // interface; its native scene children retain their own materials and skins.
-  for (const entry of Array.isArray(material) ? material : [material]) {
-    entry.visible = false;
-  }
-  const wrapper = new THREE.Mesh(geometry, material);
-  wrapper.raycast = () => {};
-  wrapper.userData.sceneModel = true;
-  wrapper.add(data.sceneModel!.root);
-  return wrapper;
-}
-
 export function updateModelPlayback(
-  host: { spatialFiles: SpatialData[]; fileVisibility: boolean[]; requestRender(): void },
+  host: {
+    spatialFiles: readonly SpatialData[];
+    fileEntries: FileEntryRegistry;
+    requestRender(): void;
+  },
   delta: number
 ): void {
-  host.spatialFiles.forEach((data, index) => {
-    if (host.fileVisibility[index] && data.sceneModel?.update(delta)) {
+  for (const entry of host.fileEntries.all) {
+    if (entry.state.visible && entry.spatial?.data.sceneModel?.update(delta)) {
       host.requestRender();
     }
-  });
+  }
 }

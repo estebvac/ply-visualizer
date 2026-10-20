@@ -1,3 +1,5 @@
+/** A per-point scalar field: floats, or exact small integers (see `scalarFields`). */
+export type ScalarArray = Float32Array | Uint8Array | Uint16Array | Int16Array;
 export interface SceneModelData {
   root: import('three').Object3D;
   clips: import('three').AnimationClip[];
@@ -35,7 +37,32 @@ export interface SpatialFace {
   indices: number[];
 }
 
+/**
+ * A depth file's bytes, read again when needed rather than held for the life
+ * of the file (see depth/depthBytes.ts). Each `load()` returns a buffer the
+ * caller owns. The object's identity names the file across settings changes.
+ */
+export interface DepthBytes {
+  load(): Promise<ArrayBuffer>;
+}
+
+export interface DepthSource {
+  /** The file itself, or - where the viewer can read it again - a loader. */
+  originalData: ArrayBuffer | DepthBytes;
+  fileName: string;
+  cameraParams: CameraParams;
+  depthDimensions: { width: number; height: number };
+  colorImageData?: ImageData;
+  colorImageName?: string;
+}
+
 export interface SpatialData {
+  /**
+   * Bounds of `positionsArray` computed off the main thread, consumed (and
+   * removed) by the geometry builder.
+   */
+  positionBounds?: import('./visualization/positionBounds').PositionBounds;
+  depthSource?: DepthSource;
   /** Browser-owned full scene; never serialized through postMessage. */
   sceneModel?: SceneModelData;
   vertices: SpatialVertex[];
@@ -62,7 +89,8 @@ export interface SpatialData {
   fileSizeInBytes?: number;
   positionsArray?: Float32Array;
   colorsArray?: Uint8Array | null;
-  normalsArray?: Float32Array | null;
+  /** Float32, or snorm16 for a point cloud's unit normals once built (utils/normals.ts). */
+  normalsArray?: Float32Array | Int16Array | null;
   /**
    * Triangle indices for meshes on the typed-array path, replacing `faces`.
    * An isosurface is millions of triangles, where an object per face costs
@@ -71,12 +99,19 @@ export interface SpatialData {
    */
   indicesArray?: Uint32Array | null;
   intensityArray?: Float32Array | null;
-  scalarFields?: Record<string, Float32Array>;
+  /**
+   * Extra per-point fields. Float32, or - for fields whose values are all
+   * small whole numbers, such as LAS classification - the narrowest integer
+   * type that holds them exactly (`compactScalarFields`).
+   */
+  scalarFields?: Record<string, ScalarArray>;
   useTypedArrays?: boolean;
   /** Full source point count (can differ from vertexCount for filtered invalid records). */
   sourcePointCount?: number;
   /** Original zero-based source record index (depth: row-major raster pixel) for each decoded point. */
   sourcePointIndices?: Uint32Array;
+  /** Every source row became a point in order: the row map is the identity. */
+  sourceRowsIdentity?: boolean;
   /** Source-space origin subtracted before conversion to float32 GPU positions. */
   sourceOrigin?: [number, number, number];
   /** Format-specific header/scan metadata retained for inspection and export. */
@@ -171,6 +206,8 @@ export interface DepthConversionResult {
    * thread), so the caller can fold them into the one PERF line for the load
    * rather than emitting separate ones. See utils/perfLog.ts.
    */
+  /** Bounds of `vertices`, computed where they were produced (the worker). */
+  positionBounds?: import('./visualization/positionBounds').PositionBounds;
   timings?: {
     decodeMs: number;
     projectMs: number;
@@ -178,5 +215,14 @@ export interface DepthConversionResult {
     decodeCached?: boolean;
     /** Decoded layout description from the reader (DepthMetadata.decodeInfo). */
     info?: string;
+    /** Where the conversion ran, and in how many projection bands. */
+    thread?: 'worker' | 'main';
+    bands?: number;
+    /** The projection's own breakdown (normalize, range, split, bands, join). */
+    phases?: string;
   };
 }
+
+/** Parser output before the point-only loader supplies mesh/PLY defaults. */
+export type PointDataPayload = Pick<SpatialData, 'vertexCount' | 'hasColors' | 'hasNormals'> &
+  Partial<Omit<SpatialData, 'format'>> & { format?: string };

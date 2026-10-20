@@ -1,3 +1,4 @@
+import type { FileEntryRegistry } from './state/fileEntries';
 import * as THREE from 'three';
 import { SpatialData } from './interfaces';
 import type { ViewerRenderer } from './rendering/viewerRenderer';
@@ -9,9 +10,6 @@ export interface SceneBrightnessHost {
   backgroundBrightness: number;
   convertSrgbToLinear: boolean;
   useLinearColorSpace: boolean;
-  spatialFiles: SpatialData[];
-  meshes: (THREE.Mesh | THREE.Points | THREE.LineSegments | null)[];
-  individualColorModes: string[];
   showStatus(message: string): void;
   requestRender(): void;
   updateGammaButtonState(): void;
@@ -23,6 +21,7 @@ export interface SceneBrightnessHost {
   shouldUseVertexColors(data: SpatialData, colorMode: string): boolean;
   setupPointSrgbDecode(material: THREE.PointsMaterial): void;
   pointColorsNeedSrgbDecode(data: SpatialData, colorMode: string): boolean;
+  fileEntries: FileEntryRegistry;
 }
 
 export function updateRendererColorSpace(host: SceneBrightnessHost): void {
@@ -94,14 +93,13 @@ export function updateGammaButtonState(host: SceneBrightnessHost): void {
 export function rebuildAllColorAttributesForCurrentGammaSetting(host: SceneBrightnessHost): void {
   // Update colors for all meshes based on current convertSrgbToLinear flag
   try {
-    for (let i = 0; i < host.spatialFiles.length && i < host.meshes.length; i++) {
-      const spatialData = host.spatialFiles[i];
-      const mesh = host.meshes[i];
+    for (const entry of host.fileEntries.ofKind('spatial')) {
+      const { data: spatialData, object: mesh } = entry.spatial!;
       if (!mesh || !spatialData) {
         continue;
       }
       const geometry = (mesh as any).geometry;
-      const colorMode = host.individualColorModes[i] || 'assigned';
+      const colorMode = entry.state.colorMode || 'assigned';
 
       host.applyColorModeToGeometry(spatialData, geometry, colorMode);
 

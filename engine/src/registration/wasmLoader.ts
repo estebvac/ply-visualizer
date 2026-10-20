@@ -1,9 +1,8 @@
 /**
  * Loads the registration wasm for callers that have no `Worker`.
  *
- * Two of those exist: the VS Code extension host, which is already its own
- * process so blocking it does not freeze the viewer, and Node (the test
- * suite). Both take the `nodejs` wasm-pack build, which is CommonJS and
+ * The VS Code solver worker thread and Node tests take the `nodejs`
+ * wasm-pack build, which is CommonJS and
  * initializes itself on require; the browser's `web` build is loaded by
  * `registrationWorker.ts` instead.
  *
@@ -46,6 +45,14 @@ function candidatePaths(join: (...parts: string[]) => string): string[] {
 }
 
 export async function loadRegistrationWasm(): Promise<RegistrationWasm | null> {
+  // A decoder worker instantiates the crate from a module compiled once by
+  // the extension host (src/providerHandlers/parseWorker.ts) and offers it
+  // here, so it is not compiled - and optimized - again per worker.
+  const provided = (globalThis as { plySharedPointcloudWasm?: RegistrationWasm })
+    .plySharedPointcloudWasm;
+  if (provided) {
+    return provided;
+  }
   if (attempted) {
     return instance;
   }

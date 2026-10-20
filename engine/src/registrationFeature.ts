@@ -1,3 +1,5 @@
+import { snapshotRegistrationScene } from './registration/sceneSnapshot';
+import type { FileEntryRegistry } from './state/fileEntries';
 /**
  * Host glue for scan-to-scan registration.
  *
@@ -20,19 +22,19 @@ import {
   registerPair,
   registrationBackend,
   type UpAxis,
+  registrationConcurrency,
 } from './registration';
 
 export interface RegistrationHost {
   scene: THREE.Scene;
-  spatialFiles: SpatialData[];
-  transformationMatrices: THREE.Matrix4[];
-  fileVisibility?: boolean[];
+  spatialFiles: readonly SpatialData[];
   /** X3A camera profiles, so panoramas follow the scans they were shot from. */
-  cameraGroups?: THREE.Group[];
+  cameraGroups?: readonly THREE.Group[];
   setTransformationMatrix(fileIndex: number, matrix: THREE.Matrix4): void;
   setFileEntryVisibility?(fileIndex: number, visible: boolean): void;
   updateMatrixTextarea(fileIndex: number): void;
   requestRender(): void;
+  fileEntries: FileEntryRegistry;
 }
 
 /**
@@ -51,16 +53,69 @@ function describeFailure(error: unknown): string {
 
 /** One cluster of clouds the automatic run could not attach. */
 export interface UnattachedGroup {
-  indices: number[];
+  ids: number[];
   names: string[];
   /** The most promising single pair to link this group back to the scene. */
   suggestion: {
-    movingIndex: number;
-    fixedIndex: number;
+    movingId: number;
+    fixedId: number;
     movingName: string;
     fixedName: string;
     overlapPercent: number;
   } | null;
+}
+
+const SCENE_CHANGED = 'Alignment stopped because the scene changed. Start alignment again.';
+let activeAlignment: { host: RegistrationHost; controller: AbortController } | null = null;
+
+export function cancelAlignment(host: RegistrationHost, reason = 'Alignment cancelled.'): void {
+  if (activeAlignment?.host === host) {
+    activeAlignment.controller.abort(new DOMException(reason, 'AbortError'));
+  }
+}
+
+function registrationGuard(host: RegistrationHost) {
+  const scene = snapshotRegistrationScene(host.fileEntries);
+  const startedSession = session;
+  const operation = { host, controller: new AbortController() };
+  activeAlignment = operation;
+  const finish = (clearStatus = true) => {
+    clearInterval(timer);
+    if (activeAlignment !== operation) {
+      return;
+    }
+    activeAlignment = null;
+    registrationState.busy = false;
+    if (clearStatus) {
+      registrationState.status = '';
+    }
+  };
+  const check = () => {
+    if (activeAlignment !== operation) {
+      return false;
+    }
+    if (!operation.controller.signal.aborted && session === startedSession && scene.isCurrent()) {
+      return true;
+    }
+    if (!operation.controller.signal.aborted) {
+      operation.controller.abort(new DOMException(SCENE_CHANGED, 'AbortError'));
+    }
+    registrationState.result = operation.controller.signal.reason.message;
+    registrationState.alignEntries = [];
+    registrationState.alignDone = 0;
+    registrationState.alignmentAnchorId = null;
+    registrationState.alignedIds = [];
+    registrationState.unattachedGroups = [];
+    finish();
+    return false;
+  };
+  // Geometry replacements and transform edits have several entry points. Watch
+  // only during a solve, using the same snapshot that guards result application.
+  const timer = setInterval(check, 100);
+  check.acceptTransform = scene.acceptTransform;
+  check.signal = operation.controller.signal;
+  check.finish = finish;
+  return check;
 }
 
 /** Correspondences are stored in world space, as picked. */
@@ -147,7 +202,7 @@ export function worldPoints(host: RegistrationHost, fileIndex: number): Float32A
   if (!source) {
     return null;
   }
-  const matrix = host.transformationMatrices[fileIndex] ?? new THREE.Matrix4();
+  const matrix = host.fileEntries.require(fileIndex).transform ?? new THREE.Matrix4();
   const count = Math.floor(source.length / 3);
   const stride = Math.max(1, Math.ceil(count / MAX_SOLVER_POINTS));
   const kept = Math.ceil(count / stride);
@@ -246,8 +301,11 @@ export function beginSession(
   syncState();
 }
 
-export function endSession(host: RegistrationHost): void {
-  restoreVisibility(host);
+export function endSession(host: RegistrationHost, restoreScene = true): void {
+  cancelAlignment(host, SCENE_CHANGED);
+  if (restoreScene) {
+    restoreVisibility(host);
+  }
   if (session?.markers) {
     host.scene.remove(session.markers);
     disposeMarkers(session.markers);
@@ -256,18 +314,60 @@ export function endSession(host: RegistrationHost): void {
   registrationState.picking = false;
   registrationState.workflow = 'choose';
   syncState();
-  host.requestRender();
+  if (restoreScene) {
+    host.requestRender();
+  }
+}
+
+/** Drop results for removed files without retargeting surviving results. */
+export function reconcileAlignmentResults(host: RegistrationHost): void {
+  const exists = (id: number) => !!host.fileEntries.get(id)?.spatial;
+  if (
+    registrationState.alignmentAnchorId !== null &&
+    !exists(registrationState.alignmentAnchorId)
+  ) {
+    registrationState.alignmentAnchorId = null;
+    registrationState.alignedIds = [];
+    registrationState.alignEntries = [];
+    registrationState.unattachedGroups = [];
+    registrationState.alignDone = 0;
+    return;
+  }
+  registrationState.alignedIds = registrationState.alignedIds.filter(exists);
+  registrationState.alignEntries = registrationState.alignEntries.filter(entry => exists(entry.id));
+  registrationState.alignDone = registrationState.alignEntries.filter(
+    entry => entry.state === 'aligned' || entry.state === 'failed'
+  ).length;
+  registrationState.unattachedGroups = registrationState.unattachedGroups.flatMap(group => {
+    const members = group.ids
+      .map((id, index) => ({ id, name: group.names[index] }))
+      .filter(member => exists(member.id));
+    if (!members.length) {
+      return [];
+    }
+    const suggestion = group.suggestion;
+    return [
+      {
+        ids: members.map(member => member.id),
+        names: members.map(member => member.name),
+        suggestion:
+          suggestion && exists(suggestion.movingId) && exists(suggestion.fixedId)
+            ? suggestion
+            : null,
+      },
+    ];
+  });
 }
 
 function captureVisibility(host: RegistrationHost): void {
-  if (!session || session.savedVisibility || !host.fileVisibility) {
+  if (!session || session.savedVisibility) {
     return;
   }
-  session.savedVisibility = host.fileVisibility.map(value => value !== false);
+  session.savedVisibility = host.fileEntries.all.map(entry => entry.state.visible);
 }
 
 function setWorkflowVisibility(host: RegistrationHost, visibleIndices: number[]): void {
-  if (!session || !host.setFileEntryVisibility || !host.fileVisibility) {
+  if (!session || !host.setFileEntryVisibility) {
     return;
   }
   // Opt-out, because isolating is right for the common case (two scans of one
@@ -279,7 +379,7 @@ function setWorkflowVisibility(host: RegistrationHost, visibleIndices: number[])
   }
   captureVisibility(host);
   const visible = new Set(visibleIndices);
-  for (let index = 0; index < host.fileVisibility.length; index++) {
+  for (let index = 0; index < host.fileEntries.length; index++) {
     host.setFileEntryVisibility(index, visible.has(index));
   }
   host.requestRender();
@@ -547,7 +647,7 @@ function nearestVertexDistanceSq(
   if (!positions) {
     return Infinity;
   }
-  const e = (host.transformationMatrices[fileIndex] ?? new THREE.Matrix4()).elements;
+  const e = (host.fileEntries.require(fileIndex).transform ?? new THREE.Matrix4()).elements;
   const count = Math.floor(positions.length / 3);
   let best = Infinity;
   for (let i = 0; i < count; i++) {
@@ -857,7 +957,7 @@ function applyDelta(host: RegistrationHost, delta: THREE.Matrix4): void {
     return;
   }
   const previous = (
-    host.transformationMatrices[session.sourceIndex] ?? new THREE.Matrix4()
+    host.fileEntries.require(session.sourceIndex).transform ?? new THREE.Matrix4()
   ).clone();
   if (!session.undoMatrix) {
     session.undoMatrix = previous;
@@ -866,7 +966,7 @@ function applyDelta(host: RegistrationHost, delta: THREE.Matrix4): void {
   // rescued group rigid: their poses relative to each other are already solved,
   // and this supplies only the one pose they share.
   for (const index of session.sourceGroup) {
-    const before = (host.transformationMatrices[index] ?? new THREE.Matrix4()).clone();
+    const before = (host.fileEntries.require(index).transform ?? new THREE.Matrix4()).clone();
     host.setTransformationMatrix(index, delta.clone().multiply(before));
     host.updateMatrixTextarea(index);
   }
@@ -875,10 +975,13 @@ function applyDelta(host: RegistrationHost, delta: THREE.Matrix4): void {
   // manual/automatic correction makes the previously failed cloud trustworthy
   // for best-camera colouring too.
   if (
-    registrationState.alignmentAnchorIndex === session.targetIndex &&
-    !registrationState.alignedIndices.includes(session.sourceIndex)
+    registrationState.alignmentAnchorId === host.fileEntries.require(session.targetIndex).id &&
+    !registrationState.alignedIds.includes(host.fileEntries.require(session.sourceIndex).id)
   ) {
-    registrationState.alignedIndices = [...registrationState.alignedIndices, session.sourceIndex];
+    registrationState.alignedIds = [
+      ...registrationState.alignedIds,
+      host.fileEntries.require(session.sourceIndex).id,
+    ];
   }
 
   for (const pair of session.pairs) {
@@ -913,16 +1016,18 @@ function followStations(host: RegistrationHost): void {
 }
 
 export function undo(host: RegistrationHost): void {
-  if (!session?.undoMatrix) {
+  if (!session?.undoMatrix || registrationState.busy) {
     return;
   }
   const restore = session.undoMatrix;
-  const current = (host.transformationMatrices[session.sourceIndex] ?? new THREE.Matrix4()).clone();
+  const current = (
+    host.fileEntries.require(session.sourceIndex).transform ?? new THREE.Matrix4()
+  ).clone();
   const delta = restore.clone().multiply(current.invert());
 
   // The same delta that moved the group has to move all of it back.
   for (const index of session.sourceGroup) {
-    const before = (host.transformationMatrices[index] ?? new THREE.Matrix4()).clone();
+    const before = (host.fileEntries.require(index).transform ?? new THREE.Matrix4()).clone();
     host.setTransformationMatrix(index, delta.clone().multiply(before));
     host.updateMatrixTextarea(index);
   }
@@ -936,11 +1041,9 @@ export function undo(host: RegistrationHost): void {
     session.pending.point.applyMatrix4(delta);
   }
   session.undoMatrix = null;
-  if (registrationState.alignmentAnchorIndex === session.targetIndex) {
-    const sourceIndex = session.sourceIndex;
-    registrationState.alignedIndices = registrationState.alignedIndices.filter(
-      index => index !== sourceIndex
-    );
+  if (registrationState.alignmentAnchorId === host.fileEntries.require(session.targetIndex).id) {
+    const sourceId = host.fileEntries.require(session.sourceIndex).id;
+    registrationState.alignedIds = registrationState.alignedIds.filter(id => id !== sourceId);
   }
   registrationState.result = 'Reverted to the transform from before the last alignment.';
   refreshMarkers(host);
@@ -965,9 +1068,13 @@ export async function alignFromPairs(host: RegistrationHost): Promise<void> {
     target[i * 3 + 2] = pair.target.z;
   });
 
+  const guard = registrationGuard(host);
   registrationState.busy = true;
   try {
-    const fit = await fitCorrespondences(source, target);
+    const fit = await fitCorrespondences(source, target, guard.signal);
+    if (!guard()) {
+      return;
+    }
     if (!fit) {
       registrationState.result =
         'Those correspondences are degenerate - pick points that are not all on one line.';
@@ -978,9 +1085,12 @@ export async function alignFromPairs(host: RegistrationHost): Promise<void> {
       `Fitted ${count} pairs · RMS ${(fit.rmse ?? 0).toFixed(3)} · ` +
       `worst ${(fit.maxError ?? 0).toFixed(3)}`;
   } catch (error) {
+    if (!guard()) {
+      return;
+    }
     registrationState.result = describeFailure(error);
   } finally {
-    registrationState.busy = false;
+    guard.finish(false);
   }
 }
 
@@ -1000,9 +1110,13 @@ export async function applyCoarseMatch(host: RegistrationHost): Promise<void> {
     moving.set(session.coarseMoving[index].toArray(), index * 3);
   }
 
+  const guard = registrationGuard(host);
   registrationState.busy = true;
   try {
-    const fit = await fitCorrespondences(moving, fixed);
+    const fit = await fitCorrespondences(moving, fixed, guard.signal);
+    if (!guard()) {
+      return;
+    }
     if (!fit) {
       registrationState.result =
         'Those coarse points are degenerate. Pick three features that are well spread out.';
@@ -1029,9 +1143,12 @@ export async function applyCoarseMatch(host: RegistrationHost): Promise<void> {
     refreshMarkers(host);
     syncState();
   } catch (error) {
+    if (!guard()) {
+      return;
+    }
     registrationState.result = describeFailure(error);
   } finally {
-    registrationState.busy = false;
+    guard.finish(false);
   }
 }
 
@@ -1046,9 +1163,13 @@ async function fitFinePairsLive(host: RegistrationHost): Promise<void> {
     source.set(pair.source.toArray(), index * 3);
     target.set(pair.target.toArray(), index * 3);
   });
+  const guard = registrationGuard(host);
   registrationState.busy = true;
   try {
-    const fit = await fitCorrespondences(source, target);
+    const fit = await fitCorrespondences(source, target, guard.signal);
+    if (!guard()) {
+      return;
+    }
     if (!fit) {
       registrationState.result =
         'The fine points are degenerate. Add points that are spread across the overlap.';
@@ -1061,9 +1182,12 @@ async function fitFinePairsLive(host: RegistrationHost): Promise<void> {
       `Live fit from ${count} fine pairs · RMS ${(fit.rmse ?? 0).toFixed(4)} · ` +
       `worst ${(fit.maxError ?? 0).toFixed(4)}`;
   } catch (error) {
+    if (!guard()) {
+      return;
+    }
     registrationState.result = describeFailure(error);
   } finally {
-    registrationState.busy = false;
+    guard.finish(false);
   }
 }
 
@@ -1125,17 +1249,29 @@ export async function autoAlign(host: RegistrationHost): Promise<void> {
     return;
   }
 
+  const guard = registrationGuard(host);
   registrationState.busy = true;
   registrationState.status = 'Sweeping yaw...';
   // Yield once so the status reaches the screen before the sweep blocks.
   await new Promise(resolve => setTimeout(resolve, 0));
+  if (!guard()) {
+    return;
+  }
   try {
     // The solver runs in a worker, so the sweep and the candidate ICP runs no
     // longer block the viewer; there is no per-candidate callback to report
     // across that boundary, and the whole call is a few seconds.
-    const result = await registerPair(source, target, {
-      coarse: { upAxis: registrationState.upAxis as UpAxis },
-    });
+    const result = await registerPair(
+      source,
+      target,
+      {
+        coarse: { upAxis: registrationState.upAxis as UpAxis },
+      },
+      guard.signal
+    );
+    if (!guard()) {
+      return;
+    }
     if (!result?.coarse) {
       registrationState.result = 'Automatic alignment found nothing to match.';
       return;
@@ -1156,10 +1292,12 @@ export async function autoAlign(host: RegistrationHost): Promise<void> {
         : '') +
       ` · ${registrationBackend()}`;
   } catch (error) {
+    if (!guard()) {
+      return;
+    }
     registrationState.result = describeFailure(error);
   } finally {
-    registrationState.busy = false;
-    registrationState.status = '';
+    guard.finish();
   }
 }
 
@@ -1174,12 +1312,19 @@ export async function refineIcp(host: RegistrationHost): Promise<void> {
     return;
   }
 
+  const guard = registrationGuard(host);
   registrationState.busy = true;
   registrationState.status = `Refining with ICP (${registrationBackend()})...`;
   await new Promise(resolve => setTimeout(resolve, 0));
+  if (!guard()) {
+    return;
+  }
   const startedAt = performance.now();
   try {
-    const refined = await icpRefine(source, target);
+    const refined = await icpRefine(source, target, {}, guard.signal);
+    if (!guard()) {
+      return;
+    }
     const result = refined?.icp ? { ...refined.icp, matrix: refined.matrix } : null;
     if (!result) {
       registrationState.result =
@@ -1205,10 +1350,12 @@ export async function refineIcp(host: RegistrationHost): Promise<void> {
       (result.converged ? '' : ' (hit the iteration cap)') +
       ` · ${elapsed.toFixed(1)}s · ${registrationBackend()}`;
   } catch (error) {
+    if (!guard()) {
+      return;
+    }
     registrationState.result = describeFailure(error);
   } finally {
-    registrationState.busy = false;
-    registrationState.status = '';
+    guard.finish();
   }
 }
 
@@ -1278,6 +1425,32 @@ function scoutPoints(host: RegistrationHost, fileIndex: number): Float32Array | 
   return out.subarray(0, write);
 }
 
+function commitAlignmentTransform(
+  host: RegistrationHost,
+  index: number,
+  delta: THREE.Matrix4,
+  undoAll: Map<number, THREE.Matrix4>,
+  guard: ReturnType<typeof registrationGuard>
+): void {
+  const entry = host.fileEntries.require(index);
+  const previous = entry.transform.clone();
+  const firstChange = !undoAll.has(entry.id);
+  if (firstChange) {
+    undoAll.set(entry.id, previous);
+  }
+  try {
+    host.setTransformationMatrix(index, delta.clone().multiply(previous));
+  } catch (error) {
+    if (firstChange) {
+      undoAll.delete(entry.id);
+    }
+    throw error;
+  }
+  registrationState.canUndoAll = true;
+  guard.acceptTransform(index);
+  host.updateMatrixTextarea(index);
+}
+
 /**
  * Works out what a person would have to do to rescue a failed alignment.
  *
@@ -1297,7 +1470,9 @@ function scoutPoints(host: RegistrationHost, fileIndex: number): Float32Array | 
 async function analyseUnattached(
   host: RegistrationHost,
   placed: readonly number[],
-  unattached: readonly number[]
+  unattached: readonly number[],
+  guard: ReturnType<typeof registrationGuard>,
+  undoAll: Map<number, THREE.Matrix4>
 ): Promise<void> {
   registrationState.unattachedGroups = [];
   if (unattached.length === 0 || placed.length === 0) {
@@ -1305,6 +1480,9 @@ async function analyseUnattached(
   }
   registrationState.status = 'Working out what is missing...';
   await new Promise(resolve => setTimeout(resolve, 0));
+  if (!guard()) {
+    return;
+  }
 
   const points = new Map<number, Float32Array>();
   for (const index of [...unattached, ...placed]) {
@@ -1320,9 +1498,17 @@ async function analyseUnattached(
       return 0;
     }
     try {
-      const result = await registerPair(source, target.slice(), {
-        coarse: { upAxis: registrationState.upAxis as UpAxis, resolution: 64 },
-      });
+      const result = await registerPair(
+        source,
+        target.slice(),
+        {
+          coarse: { upAxis: registrationState.upAxis as UpAxis, resolution: 64 },
+        },
+        guard.signal
+      );
+      if (!guard()) {
+        return 0;
+      }
       return result?.icp?.fitness ?? 0;
     } catch {
       return 0;
@@ -1344,7 +1530,11 @@ async function analyseUnattached(
   };
   for (let i = 0; i < unattached.length; i++) {
     for (let j = i + 1; j < unattached.length; j++) {
-      if ((await overlapOf(unattached[i], unattached[j])) >= 0.25) {
+      const overlap = await overlapOf(unattached[i], unattached[j]);
+      if (!guard()) {
+        return;
+      }
+      if (overlap >= 0.25) {
         parent.set(find(unattached[i]), find(unattached[j]));
       }
     }
@@ -1372,17 +1562,26 @@ async function analyseUnattached(
         continue;
       }
       try {
-        const result = await registerPair(source, target, {
-          coarse: { upAxis: registrationState.upAxis as UpAxis },
-          extraStarts: inheritedStarts(host, settled, member),
-        });
+        const result = await registerPair(
+          source,
+          target,
+          {
+            coarse: { upAxis: registrationState.upAxis as UpAxis },
+            extraStarts: inheritedStarts(host, settled, member),
+          },
+          guard.signal
+        );
+        if (!guard()) {
+          return;
+        }
         if (result?.icp && result.icp.fitness >= MIN_ACCEPT_FITNESS) {
-          const previous = (host.transformationMatrices[member] ?? new THREE.Matrix4()).clone();
-          host.setTransformationMatrix(member, result.matrix.clone().multiply(previous));
-          host.updateMatrixTextarea(member);
+          commitAlignmentTransform(host, member, result.matrix, undoAll, guard);
           settled.push(member);
         }
       } catch {
+        if (!guard()) {
+          return;
+        }
         // A group that will not solve internally is still worth offering; the
         // user can place its members one at a time.
       }
@@ -1397,19 +1596,22 @@ async function analyseUnattached(
     for (const from of members) {
       for (const to of placed) {
         const overlap = await overlapOf(from, to);
+        if (!guard()) {
+          return;
+        }
         if (!best || overlap > best.overlap) {
           best = { from, to, overlap };
         }
       }
     }
     groups.push({
-      indices: members,
+      ids: members.map(index => host.fileEntries.require(index).id),
       names: members.map(index => host.spatialFiles[index]?.fileName ?? `File ${index + 1}`),
       suggestion:
         best && best.overlap > 0
           ? {
-              movingIndex: best.from,
-              fixedIndex: best.to,
+              movingId: host.fileEntries.require(best.from).id,
+              fixedId: host.fileEntries.require(best.to).id,
               movingName: host.spatialFiles[best.from]?.fileName ?? `File ${best.from + 1}`,
               fixedName: host.spatialFiles[best.to]?.fileName ?? `File ${best.to + 1}`,
               overlapPercent: Math.round(best.overlap * 100),
@@ -1499,10 +1701,12 @@ function inheritedStarts(
   placed: readonly number[],
   fileIndex: number
 ): THREE.Matrix4[] {
-  const inverse = (host.transformationMatrices[fileIndex] ?? new THREE.Matrix4()).clone().invert();
+  const inverse = (host.fileEntries.require(fileIndex).transform ?? new THREE.Matrix4())
+    .clone()
+    .invert();
   const starts: THREE.Matrix4[] = [];
   for (const index of placed) {
-    const pose = host.transformationMatrices[index] ?? new THREE.Matrix4();
+    const pose = host.fileEntries.require(index).transform ?? new THREE.Matrix4();
     const delta = pose.clone().multiply(inverse);
     if (!starts.some(existing => sameTransform(existing, delta))) {
       starts.push(delta);
@@ -1539,7 +1743,9 @@ async function settlePlacements(
   host: RegistrationHost,
   anchorIndex: number,
   placed: readonly number[],
-  entryFor: (fileIndex: number) => { detail: string } | undefined
+  entryFor: (fileIndex: number) => { detail: string } | undefined,
+  guard: ReturnType<typeof registrationGuard>,
+  undoAll: Map<number, THREE.Matrix4>
 ): Promise<void> {
   const movable = placed.filter(index => index !== anchorIndex);
   for (let position = 0; position < movable.length; position++) {
@@ -1547,6 +1753,9 @@ async function settlePlacements(
     const name = host.spatialFiles[fileIndex]?.fileName ?? `File ${fileIndex + 1}`;
     registrationState.status = `Settling ${position + 1} of ${movable.length} · ${name}...`;
     await new Promise(resolve => setTimeout(resolve, 0));
+    if (!guard()) {
+      return;
+    }
 
     const others = placed.filter(index => index !== fileIndex);
     const target = unionPoints(host, others);
@@ -1558,19 +1767,28 @@ async function settlePlacements(
     try {
       // No yaw sweep: this is a correction, not a search, and the sweep is the
       // stage that put the cloud where it is.
-      result = await registerPair(source, target, {
-        coarse: false,
-        extraStarts: inheritedStarts(host, others, fileIndex),
-      });
+      result = await registerPair(
+        source,
+        target,
+        {
+          coarse: false,
+          extraStarts: inheritedStarts(host, others, fileIndex),
+        },
+        guard.signal
+      );
+      if (!guard()) {
+        return;
+      }
     } catch {
+      if (!guard()) {
+        return;
+      }
       continue;
     }
     if (!result?.icp || result.startedFrom !== 'given') {
       continue;
     }
-    const previous = (host.transformationMatrices[fileIndex] ?? new THREE.Matrix4()).clone();
-    host.setTransformationMatrix(fileIndex, result.matrix.clone().multiply(previous));
-    host.updateMatrixTextarea(fileIndex);
+    commitAlignmentTransform(host, fileIndex, result.matrix, undoAll, guard);
     const entry = entryFor(fileIndex);
     if (entry) {
       entry.detail =
@@ -1616,7 +1834,8 @@ async function growFromAnchor(
   targets: readonly number[],
   anchor: Float32Array,
   startedAt: number,
-  strategy: GrowStrategy
+  strategy: GrowStrategy,
+  guard: ReturnType<typeof registrationGuard>
 ): Promise<void> {
   // 'nested' is the original walk: take the first cloud that clears a low bar,
   // and give the solver nothing but the yaw sweep to go on. 'complex' scores
@@ -1634,17 +1853,22 @@ async function growFromAnchor(
 
   registrationState.busy = true;
   registrationState.alignEntries = targets.map(index => ({
-    index,
+    id: host.fileEntries.require(index).id,
     name: host.spatialFiles[index]?.fileName ?? `File ${index + 1}`,
     state: 'queued' as const,
     detail: '',
   }));
   registrationState.alignDone = 0;
-  registrationState.alignmentAnchorIndex = anchorIndex;
-  registrationState.alignedIndices = [anchorIndex];
+  registrationState.alignmentAnchorId = host.fileEntries.require(anchorIndex).id;
+  registrationState.alignedIds = [host.fileEntries.require(anchorIndex).id];
   await new Promise(resolve => setTimeout(resolve, 0));
+  if (!guard()) {
+    return;
+  }
 
   const undoAll = new Map<number, THREE.Matrix4>();
+  alignAllUndo = { registry: host.fileEntries, transforms: undoAll };
+  registrationState.canUndoAll = false;
   const placed = [anchorIndex];
   const remaining = new Set(targets);
   // How many passes each cloud was tried in before it stuck. A cloud that took
@@ -1652,7 +1876,9 @@ async function growFromAnchor(
   // considered, which is worth seeing next to its overlap.
   const attempts = new Map<number, number>();
   const entryFor = (fileIndex: number) =>
-    registrationState.alignEntries.find(entry => entry.index === fileIndex);
+    registrationState.alignEntries.find(
+      entry => entry.id === host.fileEntries.require(fileIndex).id
+    );
 
   try {
     let progress = true;
@@ -1670,78 +1896,130 @@ async function growFromAnchor(
       };
       const scored: Scored[] = [];
 
-      for (const fileIndex of [...remaining]) {
-        const name = host.spatialFiles[fileIndex]?.fileName ?? `File ${fileIndex + 1}`;
-        const entry = entryFor(fileIndex);
-        if (entry) {
-          entry.state = 'running';
+      // The candidates of one sweep are independent - each is matched
+      // against the same union of placed clouds - so they are solved a batch
+      // at a time on the host's workers and then taken in their original
+      // order, with the original stopping rule. A solve past the point where
+      // that rule stops is wasted but has no effect, so the walk places
+      // exactly what the one-at-a-time walk did.
+      //
+      // The first candidate goes alone: when it clears the bar - the usual
+      // case - the sweep stops there, and solving its neighbours alongside
+      // only slowed it down (5.3 s against 4.8 s on a six-scan archive).
+      const order = [...remaining];
+      let stopSweep = false;
+      for (let first = 0; first < order.length && !stopSweep;) {
+        const batch = order.slice(first, first + (first === 0 ? 1 : registrationConcurrency()));
+        first += batch.length;
+        for (const fileIndex of batch) {
+          const entry = entryFor(fileIndex);
+          if (entry) {
+            entry.state = 'running';
+          }
         }
+        const names = batch.map(
+          fileIndex => host.spatialFiles[fileIndex]?.fileName ?? `File ${fileIndex + 1}`
+        );
         // Each pass places exactly one cloud, so the run is at most one pass
         // per target and the total is knowable up front. "Sweep 7" on its own
         // says nothing about how much is left.
-        registrationState.status =
-          `Placing ${placed.length} of ${targets.length} · trying ${name} against ` +
-          `${placed.length} placed cloud${placed.length === 1 ? '' : 's'}...`;
+        registrationState.status = `Placing ${placed.length} of ${targets.length} · trying ${
+          names.length === 1 ? names[0] : `${names.length} clouds`
+        } against ${placed.length} placed cloud${placed.length === 1 ? '' : 's'}...`;
         await new Promise(resolve => setTimeout(resolve, 0));
-
-        attempts.set(fileIndex, (attempts.get(fileIndex) ?? 0) + 1);
-        const source = worldPoints(host, fileIndex);
-        if (!source) {
-          remaining.delete(fileIndex);
-          if (entry) {
-            entry.state = 'failed';
-            entry.detail = 'no point data';
-          }
-          registrationState.alignDone = targets.length - remaining.size;
-          continue;
+        if (!guard()) {
+          return;
         }
-        sampledPoints += source.length / 3;
 
-        let result: Awaited<ReturnType<typeof registerPair>> = null;
         const matchStarted = performance.now();
-        try {
-          result = await registerPair(source, target.slice(), {
-            coarse: { upAxis: registrationState.upAxis as UpAxis },
-            extraStarts: rank ? inheritedStarts(host, placed, fileIndex) : undefined,
-          });
-        } catch (error) {
-          if (entry) {
+        const outcomes = await Promise.all(
+          batch.map(async fileIndex => {
+            const source = worldPoints(host, fileIndex);
+            if (!source) {
+              return { fileIndex, source, result: null, error: undefined as unknown };
+            }
+            try {
+              const result = await registerPair(
+                source,
+                target.slice(),
+                {
+                  coarse: { upAxis: registrationState.upAxis as UpAxis },
+                  extraStarts: rank ? inheritedStarts(host, placed, fileIndex) : undefined,
+                },
+                guard.signal
+              );
+              return { fileIndex, source, result, error: undefined as unknown };
+            } catch (error) {
+              return { fileIndex, source, result: null, error };
+            }
+          })
+        );
+        matchingMs += performance.now() - matchStarted;
+        if (!guard()) {
+          return;
+        }
+
+        let taken = 0;
+        for (const { fileIndex, source, result, error } of outcomes) {
+          taken++;
+          const entry = entryFor(fileIndex);
+          attempts.set(fileIndex, (attempts.get(fileIndex) ?? 0) + 1);
+          if (!source) {
+            remaining.delete(fileIndex);
+            if (entry) {
+              entry.state = 'failed';
+              entry.detail = 'no point data';
+            }
+            registrationState.alignDone = targets.length - remaining.size;
+            continue;
+          }
+          sampledPoints += source.length / 3;
+          if (error !== undefined && entry) {
             entry.state = 'queued';
             entry.detail = describeFailure(error);
           }
-        } finally {
-          matchingMs += performance.now() - matchStarted;
-        }
 
-        if (!result?.icp || result.icp.fitness < acceptFitness || result.icp.inlierCount < 30) {
-          // Not failed — just not yet. The union grows with every placement, so
-          // the same cloud may match on a later sweep.
+          if (!result?.icp || result.icp.fitness < acceptFitness || result.icp.inlierCount < 30) {
+            // Not failed — just not yet. The union grows with every placement, so
+            // the same cloud may match on a later sweep.
+            if (entry) {
+              entry.state = 'queued';
+              entry.detail = result?.icp
+                ? `${(result.icp.fitness * 100).toFixed(1)}% overlap so far`
+                : error !== undefined
+                  ? entry.detail
+                  : 'no match yet';
+            }
+            continue;
+          }
+
+          // A cloud that cannot feel its own position goes last. Left to the
+          // sweep it slides along its wall, and its overlap rises as it does, so
+          // ranking on score alone actively prefers the wrong pose. Waiting costs
+          // a sweep and usually buys an inherited pose that is exactly right.
+          const trustworthy =
+            result.startedFrom === 'given' ||
+            result.sourceConditioning >= WELL_CONDITIONED_POSITION;
+          scored.push({ fileIndex, result, trustworthy });
           if (entry) {
             entry.state = 'queued';
-            entry.detail = result?.icp
-              ? `${(result.icp.fitness * 100).toFixed(1)}% overlap so far`
-              : 'no match yet';
+            entry.detail = trustworthy
+              ? `${(result.icp.fitness * 100).toFixed(0)}% overlap`
+              : `${(result.icp.fitness * 100).toFixed(0)}% overlap · could slide, waiting`;
           }
-          continue;
+          // Nested commits to the first cloud over the bar, which is what makes
+          // it cheap and what makes its outcome depend on file order.
+          if (!rank || (trustworthy && result.icp.fitness >= CONFIDENT_FITNESS)) {
+            stopSweep = true;
+            break;
+          }
         }
-
-        // A cloud that cannot feel its own position goes last. Left to the
-        // sweep it slides along its wall, and its overlap rises as it does, so
-        // ranking on score alone actively prefers the wrong pose. Waiting costs
-        // a sweep and usually buys an inherited pose that is exactly right.
-        const trustworthy =
-          result.startedFrom === 'given' || result.sourceConditioning >= WELL_CONDITIONED_POSITION;
-        scored.push({ fileIndex, result, trustworthy });
-        if (entry) {
-          entry.state = 'queued';
-          entry.detail = trustworthy
-            ? `${(result.icp.fitness * 100).toFixed(0)}% overlap`
-            : `${(result.icp.fitness * 100).toFixed(0)}% overlap · could slide, waiting`;
-        }
-        // Nested commits to the first cloud over the bar, which is what makes
-        // it cheap and what makes its outcome depend on file order.
-        if (!rank || (trustworthy && result.icp.fitness >= CONFIDENT_FITNESS)) {
-          break;
+        // Solved but past the stopping point: as if never tried this sweep.
+        for (const { fileIndex } of outcomes.slice(taken)) {
+          const entry = entryFor(fileIndex);
+          if (entry?.state === 'running') {
+            entry.state = 'queued';
+          }
         }
       }
 
@@ -1758,17 +2036,17 @@ async function growFromAnchor(
         const entry = entryFor(fileIndex);
 
         const applyStarted = performance.now();
-        const previous = (host.transformationMatrices[fileIndex] ?? new THREE.Matrix4()).clone();
-        undoAll.set(fileIndex, previous);
-        host.setTransformationMatrix(fileIndex, result.matrix.clone().multiply(previous));
-        host.updateMatrixTextarea(fileIndex);
+        commitAlignmentTransform(host, fileIndex, result.matrix, undoAll, guard);
         applyMs += performance.now() - applyStarted;
 
         placed.push(fileIndex);
         remaining.delete(fileIndex);
         aligned++;
         progress = true;
-        registrationState.alignedIndices = [...registrationState.alignedIndices, fileIndex];
+        registrationState.alignedIds = [
+          ...registrationState.alignedIds,
+          host.fileEntries.require(fileIndex).id,
+        ];
         registrationState.alignDone = targets.length - remaining.size;
         if (entry) {
           entry.state = 'aligned';
@@ -1794,24 +2072,25 @@ async function growFromAnchor(
     // A list of failures is not actionable. Which groups they form, and which
     // single pair would join each one back to the scene, is.
     if (remaining.size > 0) {
-      await analyseUnattached(host, placed, [...remaining]);
+      await analyseUnattached(host, placed, [...remaining], guard, undoAll);
+      if (!guard()) {
+        return;
+      }
     }
 
     if (rank && placed.length > 2) {
-      await settlePlacements(host, anchorIndex, placed, entryFor);
+      await settlePlacements(host, anchorIndex, placed, entryFor, guard, undoAll);
+      if (!guard()) {
+        return;
+      }
     }
 
-    if (undoAll.size > 0) {
-      alignAllUndo = undoAll;
-      registrationState.canUndoAll = true;
-    }
-    registrationState.result = `Placed ${aligned} of ${targets.length} clouds in ${sweeps} sweep${sweeps === 1 ? '' : 's'} · ${registrationBackend()}`;
+    registrationState.result = `Placed ${aligned} of ${targets.length} clouds in ${sweeps} sweep${sweeps === 1 ? '' : 's'}, ${((performance.now() - startedAt) / 1000).toFixed(1)} s · ${registrationBackend()}`;
   } finally {
     const followStarted = performance.now();
     followStations(host);
     applyMs += performance.now() - followStarted;
-    registrationState.busy = false;
-    registrationState.status = '';
+    guard.finish();
     host.requestRender();
     const totalMs = performance.now() - startedAt;
     const anchorName = host.spatialFiles[anchorIndex]?.fileName ?? `file ${anchorIndex + 1}`;
@@ -1885,8 +2164,12 @@ export async function alignAllTo(
   sampledPoints += anchor.length / 3;
   setupMs = performance.now() - startedAt;
 
+  const guard = registrationGuard(host);
   if (strategy && !refineOnly) {
-    await growFromAnchor(host, anchorIndex, targets, anchor, startedAt, strategy);
+    await growFromAnchor(host, anchorIndex, targets, anchor, startedAt, strategy, guard);
+    if (!guard()) {
+      return;
+    }
     return;
   }
 
@@ -1894,22 +2177,32 @@ export async function alignAllTo(
   // Seed every target as queued before the first solve, so the panel shows the
   // whole run up front instead of a list that grows out of nothing.
   registrationState.alignEntries = targets.map(index => ({
-    index,
+    id: host.fileEntries.require(index).id,
     name: host.spatialFiles[index]?.fileName ?? `File ${index + 1}`,
     state: 'queued' as const,
     detail: '',
   }));
   registrationState.alignDone = 0;
-  registrationState.alignmentAnchorIndex = anchorIndex;
-  registrationState.alignedIndices = [anchorIndex];
+  registrationState.alignmentAnchorId = host.fileEntries.require(anchorIndex).id;
+  registrationState.alignedIds = [host.fileEntries.require(anchorIndex).id];
   // Yield once so the panel shows the first status before the solver blocks
   // (it does, in a webview: see wasmLoader.browser.ts).
   await new Promise(resolve => setTimeout(resolve, 0));
+  if (!guard()) {
+    return;
+  }
 
   const undoAll = new Map<number, THREE.Matrix4>();
+  alignAllUndo = { registry: host.fileEntries, transforms: undoAll };
+  registrationState.canUndoAll = false;
   try {
-    for (let position = 0; position < targets.length; position++) {
-      const fileIndex = targets[position];
+    // Every pair is registered against the anchor on its own (a star), so
+    // they run side by side on the host's solver workers; the rows tick as
+    // each one lands, in whatever order that is.
+    let running = 0;
+    const alignOne = async (position: number): Promise<'stop' | void> => {
+      let fileIndex = targets[position];
+      const entryId = host.fileEntries.at(fileIndex)?.id;
       const name = host.spatialFiles[fileIndex]?.fileName ?? `File ${fileIndex + 1}`;
       const finish = (state: 'aligned' | 'failed', detail: string) => {
         const entry = registrationState.alignEntries[position];
@@ -1917,55 +2210,73 @@ export async function alignAllTo(
           entry.state = state;
           entry.detail = detail;
         }
-        registrationState.alignDone = position + 1;
+        registrationState.alignDone++;
       };
-      const running = registrationState.alignEntries[position];
-      if (running) {
-        running.state = 'running';
+      const row = registrationState.alignEntries[position];
+      if (row) {
+        row.state = 'running';
       }
-      registrationState.status = `${refineOnly ? 'Refining' : 'Aligning'} ${name} (${
-        position + 1
-      }/${targets.length})...`;
-      await new Promise(resolve => setTimeout(resolve, 0));
-
-      const samplingStarted = performance.now();
-      const source = worldPoints(host, fileIndex);
-      samplingMs += performance.now() - samplingStarted;
-      if (!source) {
-        finish('failed', 'no point data');
-        continue;
-      }
-      sampledPoints += source.length / 3;
-
+      running++;
+      registrationState.status = `${refineOnly ? 'Refining' : 'Aligning'} ${
+        running > 1 ? `${running} clouds at once` : name
+      }...`;
       try {
-        // A fresh copy of the anchor each time: the worker path transfers the
-        // buffers it is given, so a shared one would be detached after the
-        // first pair.
-        const matchingStarted = performance.now();
+        const samplingStarted = performance.now();
+        const source = worldPoints(host, fileIndex);
+        samplingMs += performance.now() - samplingStarted;
+        if (!source) {
+          finish('failed', 'no point data');
+          return;
+        }
+        sampledPoints += source.length / 3;
+
         let result: Awaited<ReturnType<typeof registerPair>>;
         try {
-          result = await registerPair(source, anchor.slice(), {
-            coarse: refineOnly ? false : { upAxis: registrationState.upAxis as UpAxis },
-          });
-        } finally {
-          matchingMs += performance.now() - matchingStarted;
+          // A fresh copy of the anchor each time: the worker path transfers the
+          // buffers it is given, so a shared one would be detached after the
+          // first pair.
+          result = await registerPair(
+            source,
+            anchor.slice(),
+            {
+              coarse: refineOnly ? false : { upAxis: registrationState.upAxis as UpAxis },
+            },
+            guard.signal
+          );
+          if (!guard()) {
+            return 'stop';
+          }
+        } catch (error) {
+          if (!guard()) {
+            return 'stop';
+          }
+          finish('failed', describeFailure(error));
+          return;
         }
         if (!result?.icp) {
           finish('failed', refineOnly ? 'nothing to refine against' : 'no match found');
-          continue;
+          return;
         }
         if (result.icp.fitness < 0.03 || result.icp.inlierCount < 30) {
           finish('failed', `only ${(result.icp.fitness * 100).toFixed(1)}% overlap; excluded`);
-          continue;
+          return;
         }
 
+        // The solve awaited: the cloud may have moved in the list or gone.
+        fileIndex = entryId === undefined ? -1 : host.fileEntries.indexOf(entryId);
+        if (fileIndex < 0) {
+          finish('failed', 'file was closed');
+          return;
+        }
         const applyStarted = performance.now();
-        const previous = (host.transformationMatrices[fileIndex] ?? new THREE.Matrix4()).clone();
-        undoAll.set(fileIndex, previous);
-        host.setTransformationMatrix(fileIndex, result.matrix.clone().multiply(previous));
-        host.updateMatrixTextarea(fileIndex);
+        try {
+          commitAlignmentTransform(host, fileIndex, result.matrix, undoAll, guard);
+        } catch (error) {
+          finish('failed', describeFailure(error));
+          return;
+        }
         aligned++;
-        registrationState.alignedIndices = [...registrationState.alignedIndices, fileIndex];
+        registrationState.alignedIds = [...registrationState.alignedIds, entryId!];
         applyMs += performance.now() - applyStarted;
 
         const margin =
@@ -1977,27 +2288,45 @@ export async function alignAllTo(
           `RMS ${result.icp.inlierRmse.toFixed(3)} · overlap ${(result.icp.fitness * 100).toFixed(0)}%` +
             (Number.isFinite(margin) && margin < 1.2 ? ' · ambiguous, check it' : '')
         );
-      } catch (error) {
-        finish('failed', describeFailure(error));
+        host.requestRender();
+      } finally {
+        running--;
       }
-      host.requestRender();
+    };
+
+    const lanesStarted = performance.now();
+    const samplingBefore = samplingMs;
+    const applyBefore = applyMs;
+    let next = 0;
+    let stopped = false;
+    const lane = async () => {
+      while (!stopped && next < targets.length) {
+        if ((await alignOne(next++)) === 'stop') {
+          stopped = true;
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(registrationConcurrency(), targets.length) }, lane)
+    );
+    // Wall time, not the sum of overlapping solves, so the phases still add up.
+    matchingMs =
+      performance.now() - lanesStarted - (samplingMs - samplingBefore) - (applyMs - applyBefore);
+    if (stopped || !guard()) {
+      return;
     }
 
-    if (undoAll.size > 0) {
-      alignAllUndo = undoAll;
-      registrationState.canUndoAll = true;
-    }
     registrationState.result = `${refineOnly ? 'Refined' : 'Aligned'} ${aligned} of ${
       targets.length
-    } clouds to ${
-      host.spatialFiles[anchorIndex]?.fileName ?? 'the anchor'
-    } · ${registrationBackend()}`;
+    } clouds to ${host.spatialFiles[anchorIndex]?.fileName ?? 'the anchor'} in ${(
+      (performance.now() - startedAt) /
+      1000
+    ).toFixed(1)} s · ${registrationBackend()}`;
   } finally {
     const followStarted = performance.now();
     followStations(host);
     applyMs += performance.now() - followStarted;
-    registrationState.busy = false;
-    registrationState.status = '';
+    guard.finish();
     host.requestRender();
     const totalMs = performance.now() - startedAt;
     const overheadMs = Math.max(0, totalMs - setupMs - samplingMs - matchingMs - applyMs);
@@ -2014,13 +2343,18 @@ export async function alignAllTo(
 }
 
 /** Transforms replaced by the last `alignAllTo`, for a single-step undo. */
-let alignAllUndo: Map<number, THREE.Matrix4> | null = null;
+let alignAllUndo: { registry: FileEntryRegistry; transforms: Map<number, THREE.Matrix4> } | null =
+  null;
 
 export function undoAlignAll(host: RegistrationHost): void {
-  if (!alignAllUndo) {
+  if (!alignAllUndo || alignAllUndo.registry !== host.fileEntries || registrationState.busy) {
     return;
   }
-  for (const [fileIndex, matrix] of alignAllUndo) {
+  for (const [id, matrix] of alignAllUndo.transforms) {
+    const fileIndex = host.fileEntries.indexOf(id);
+    if (fileIndex < 0) {
+      continue;
+    }
     host.setTransformationMatrix(fileIndex, matrix.clone());
     host.updateMatrixTextarea(fileIndex);
   }
@@ -2029,8 +2363,8 @@ export function undoAlignAll(host: RegistrationHost): void {
   registrationState.canUndoAll = false;
   registrationState.alignEntries = [];
   registrationState.alignDone = 0;
-  registrationState.alignmentAnchorIndex = null;
-  registrationState.alignedIndices = [];
+  registrationState.alignmentAnchorId = null;
+  registrationState.alignedIds = [];
   registrationState.result = 'Reverted every transform that align-all changed.';
   host.requestRender();
 }

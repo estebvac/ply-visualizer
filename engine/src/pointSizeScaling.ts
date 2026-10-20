@@ -4,21 +4,19 @@ import { SpatialData } from './interfaces';
 import { DEFAULT_POINT_SIZE } from './visualization/PointCloudRenderer';
 
 export interface PointSizeScalingHost {
-  fileEntries: FileEntryRegistry;
   screenSpaceScaling: boolean;
   allowTransparency: boolean;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
-  meshes: (THREE.Mesh | THREE.Points | THREE.LineSegments | null)[];
-  pointSizes: number[];
-  vertexPointsObjects: (THREE.Points | null)[];
-  multiMaterialGroups: (THREE.Group | null)[];
-  spatialFiles: SpatialData[];
-  poseGroups: THREE.Group[];
-  materialMeshes: (THREE.Object3D[] | null)[];
+  meshes: readonly (THREE.Mesh | THREE.Points | THREE.LineSegments | null)[];
+
+  spatialFiles: readonly SpatialData[];
+  poseGroups: readonly THREE.Group[];
+
   requestRender(): void;
   showStatus(message: string): void;
   applyTransformationMatrix(fileIndex: number): void;
+  fileEntries: FileEntryRegistry;
 }
 
 /**
@@ -30,6 +28,8 @@ function setPointSize(
   material: THREE.PointsMaterial,
   size: number
 ): void {
+  // Size is a uniform: invalidating the program here also invalidates the
+  // adaptive round pass and forces shader-parameter work on every zoom update.
   material.size = size;
 }
 
@@ -70,7 +70,10 @@ export function updateAllPointSizesForDistance(host: PointSizeScalingHost): void
     if (object instanceof THREE.Points || object instanceof THREE.Mesh) {
       const geometry = object.geometry;
       if (geometry) {
-        geometry.computeBoundingBox();
+        // Positions do not change after a load; the transform is applied below.
+        if (!geometry.boundingBox) {
+          geometry.computeBoundingBox();
+        }
         if (geometry.boundingBox) {
           const transformedBox = geometry.boundingBox.clone().applyMatrix4(object.matrixWorld);
           box.union(transformedBox);
@@ -86,34 +89,34 @@ export function updateAllPointSizesForDistance(host: PointSizeScalingHost): void
   const cameraDistance = host.camera.position.distanceTo(sceneCenter);
 
   // Apply distance-based scaling to all point materials
-  host.meshes.forEach((mesh, index) => {
+  host.fileEntries.ofKind('spatial').forEach(entry => {
+    const mesh = entry.spatial!.object;
     if (mesh instanceof THREE.Points && mesh.material instanceof THREE.PointsMaterial) {
       const material = mesh.material as THREE.PointsMaterial;
-      const baseSize = host.pointSizes[index] || 1.0;
+      const baseSize = entry.state.pointSize || 1.0;
       setPointSize(host, material, calculateScreenSpacePointSize(baseSize, cameraDistance));
-      material.needsUpdate = true;
     }
   });
 
   // Update vertex points objects
-  host.vertexPointsObjects.forEach((vertexPoints, index) => {
+  host.fileEntries.all.forEach(entry => {
+    const vertexPoints = entry.resources.vertexPoints;
     if (vertexPoints && vertexPoints.material instanceof THREE.PointsMaterial) {
       const material = vertexPoints.material as THREE.PointsMaterial;
-      const baseSize = host.pointSizes[index] || 1.0;
+      const baseSize = entry.state.pointSize || 1.0;
       setPointSize(host, material, calculateScreenSpacePointSize(baseSize, cameraDistance));
-      material.needsUpdate = true;
     }
   });
 
   // Update multi-material groups
-  host.multiMaterialGroups.forEach((group, index) => {
+  host.fileEntries.all.forEach(entry => {
+    const group = entry.resources.materialGroup;
     if (group) {
       group.traverse(child => {
         if (child instanceof THREE.Points && child.material instanceof THREE.PointsMaterial) {
           const material = child.material as THREE.PointsMaterial;
-          const baseSize = host.pointSizes[index] || DEFAULT_POINT_SIZE;
+          const baseSize = entry.state.pointSize || DEFAULT_POINT_SIZE;
           setPointSize(host, material, calculateScreenSpacePointSize(baseSize, cameraDistance));
-          material.needsUpdate = true;
         }
       });
     }
@@ -133,10 +136,10 @@ export function updatePointSize(
   fileIndex: number,
   newSize: number
 ): void {
-  if (fileIndex >= 0 && fileIndex < host.pointSizes.length) {
-    const oldSize = host.pointSizes[fileIndex];
+  if (fileIndex >= 0 && fileIndex < host.fileEntries.length) {
+    const oldSize = host.fileEntries.require(fileIndex).state.pointSize;
     console.log(`🎚️ Updating point size for file ${fileIndex}: ${oldSize} → ${newSize}`);
-    host.pointSizes[fileIndex] = newSize;
+    host.fileEntries.require(fileIndex).state.pointSize = newSize;
 
     const kind = host.fileEntries.kindAt(fileIndex);
     const isPose = kind === 'pose';
@@ -170,8 +173,8 @@ export function updatePointSize(
       }
     } else if (isObjFile) {
       // Handle OBJ files - update both points and lines in multi-material groups
-      const multiMaterialGroup = host.multiMaterialGroups[fileIndex];
-      const subMeshes = host.materialMeshes[fileIndex];
+      const multiMaterialGroup = host.fileEntries.require(fileIndex).resources.materialGroup;
+      const subMeshes = host.fileEntries.require(fileIndex).resources.materialMeshes;
 
       if (multiMaterialGroup && subMeshes) {
         // Update all sub-meshes in multi-material OBJ
@@ -244,43 +247,43 @@ export function updatePointSize(
     }
 
     // Always update vertex points object if it exists (used by render modes for ALL file types)
-    const vertexPointsObject = host.vertexPointsObjects[fileIndex];
+    const vertexPointsObject = host.fileEntries.require(fileIndex).resources.vertexPoints;
     if (vertexPointsObject && vertexPointsObject.material instanceof THREE.PointsMaterial) {
       setPointSize(host, vertexPointsObject.material, newSize);
       console.log(`✅ Point size applied to vertex points for file ${fileIndex}: ${newSize}`);
     }
   } else {
     console.error(
-      `❌ Invalid fileIndex ${fileIndex} for pointSizes array of length ${host.pointSizes.length}`
+      `❌ Invalid fileIndex ${fileIndex} for pointSizes array of length ${host.fileEntries.length}`
     );
   }
 }
 
 export function restoreOriginalPointSizes(host: PointSizeScalingHost): void {
   // Restore original point sizes from stored values
-  host.meshes.forEach((mesh, index) => {
+  host.fileEntries.ofKind('spatial').forEach(entry => {
+    const mesh = entry.spatial!.object;
     if (mesh instanceof THREE.Points && mesh.material instanceof THREE.PointsMaterial) {
       const material = mesh.material as THREE.PointsMaterial;
-      setPointSize(host, material, host.pointSizes[index] || 1.0);
-      material.needsUpdate = true;
+      setPointSize(host, material, entry.state.pointSize || 1.0);
     }
   });
 
-  host.vertexPointsObjects.forEach((vertexPoints, index) => {
+  host.fileEntries.all.forEach(entry => {
+    const vertexPoints = entry.resources.vertexPoints;
     if (vertexPoints && vertexPoints.material instanceof THREE.PointsMaterial) {
       const material = vertexPoints.material as THREE.PointsMaterial;
-      setPointSize(host, material, host.pointSizes[index] || 1.0);
-      material.needsUpdate = true;
+      setPointSize(host, material, entry.state.pointSize || 1.0);
     }
   });
 
-  host.multiMaterialGroups.forEach((group, index) => {
+  host.fileEntries.all.forEach(entry => {
+    const group = entry.resources.materialGroup;
     if (group) {
       group.traverse(child => {
         if (child instanceof THREE.Points && child.material instanceof THREE.PointsMaterial) {
           const material = child.material as THREE.PointsMaterial;
-          setPointSize(host, material, host.pointSizes[index] || DEFAULT_POINT_SIZE);
-          material.needsUpdate = true;
+          setPointSize(host, material, entry.state.pointSize || DEFAULT_POINT_SIZE);
         }
       });
     }

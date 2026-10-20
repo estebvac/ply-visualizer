@@ -1,4 +1,5 @@
-import { SpatialData, SpatialFace, SpatialVertex } from './interfaces';
+import { ScalarArray, SpatialData, SpatialVertex } from './interfaces';
+import { allocateScalarArray, scalarArrayFromBuffer, scalarArrayType } from './utils/scalarFields';
 import { noteContainerScanLoaded } from './utils/containerPerf';
 import { uiState } from './state/ui.svelte';
 
@@ -17,12 +18,12 @@ export interface LargeFileChunkingHost {
       vertices: SpatialVertex[];
       positionsArray?: Float32Array;
       colorsArray?: Uint8Array;
-      normalsArray?: Float32Array;
-      scalarFields?: Record<string, Float32Array>;
+      normalsArray?: Float32Array | Int16Array;
+      scalarFields?: Record<string, ScalarArray>;
       useTypedArrays: boolean;
       hasColors: boolean;
       hasNormals: boolean;
-      faces: SpatialFace[];
+      indicesArray: Uint32Array | null;
       format: string;
       comments: string[];
       messageType: string;
@@ -68,7 +69,7 @@ export function handleStartLargeFile(host: LargeFileChunkingHost, message: any):
     ? Object.fromEntries(
         (message.scalarFieldNames || []).map((name: string) => [
           name,
-          new Float32Array(message.totalVertices),
+          allocateScalarArray(message.scalarFieldTypes?.[name], message.totalVertices),
         ])
       )
     : undefined;
@@ -83,13 +84,16 @@ export function handleStartLargeFile(host: LargeFileChunkingHost, message: any):
       useTypedArrays && message.hasColors ? new Uint8Array(message.totalVertices * 3) : undefined,
     normalsArray:
       useTypedArrays && message.hasNormals
-        ? new Float32Array(message.totalVertices * 3)
+        ? // A point cloud's unit normals arrive packed (utils/normals.ts).
+          message.normalType === 'Int16Array'
+          ? new Int16Array(message.totalVertices * 3)
+          : new Float32Array(message.totalVertices * 3)
         : undefined,
     scalarFields,
     useTypedArrays,
     hasColors: message.hasColors,
     hasNormals: message.hasNormals,
-    faces: message.faces || [],
+    indicesArray: message.indexBuffer ? new Uint32Array(message.indexBuffer) : null,
     format: message.format,
     comments: message.comments || [],
     messageType: message.messageType,
@@ -134,10 +138,20 @@ export function handleLargeFileChunk(host: LargeFileChunkingHost, message: any):
       fileState.colorsArray.set(new Uint8Array(message.colorBuffer), startIndex * 3);
     }
     if (fileState.normalsArray && message.normalBuffer) {
-      fileState.normalsArray.set(new Float32Array(message.normalBuffer), startIndex * 3);
+      const normals = fileState.normalsArray;
+      normals.set(
+        normals instanceof Int16Array
+          ? new Int16Array(message.normalBuffer)
+          : new Float32Array(message.normalBuffer),
+        startIndex * 3
+      );
     }
     for (const [name, buffer] of Object.entries(message.scalarFieldBuffers || {})) {
-      fileState.scalarFields?.[name]?.set(new Float32Array(buffer as ArrayBuffer), startIndex);
+      const field = fileState.scalarFields?.[name];
+      field?.set(
+        scalarArrayFromBuffer(buffer as ArrayBuffer, scalarArrayType(field)) as never,
+        startIndex
+      );
     }
   } else {
     for (let i = 0; i < chunkVertices.length; i++) {
@@ -202,12 +216,13 @@ export async function handleLargeFileComplete(
   // Create complete PLY data object
   const spatialData: SpatialData = {
     vertices: fileState.vertices,
-    faces: fileState.faces,
+    faces: [],
+    indicesArray: fileState.indicesArray,
     format: fileState.format as any,
     version: '1.0',
     comments: fileState.comments,
     vertexCount: fileState.totalVertices,
-    faceCount: fileState.faces.length,
+    faceCount: fileState.indicesArray ? fileState.indicesArray.length / 3 : 0,
     hasColors: fileState.hasColors,
     hasNormals: fileState.hasNormals,
     hasIntensity: fileState.hasIntensity,
@@ -217,7 +232,8 @@ export async function handleLargeFileComplete(
     positionsArray: fileState.positionsArray,
     colorsArray: fileState.colorsArray ?? null,
     normalsArray: fileState.normalsArray ?? null,
-    intensityArray: fileState.scalarFields?.intensity ?? null,
+    // Intensity is never compacted (see compactScalarFields).
+    intensityArray: (fileState.scalarFields?.intensity as Float32Array | undefined) ?? null,
     scalarFields: fileState.scalarFields,
     useTypedArrays: fileState.useTypedArrays,
     sourcePointCount: fileState.sourcePointCount,

@@ -8,10 +8,14 @@ module.exports = [
   {
     target: 'node',
     mode: 'none',
-    entry: './src/extension.ts',
+    entry: {
+      extension: './src/extension.ts',
+      registrationWorker: './src/providerHandlers/registrationWorker.ts',
+      parseWorker: './src/providerHandlers/parseWorker.ts',
+    },
     output: {
       path: path.resolve(__dirname, 'out'),
-      filename: 'extension.js',
+      filename: '[name].js',
       libraryTarget: 'commonjs2',
       devtoolModuleFilenameTemplate: '../[resource-path]',
     },
@@ -35,6 +39,17 @@ module.exports = [
             to: 'wasm/pointcloud-parser',
             globOptions: {
               ignore: ['**/package.json', '**/.gitignore', '**/*.d.ts'],
+            },
+          },
+          {
+            // The same crate built for `initSync`: the extension host compiles
+            // it once and hands the compiled module to every decoder worker
+            // (parsePool.ts), so code V8 optimizes in one worker serves them
+            // all instead of each fresh worker starting at the baseline tier.
+            from: 'wasm/pointcloud-parser/pkg-web',
+            to: 'wasm/pointcloud-parser-web',
+            globOptions: {
+              ignore: ['**/.gitignore', '**/*.d.ts'],
             },
           },
           {
@@ -67,6 +82,20 @@ module.exports = [
         },
       ],
     },
+  },
+  {
+    name: 'web-extension',
+    target: 'webworker',
+    mode: 'none',
+    entry: './src/web/extension.ts',
+    output: {
+      path: path.resolve(__dirname, 'out/web'),
+      filename: 'extension.js',
+      libraryTarget: 'commonjs2',
+    },
+    externals: { vscode: 'commonjs vscode' },
+    resolve: { extensions: ['.ts', '.js'], mainFields: ['browser', 'module', 'main'] },
+    module: { rules: [{ test: /\.ts$/, exclude: /node_modules/, use: 'ts-loader' }] },
   },
   // Webview bundle
   {
@@ -113,6 +142,14 @@ module.exports = [
       splitChunks: false,
     },
     module: {
+      parser: {
+        javascript: {
+          // Workers that must also start inside a VS Code webview are created
+          // through utils/webviewWorker.ts; see there. The import path is the
+          // one every depth module uses.
+          worker: ['...', 'WorkerScript from ../utils/webviewWorker'],
+        },
+      },
       rules: [
         {
           // Matches both `.svelte` components and `.svelte.ts`/`.svelte.js`

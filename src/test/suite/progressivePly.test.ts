@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { parseProgressivePlyHeader } from '../../progressivePly/header';
+import { probeEagerBinaryPlyPrefetch } from '../../progressivePly/prefetch';
 import {
   acceptProgressiveGeneration,
   isCurrentProgressiveGeneration,
@@ -10,6 +11,7 @@ import {
 import {
   estimateDecodedPlyBytes,
   shouldUseProgressivePly,
+  shouldEagerlyPrefetchPly,
   supportsProgressivePlyUri,
 } from '../../progressivePly/routing';
 import {
@@ -89,6 +91,51 @@ function makeBinaryPly(pointCount = 2048): Buffer {
 }
 
 suite('Progressive PLY remote loading', () => {
+  test('prevents eager whole-cloud prefetch for oversized and decoded-heavy PLY files', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ply-prefetch-guard-'));
+    const small = path.join(dir, 'small.ply');
+    const large = path.join(dir, 'large.ply');
+    const decodedHeavy = path.join(dir, 'decoded-heavy.ply');
+    const ascii = path.join(dir, 'ascii.ply');
+    const config = {
+      fileSizeThresholdBytes: 256 * 1024 * 1024,
+      decodedBytesThresholdBytes: 512 * 1024 * 1024,
+    };
+
+    try {
+      const shortBinary = makeBinaryPly(4);
+      fs.writeFileSync(small, shortBinary);
+      fs.writeFileSync(large, shortBinary);
+      // A sparse backing file supplies a realistic multi-GB stat size without
+      // allocating or reading that body during the test.
+      fs.truncateSync(large, 1024 * 1024 * 1024);
+      assert.strictEqual(probeEagerBinaryPlyPrefetch(large, config), null);
+      assert.strictEqual(probeEagerBinaryPlyPrefetch(small, config), shortBinary.byteLength);
+
+      const hugeVertexHeader = Buffer.from(
+        shortBinary.subarray(0, shortBinary.indexOf('end_header')).toString('ascii')
+          .replace('element vertex 4', 'element vertex 50000000') + 'end_header\n',
+        'ascii'
+      );
+      fs.writeFileSync(decodedHeavy, hugeVertexHeader);
+      const parsed = parseProgressivePlyHeader(hugeVertexHeader);
+      assert.strictEqual(shouldUseProgressivePly(hugeVertexHeader.byteLength, { ...parsed, fixedVertexStride: parsed.vertexStride }, config), true);
+      assert.strictEqual(shouldEagerlyPrefetchPly(hugeVertexHeader.byteLength, { ...parsed, fixedVertexStride: parsed.vertexStride }, config), false);
+      assert.strictEqual(probeEagerBinaryPlyPrefetch(decodedHeavy, config), null);
+
+      fs.writeFileSync(ascii, 'ply\nformat ascii 1.0\nelement vertex 0\nend_header\n');
+      assert.strictEqual(probeEagerBinaryPlyPrefetch(ascii, config), null);
+
+      // A reduced user-configured disk threshold also blocks eager prefetch.
+      assert.strictEqual(probeEagerBinaryPlyPrefetch(small, {
+        ...config,
+        fileSizeThresholdBytes: shortBinary.byteLength,
+      }), null);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('rejects stale camera generations before remote tile work', () => {
     const state = { latestGeneration: -1 };
     assert.strictEqual(acceptProgressiveGeneration(state, 0), true);

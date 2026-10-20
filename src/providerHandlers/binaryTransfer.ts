@@ -1,3 +1,7 @@
+import { sendToWebview } from './webviewTransport';
+import { scalarArrayTypes } from '../../engine/src/utils/scalarFields';
+import { compactPointNormals } from '../../engine/src/utils/normals';
+import type { ScalarArray } from '../../engine/src/interfaces';
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 
@@ -21,12 +25,98 @@ export function toArrayBuffer(data: Uint8Array): ArrayBuffer {
 export async function readFileFast(uri: vscode.Uri): Promise<Uint8Array> {
   if (uri.scheme === 'file') {
     try {
-      return await fs.promises.readFile(uri.fsPath);
+      const handle = await fs.promises.open(uri.fsPath, 'r');
+      try {
+        const size = (await handle.stat()).size;
+        if (size < SHARED_READ_SPLIT_BYTES) {
+          return await handle.readFile();
+        }
+        // Concurrent reads, as readFileShared; a non-pooled Buffer, as readFile.
+        const bytes = Buffer.allocUnsafeSlow(size);
+        await readConcurrently(handle, bytes, size, uri.fsPath);
+        return bytes;
+      } finally {
+        await handle.close();
+      }
     } catch {
       /* fall back to the workspace filesystem */
     }
   }
   return vscode.workspace.fs.readFile(uri);
+}
+
+/**
+ * A typed array's own bytes as an ArrayBuffer. The webview rebuilds each array
+ * from a whole buffer, so a view into a larger one would arrive as the wrong
+ * data; it is copied, and an array that owns its buffer is sent as is.
+ */
+function ownBuffer(view: ArrayBufferView): ArrayBuffer {
+  const shared =
+    typeof SharedArrayBuffer !== 'undefined' && view.buffer instanceof SharedArrayBuffer;
+  return view.byteOffset === 0 && view.byteLength === view.buffer.byteLength && !shared
+    ? (view.buffer as ArrayBuffer)
+    : (new Uint8Array(view.buffer, view.byteOffset, view.byteLength).slice().buffer as ArrayBuffer);
+}
+
+const SHARED_READ_PARTS = 4;
+const SHARED_READ_SPLIT_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Fill `bytes` with the file in several positional reads at once, which keeps
+ * libuv's threads busy: a warm 723 MB archive read in ~40 ms this way against
+ * ~110 ms as one read (or fs.readFile).
+ */
+async function readConcurrently(
+  handle: fs.promises.FileHandle,
+  bytes: Uint8Array,
+  size: number,
+  name: string
+): Promise<void> {
+  const parts = size >= SHARED_READ_SPLIT_BYTES ? SHARED_READ_PARTS : 1;
+  const step = Math.ceil(size / parts);
+  await Promise.all(
+    Array.from({ length: parts }, async (_, part) => {
+      let filled = part * step;
+      const end = Math.min(size, filled + step);
+      while (filled < end) {
+        const { bytesRead } = await handle.read(bytes, filled, end - filled, filled);
+        if (bytesRead === 0) {
+          throw new Error(`${name} ended early`);
+        }
+        filled += bytesRead;
+      }
+    })
+  );
+}
+
+/**
+ * Read a file into memory that the decoder workers can share.
+ *
+ * The decoders run in worker threads (parsePool.ts), and a range or scan job
+ * needs only part of the file. A SharedArrayBuffer lets every worker read the
+ * same bytes without each being sent a copy; a worker hands only its own part
+ * to wasm.
+ */
+export async function readFileShared(uri: vscode.Uri): Promise<Uint8Array> {
+  if (uri.scheme === 'file') {
+    try {
+      const handle = await fs.promises.open(uri.fsPath, 'r');
+      try {
+        const size = (await handle.stat()).size;
+        const bytes = new Uint8Array(new SharedArrayBuffer(size));
+        await readConcurrently(handle, bytes, size, uri.fsPath);
+        return bytes;
+      } finally {
+        await handle.close();
+      }
+    } catch {
+      /* fall back to the workspace filesystem */
+    }
+  }
+  const read = await vscode.workspace.fs.readFile(uri);
+  const shared = new Uint8Array(new SharedArrayBuffer(read.byteLength));
+  shared.set(read);
+  return shared;
 }
 
 /**
@@ -97,7 +187,7 @@ export async function sendUltimateRawBinary(
   );
 
   // Send raw binary data + parsing metadata
-  webviewPanel.webview.postMessage({
+  sendToWebview(webviewPanel, {
     type: 'ultimateRawBinaryData',
     messageType: messageType,
     // Wall-clock epoch stamped right before postMessage so the webview can
@@ -135,7 +225,7 @@ export function sendSplatContainerUri(
   messageType: 'multiSpatialData' | 'addFiles',
   fileSizeInBytes?: number
 ): void {
-  void webviewPanel.webview.postMessage({
+  void sendToWebview(webviewPanel, {
     type: 'splatContainerUri',
     messageType,
     fileUri: webviewPanel.webview.asWebviewUri(fileUri).toString(),
@@ -160,7 +250,7 @@ export async function resendSplatContainerBytes(
   try {
     const uri = vscode.Uri.parse(message.docUri);
     const bytes = await vscode.workspace.fs.readFile(uri);
-    void webviewPanel.webview.postMessage({
+    void sendToWebview(webviewPanel, {
       type: 'splatContainerUri',
       messageType: message.messageType || 'addFiles',
       data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
@@ -170,7 +260,7 @@ export async function resendSplatContainerBytes(
     });
   } catch (error) {
     console.error('Splat container fallback failed:', error);
-    void webviewPanel.webview.postMessage({
+    void sendToWebview(webviewPanel, {
       type: 'loadingError',
       fileName: message.fileName,
       fileType: 'gaussian splat',
@@ -199,6 +289,10 @@ export async function sendSpatialDataToWebview(
     );
     const startTime = performance.now();
     let usedChunking = false;
+    // Packed here, off the viewer's UI thread, rather than when the webview
+    // builds the cloud; it also halves the normals on the wire. The message
+    // says which type they are (normalType) - a buffer carries no type.
+    compactPointNormals(spatialData);
 
     try {
       const scalarBytes = Object.values(spatialData.scalarFields || {}).reduce(
@@ -238,6 +332,28 @@ export async function sendSpatialDataToWebview(
   }
 }
 
+/**
+ * A file's faces as one triangle index buffer: the parser's own when it made
+ * one, otherwise the face objects fan-triangulated. (Taking each face's first
+ * three indices, as this used to, dropped half of every quad.)
+ */
+function triangleIndices(spatialData: any): Uint32Array | null {
+  if (spatialData.indicesArray instanceof Uint32Array) {
+    return spatialData.indicesArray;
+  }
+  const faces: { indices: number[] }[] = spatialData.faces ?? [];
+  if (faces.length === 0) {
+    return null;
+  }
+  const flat: number[] = [];
+  for (const face of faces) {
+    for (let k = 1; k < face.indices.length - 1; k++) {
+      flat.push(face.indices[0], face.indices[k], face.indices[k + 1]);
+    }
+  }
+  return flat.length > 0 ? Uint32Array.from(flat) : null;
+}
+
 export async function sendBinaryData(
   webviewPanel: vscode.WebviewPanel,
   spatialData: any,
@@ -250,7 +366,7 @@ export async function sendBinaryData(
 
   let positionBuffer: Float32Array;
   let colorBuffer: Uint8Array | null = null;
-  let normalBuffer: Float32Array | null = null;
+  let normalBuffer: Float32Array | Int16Array | null = null;
 
   if (spatialData.useTypedArrays) {
     // Ultra-fast: Use TypedArrays directly (zero-copy)
@@ -301,19 +417,7 @@ export async function sendBinaryData(
     }
   }
 
-  // Handle faces if present
-  let indexBuffer: Uint32Array | null = null;
-  if (spatialData.faces && spatialData.faces.length > 0) {
-    const faces = spatialData.faces;
-    indexBuffer = new Uint32Array(faces.length * 3); // Assuming triangles
-
-    for (let i = 0; i < faces.length; i++) {
-      const face = faces[i];
-      indexBuffer[i * 3] = face.indices[0];
-      indexBuffer[i * 3 + 1] = face.indices[1];
-      indexBuffer[i * 3 + 2] = face.indices[2];
-    }
-  }
+  const indexBuffer = triangleIndices(spatialData);
 
   // Calculate total binary size
   const scalarSize = Object.values(spatialData.scalarFields || {}).reduce(
@@ -332,28 +436,32 @@ export async function sendBinaryData(
   );
 
   // Send metadata + binary buffers
-  const delivered = await webviewPanel.webview.postMessage({
+  const delivered = await sendToWebview(webviewPanel, {
     type: 'binarySpatialData',
     messageType: messageType,
     fileName: spatialData.fileName,
     shortPath: spatialData.shortPath,
     vertexCount: vertexCount,
-    faceCount: spatialData.faceCount,
+    faceCount: indexBuffer ? indexBuffer.length / 3 : 0,
     hasColors: hasColors,
     hasNormals: hasNormals,
     hasIntensity: !!spatialData.hasIntensity,
     format: spatialData.format,
     comments: spatialData.comments,
     // Binary buffers (will be transferred efficiently)
-    positionBuffer: positionBuffer.buffer,
-    colorBuffer: colorBuffer ? colorBuffer.buffer : null,
-    normalBuffer: normalBuffer ? normalBuffer.buffer : null,
-    indexBuffer: indexBuffer ? indexBuffer.buffer : null,
+    positionBuffer: ownBuffer(positionBuffer),
+    colorBuffer: colorBuffer ? ownBuffer(colorBuffer) : null,
+    normalBuffer: normalBuffer ? ownBuffer(normalBuffer) : null,
+    normalType: normalBuffer instanceof Int16Array ? 'Int16Array' : 'Float32Array',
+    indexBuffer: indexBuffer ? ownBuffer(indexBuffer) : null,
     scalarFieldBuffers: Object.fromEntries(
       Object.entries(spatialData.scalarFields || {}).map(([name, values]) => [
         name,
-        (values as Float32Array).buffer,
+        ownBuffer(values as ScalarArray),
       ])
+    ),
+    scalarFieldTypes: scalarArrayTypes(
+      spatialData.scalarFields as Record<string, ScalarArray> | undefined
     ),
     sourcePointCount: spatialData.sourcePointCount,
     sourceOrigin: spatialData.sourceOrigin,
@@ -385,7 +493,7 @@ export async function sendLargeFileInChunksOptimized(
   const vertices = spatialData.vertices;
   const colors = spatialData.colors;
   const normals = spatialData.normals;
-  const faces = spatialData.faces;
+  const indices = triangleIndices(spatialData);
 
   const totalChunks = Math.ceil(totalVertices / CHUNK_SIZE);
   console.log(
@@ -396,11 +504,11 @@ export async function sendLargeFileInChunksOptimized(
   let firstChunkTime = 0;
 
   const transferId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const scalarFields = (spatialData.scalarFields || {}) as Record<string, Float32Array>;
+  const scalarFields: Record<string, ScalarArray> = spatialData.scalarFields || {};
 
   // Send start message. A unique key matters for E57 files whose scans may
   // legally have duplicate or missing names.
-  const started = await webviewPanel.webview.postMessage({
+  const started = await sendToWebview(webviewPanel, {
     type: 'startLargeFile',
     transferId,
     fileName: spatialData.fileName,
@@ -409,13 +517,15 @@ export async function sendLargeFileInChunksOptimized(
     totalChunks: totalChunks,
     hasColors: spatialData.hasColors,
     hasNormals: spatialData.hasNormals,
-    faces: faces,
+    normalType: spatialData.normalsArray instanceof Int16Array ? 'Int16Array' : 'Float32Array',
+    indexBuffer: indices ? indices.buffer : null,
     format: spatialData.format,
     comments: spatialData.comments,
     messageType: messageType,
     useTypedArrays: typed,
     hasIntensity: !!spatialData.hasIntensity,
     scalarFieldNames: Object.keys(scalarFields),
+    scalarFieldTypes: scalarArrayTypes(scalarFields),
     sourcePointCount: spatialData.sourcePointCount,
     sourceOrigin: spatialData.sourceOrigin,
     metadata: spatialData.metadata,
@@ -429,9 +539,17 @@ export async function sendLargeFileInChunksOptimized(
     throw new Error(`The webview rejected the chunked-transfer header for ${spatialData.fileName}`);
   }
 
+  // Chunks posted but not yet confirmed. Allowing a second one overlaps
+  // slicing the next chunk with the IPC copy of the previous, at the cost of
+  // one more chunk alive at a time; postMessage keeps their order.
+  const MAX_IN_FLIGHT = 2;
+  const inFlight: Array<Promise<void>> = [];
   try {
     // Send chunks with minimal overhead
     for (let i = 0; i < totalChunks; i++) {
+      if (inFlight.length >= MAX_IN_FLIGHT) {
+        await inFlight.shift();
+      }
       const startIdx = i * CHUNK_SIZE;
       const endIdx = Math.min(startIdx + CHUNK_SIZE, totalVertices);
       const chunkSize = endIdx - startIdx;
@@ -461,7 +579,8 @@ export async function sendLargeFileInChunksOptimized(
       const chunkColors = !typed && colors ? colors.slice(startIdx, endIdx) : undefined;
       const chunkNormals = !typed && normals ? normals.slice(startIdx, endIdx) : undefined;
 
-      const delivered = await webviewPanel.webview.postMessage({
+      const chunkIndex = i;
+      const sent = sendToWebview(webviewPanel, {
         type: 'largeFileChunk',
         transferId,
         fileName: spatialData.fileName,
@@ -476,16 +595,19 @@ export async function sendLargeFileInChunksOptimized(
         colorBuffer,
         normalBuffer,
         scalarFieldBuffers,
+      }).then(delivered => {
+        if (!delivered) {
+          throw new Error(
+            `The webview rejected chunk ${chunkIndex + 1}/${totalChunks} for ${spatialData.fileName}`
+          );
+        }
+        if (chunkIndex === 0) {
+          firstChunkTime = performance.now();
+        }
       });
-      if (!delivered) {
-        throw new Error(
-          `The webview rejected chunk ${i + 1}/${totalChunks} for ${spatialData.fileName}`
-        );
-      }
-
-      if (i === 0) {
-        firstChunkTime = performance.now();
-      }
+      // Settled by the await below or in the catch; never left unhandled.
+      sent.catch(() => {});
+      inFlight.push(sent);
 
       // Log only every 5th chunk to reduce console spam
       if (i % 5 === 0 || i === totalChunks - 1) {
@@ -493,8 +615,12 @@ export async function sendLargeFileInChunksOptimized(
       }
     }
 
+    while (inFlight.length > 0) {
+      await inFlight.shift();
+    }
+
     // Send completion message
-    const completed = await webviewPanel.webview.postMessage({
+    const completed = await sendToWebview(webviewPanel, {
       type: 'largeFileComplete',
       transferId,
       fileName: spatialData.fileName,
@@ -505,7 +631,7 @@ export async function sendLargeFileInChunksOptimized(
     }
   } catch (error) {
     // Best-effort cleanup; the original transfer error remains authoritative.
-    await webviewPanel.webview.postMessage({
+    await sendToWebview(webviewPanel, {
       type: 'cancelLargeFile',
       transferId,
       fileName: spatialData.fileName,

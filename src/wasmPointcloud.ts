@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
+import type { ScalarArray } from '../engine/src/interfaces';
 import { createRequire } from 'module';
 
 /**
@@ -33,12 +34,13 @@ export interface WasmPointCloud {
 export interface WasmLidarCloud extends WasmPointCloud {
   name: string;
   sourcePointCount: number;
-  scalarFields: Record<string, Float32Array>;
+  /** Float32, or exact small integers once compacted (compactScalarFields). */
+  scalarFields: Record<string, ScalarArray>;
   metadata: Record<string, unknown>;
   sourceOrigin: Float64Array;
 }
 
-interface WasmE57Image extends Record<string, unknown> {
+export interface WasmE57Image extends Record<string, unknown> {
   associatedPointcloudGuid?: string;
   data: Uint8Array;
   mask?: Uint8Array;
@@ -48,6 +50,12 @@ let mod: any = null;
 let attempted = false;
 
 function load(): any {
+  // In a decoder worker: the crate instantiated from the shared module (see
+  // providerHandlers/parseWorker.ts).
+  const provided = (globalThis as { plySharedPointcloudWasm?: unknown }).plySharedPointcloudWasm;
+  if (provided) {
+    return provided;
+  }
   if (attempted) {
     return mod;
   }
@@ -57,7 +65,15 @@ function load(): any {
       typeof __non_webpack_require__ !== 'undefined'
         ? __non_webpack_require__
         : createRequire(__filename);
-    mod = req(path.join(__dirname, 'wasm', 'pointcloud-parser', 'pointcloud_parser.js'));
+    // The bundle has the package copied beside it; `tsc`'s out/src (the
+    // integration tests) reaches the built package in the repository, as
+    // providerHandlers/pointcloudWebGlue.ts does for the web build.
+    const candidates = [
+      path.join(__dirname, 'wasm', 'pointcloud-parser', 'pointcloud_parser.js'),
+      path.join(__dirname, '..', '..', 'wasm', 'pointcloud-parser', 'pkg', 'pointcloud_parser.js'),
+    ];
+    const file = candidates.find(candidate => fs.existsSync(candidate)) ?? candidates[0];
+    mod = req(file);
   } catch (error) {
     console.warn('[pointcloud-wasm] module unavailable, using JS parsers:', error);
     mod = null;
@@ -88,7 +104,8 @@ function takeNonEmpty(r: any, method: string): Float32Array | null {
   return value.length > 0 ? value : null;
 }
 
-function marshalLidarScan(r: any): WasmLidarCloud {
+/** A decoded LAS/LAZ/E57 scan out of wasm memory (shared with the decoder workers). */
+export function marshalLidarScan(r: any): WasmLidarCloud {
   const scalarFields: Record<string, Float32Array> = {};
   const fields: Array<[string, string]> = [
     ['intensity', 'take_intensity'],
@@ -132,7 +149,7 @@ function marshalLidarScan(r: any): WasmLidarCloud {
   return out;
 }
 
-function takeE57Images(collection: any): WasmE57Image[] {
+export function takeE57Images(collection: any): WasmE57Image[] {
   const images: WasmE57Image[] = [];
   for (let index = 0; index < Number(collection.image_count || 0); index++) {
     const image = collection.take_image(index);
@@ -150,7 +167,7 @@ function takeE57Images(collection: any): WasmE57Image[] {
   return images;
 }
 
-function associateE57Images(scans: WasmLidarCloud[], images: WasmE57Image[]): void {
+export function associateE57Images(scans: WasmLidarCloud[], images: WasmE57Image[]): void {
   if (!images.length || !scans.length) {
     return;
   }

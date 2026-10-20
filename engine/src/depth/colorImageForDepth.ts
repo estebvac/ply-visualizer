@@ -1,48 +1,38 @@
-import * as THREE from 'three';
-import { CameraParams, DepthConversionResult, SpatialData } from '../interfaces';
+import {
+  replaceSpatialGeometry,
+  type GeometryReplacementHost,
+} from '../visualization/replaceSpatialGeometry';
+import type { EntryRequest } from '../hosts/viewerProtocol';
+import type { FileEntryRegistry } from '../state/fileEntries';
+import { CameraParams, DepthBytes, DepthConversionResult, SpatialData } from '../interfaces';
 import { applyDepthResultTypedArrays } from './depthResultArrays';
 import { ColorImageLoader } from '../colorImageLoader';
 
-export interface ColorImageForDepthHost {
+export interface ColorImageForDepthHost extends GeometryReplacementHost {
   vscode: { postMessage(message: any): void };
-  fileDepthData: Map<
-    number,
-    {
-      originalData: ArrayBuffer;
-      fileName: string;
-      cameraParams: CameraParams;
-      depthDimensions: { width: number; height: number };
-      colorImageData?: any;
-      colorImageName?: string;
-    }
-  >;
   pendingDepthFiles: Map<string, { sceneMetadata?: any }>;
-  spatialFiles: SpatialData[];
-  meshes: (THREE.Mesh | THREE.Points | THREE.LineSegments)[];
-  pointSizes: number[];
   colorImageLoader: ColorImageLoader;
   needsRender: boolean;
   processDepthToPointCloud(
-    depthData: ArrayBuffer,
+    depthData: ArrayBuffer | DepthBytes,
     fileName: string,
     cameraParams: CameraParams,
-    colorImageData?: any
+    colorImageData?: ImageData,
+    signal?: AbortSignal
   ): Promise<DepthConversionResult>;
-  createMaterialForFile(data: SpatialData, fileIndex: number): THREE.Material;
-  createGeometryFromSpatialData(data: SpatialData): THREE.BufferGeometry;
-  captureDepthPanelStates(): Map<number, { panelOpen: boolean; formValues: any }>;
-  restoreDepthPanelStates(states: Map<number, { panelOpen: boolean; formValues: any }>): void;
   updateFileStats(): void;
   updateFileList(): void;
   showStatus(message: string): void;
   showError(message: string): void;
+  fileEntries: FileEntryRegistry;
 }
 
 export function requestColorImageForDepth(host: ColorImageForDepthHost, fileIndex: number): void {
   host.vscode.postMessage({
     type: 'selectColorImage',
     fileIndex: fileIndex,
-  });
+    entryId: host.fileEntries.require(fileIndex).id,
+  } satisfies EntryRequest);
 }
 
 export async function handleColorImageData(
@@ -57,8 +47,11 @@ export async function handleColorImageData(
     const file = new File([blob], message.fileName, { type: message.mimeType || 'image/png' });
 
     // Get depth data first to access dimensions
-    const fileIndex = message.fileIndex;
-    const depthData = host.fileDepthData.get(fileIndex);
+    let fileIndex = message.fileIndex;
+    const entry = host.fileEntries.require(fileIndex);
+    const signal = entry.beginDepthWork();
+    const version = entry.depthUpdate.version;
+    const depthData = host.fileEntries.at(fileIndex)?.spatial?.data.depthSource;
     if (!depthData) {
       throw new Error('No cached depth data found for this file');
     }
@@ -66,67 +59,46 @@ export async function handleColorImageData(
     // Load and validate the color image using ColorImageLoader
     const imageData = await host.colorImageLoader.loadAndValidate(file, depthData.depthDimensions);
 
+    fileIndex = host.fileEntries.indexOf(entry.id);
+    if (fileIndex < 0 || entry.depthUpdate.version !== version) {
+      return;
+    }
     if (!imageData) {
       return; // Error already shown by ColorImageLoader
     }
 
-    // Store color image data and name in depth data for future reprocessing
-    depthData.colorImageData = imageData;
-    depthData.colorImageName = message.fileName;
-
     // Reprocess depth image with color data
+    const cameraParams = { ...depthData.cameraParams };
     const result = await host.processDepthToPointCloud(
       depthData.originalData,
       depthData.fileName,
-      depthData.cameraParams,
-      imageData
+      cameraParams,
+      imageData,
+      signal
     );
 
-    // Update the PLY data
-    const spatialData = host.spatialFiles[fileIndex];
+    fileIndex = host.fileEntries.indexOf(entry.id);
+    if (fileIndex < 0 || entry.depthUpdate.version !== version) {
+      return;
+    }
+    const spatialData: SpatialData = {
+      ...entry.spatial!.data,
+      depthSource: {
+        ...depthData,
+        cameraParams,
+        colorImageData: imageData,
+        colorImageName: message.fileName,
+      },
+    };
     applyDepthResultTypedArrays(spatialData, result);
-    // Mark as depth-derived so gamma correction knows these are already linear colors
-    (spatialData as any).isDepthDerived = true;
-
-    // Update the mesh with colored data
-    const oldMaterial = host.meshes[fileIndex].material;
-    const newMaterial = host.createMaterialForFile(spatialData, fileIndex);
-    host.meshes[fileIndex].material = newMaterial;
-
-    // Ensure point size is correctly applied to the new material
-    if (
-      host.meshes[fileIndex] instanceof THREE.Points &&
-      newMaterial instanceof THREE.PointsMaterial
-    ) {
-      const currentPointSize = host.pointSizes[fileIndex] || 0.001;
-      newMaterial.size = currentPointSize;
-      console.log(
-        `🔧 Applied point size ${currentPointSize} to color-updated depth material for file ${fileIndex}`
-      );
-    }
-
-    const mesh = host.meshes[fileIndex] as THREE.Points;
-    const oldGeometry = mesh.geometry;
-    mesh.geometry = host.createGeometryFromSpatialData(spatialData);
-    oldGeometry.dispose();
-
-    // Dispose old material
-    if (oldMaterial) {
-      if (Array.isArray(oldMaterial)) {
-        oldMaterial.forEach(mat => mat.dispose());
-      } else {
-        oldMaterial.dispose();
-      }
-    }
+    replaceSpatialGeometry(host, entry, spatialData, fileIndex);
 
     // Trigger re-render to display the updated colors
     host.needsRender = true;
 
-    // Update UI (preserve depth panel states)
-    const openPanelStates = host.captureDepthPanelStates();
+    // Refresh entry data in the file list
     host.updateFileStats();
     host.updateFileList();
-    host.restoreDepthPanelStates(openPanelStates);
     host.showStatus(`Color image "${message.fileName}" applied successfully!`);
 
     // Check if this is part of a dataset workflow
@@ -142,6 +114,9 @@ export async function handleColorImageData(
       );
     }
   } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return;
+    }
     console.error('Error handling color image data:', error);
     host.showError(
       `Failed to apply color image: ${error instanceof Error ? error.message : String(error)}`
@@ -153,12 +128,12 @@ export function getStoredColorImageName(
   host: ColorImageForDepthHost,
   fileIndex: number
 ): string | null {
-  const depthData = host.fileDepthData.get(fileIndex);
+  const depthData = host.fileEntries.at(fileIndex)?.spatial?.data.depthSource;
   return depthData?.colorImageName || null;
 }
 
 export function getImageSizeDisplay(host: ColorImageForDepthHost, fileIndex: number): string {
-  const depthData = host.fileDepthData.get(fileIndex);
+  const depthData = host.fileEntries.at(fileIndex)?.spatial?.data.depthSource;
   if (depthData?.depthDimensions) {
     const { width, height } = depthData.depthDimensions;
     return `Image Size: Width: ${width}, Height: ${height}`;
@@ -170,69 +145,47 @@ export async function removeColorImageFromDepth(
   host: ColorImageForDepthHost,
   fileIndex: number
 ): Promise<void> {
+  const entry = host.fileEntries.require(fileIndex);
+  const signal = entry.beginDepthWork();
+  const version = entry.depthUpdate.version;
   try {
-    const depthData = host.fileDepthData.get(fileIndex);
+    const depthData = host.fileEntries.at(fileIndex)?.spatial?.data.depthSource;
     if (!depthData) {
       throw new Error('No cached Depth data found for this file');
     }
 
     host.showStatus('Removing color image and reverting to default colors...');
 
-    // Remove stored color image data
-    delete depthData.colorImageData;
-    delete depthData.colorImageName;
-
     // Reprocess depth image without color data (will use default grayscale colors)
+    const cameraParams = { ...depthData.cameraParams };
     const result = await host.processDepthToPointCloud(
       depthData.originalData,
       depthData.fileName,
-      depthData.cameraParams
+      cameraParams,
+      undefined,
+      signal
     );
 
-    // Update the PLY data
-    const spatialData = host.spatialFiles[fileIndex];
+    fileIndex = host.fileEntries.indexOf(entry.id);
+    if (fileIndex < 0 || entry.depthUpdate.version !== version) {
+      return;
+    }
+    const source = { ...depthData, cameraParams };
+    delete source.colorImageData;
+    delete source.colorImageName;
+    const spatialData: SpatialData = { ...entry.spatial!.data, depthSource: source };
     applyDepthResultTypedArrays(spatialData, result);
-    // Mark as depth-derived so gamma correction knows these are already linear colors
-    (spatialData as any).isDepthDerived = true;
+    replaceSpatialGeometry(host, entry, spatialData, fileIndex);
+    host.needsRender = true;
 
-    // Update the mesh with default colors
-    const oldMaterial = host.meshes[fileIndex].material;
-    const newMaterial = host.createMaterialForFile(spatialData, fileIndex);
-    host.meshes[fileIndex].material = newMaterial;
-
-    // Ensure point size is correctly applied to the new material
-    if (
-      host.meshes[fileIndex] instanceof THREE.Points &&
-      newMaterial instanceof THREE.PointsMaterial
-    ) {
-      const currentPointSize = host.pointSizes[fileIndex] || 0.001;
-      newMaterial.size = currentPointSize;
-      console.log(
-        `🔧 Applied point size ${currentPointSize} to default-color Depth material for file ${fileIndex}`
-      );
-    }
-
-    const mesh = host.meshes[fileIndex] as THREE.Points;
-    const oldGeometry = mesh.geometry;
-    mesh.geometry = host.createGeometryFromSpatialData(spatialData);
-    oldGeometry.dispose();
-
-    // Dispose old material
-    if (oldMaterial) {
-      if (Array.isArray(oldMaterial)) {
-        oldMaterial.forEach(mat => mat.dispose());
-      } else {
-        oldMaterial.dispose();
-      }
-    }
-
-    // Update UI (preserve depth panel states)
-    const openPanelStates = host.captureDepthPanelStates();
+    // Refresh entry data in the file list
     host.updateFileStats();
     host.updateFileList();
-    host.restoreDepthPanelStates(openPanelStates);
     host.showStatus('Color image removed - reverted to default depth-based colors');
   } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      return;
+    }
     console.error('Error removing color image:', error);
     host.showError(
       `Failed to remove color image: ${error instanceof Error ? error.message : String(error)}`

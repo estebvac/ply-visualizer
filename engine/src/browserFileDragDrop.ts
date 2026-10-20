@@ -1,7 +1,9 @@
-import { isSceneModel } from './models/modelFormats';
+import { isWebExtension } from './hosts/ideEnvironment';
+import type { ViewerLifetime } from './utils/viewerLifetime';
+import { isSceneModel, isModelCompanion } from './models/modelFormats';
 import { loadSceneModel } from './models/loadSceneModel';
 import { setupRemoteFileLoader } from './remoteFileLoader';
-import { CameraParams, SpatialData } from './interfaces';
+import { CameraParams, DepthConversionResult, SpatialData } from './interfaces';
 import {
   BrowserMessageHandler,
   createBrowserFileHandler,
@@ -18,6 +20,7 @@ import {
   parseColmapModel,
 } from './formats/colmap/colmapFiles';
 import { SPLAT_CONTAINER_REGEX } from './visualization/splatMode';
+import { isCameraProfileData } from './cameraProfile';
 import { filmState } from './state/film.svelte';
 import type { FilmManager } from './film/FilmManager';
 
@@ -41,24 +44,23 @@ function trackWebsiteEvent(name: string): void {
 }
 
 export interface BrowserFileDragDropHost {
+  lifetime: ViewerLifetime;
   browserFileHandler: BrowserMessageHandler | null;
   vscode: { postMessage(message: any): void };
-  spatialFiles: SpatialData[];
+  spatialFiles: readonly SpatialData[];
   filmManager: FilmManager | null;
-  fileDepthData: Map<
-    number,
-    {
-      originalData: ArrayBuffer;
-      fileName: string;
-      cameraParams: CameraParams;
-      depthDimensions: { width: number; height: number };
-    }
-  >;
+  defaultDepthSettings: CameraParams;
   showImmediateLoading(message: any): void;
   showError(message: string): void;
   removeFileByIndex(fileIndex: number): void;
   handleCameraParams(message: any): Promise<void>;
   promptForCameraParameters(fileName: string): Promise<CameraParams | null>;
+  /** The depth worker, shared with images opened in VS Code. */
+  processDepthToPointCloud(
+    depthData: ArrayBuffer,
+    fileName: string,
+    cameraParams: CameraParams
+  ): Promise<DepthConversionResult>;
   handleCameraProfile(data: any, fileName: string): void;
   handlePoseData(message: any): Promise<void>;
   displayFiles(dataArray: SpatialData[]): Promise<void>;
@@ -120,7 +122,7 @@ export function handleBrowserMessage(host: BrowserFileDragDropHost, message: any
   }
 }
 
-export function setupPanelResizeAndDrag(): void {
+export function setupPanelResizeAndDrag(host: BrowserFileDragDropHost): void {
   const mainPanel = document.getElementById('main-ui-panel');
   const tabContent = document.querySelector('.tab-content') as HTMLElement;
 
@@ -146,7 +148,7 @@ export function setupPanelResizeAndDrag(): void {
   };
 
   // Update cursor when hovering over resize zone
-  mainPanel.addEventListener('mousemove', (e: MouseEvent) => {
+  host.lifetime.listen(mainPanel, 'mousemove', (e: MouseEvent) => {
     if (!isDragging) {
       if (isInResizeZone(e)) {
         mainPanel.style.cursor = 'ns-resize';
@@ -156,14 +158,14 @@ export function setupPanelResizeAndDrag(): void {
     }
   });
 
-  mainPanel.addEventListener('mouseleave', () => {
+  host.lifetime.listen(mainPanel, 'mouseleave', () => {
     if (!isDragging) {
       mainPanel.style.cursor = '';
     }
   });
 
   // Start dragging
-  mainPanel.addEventListener('mousedown', (e: MouseEvent) => {
+  host.lifetime.listen(mainPanel, 'mousedown', (e: MouseEvent) => {
     if (isInResizeZone(e)) {
       isDragging = true;
       startY = e.clientY;
@@ -194,7 +196,7 @@ export function setupPanelResizeAndDrag(): void {
   });
 
   // Handle dragging
-  document.addEventListener('mousemove', (e: MouseEvent) => {
+  host.lifetime.listen(document, 'mousemove', (e: MouseEvent) => {
     if (isDragging) {
       const deltaY = e.clientY - startY;
       const newHeight = startHeight + deltaY;
@@ -210,7 +212,7 @@ export function setupPanelResizeAndDrag(): void {
   });
 
   // Stop dragging
-  document.addEventListener('mouseup', () => {
+  host.lifetime.listen(document, 'mouseup', () => {
     if (isDragging) {
       isDragging = false;
       mainPanel.style.cursor = '';
@@ -227,7 +229,7 @@ export function setupBrowserFileHandlers(host: BrowserFileDragDropHost): void {
   const mainPanel = document.getElementById('main-ui-panel');
 
   if (fileInput) {
-    fileInput.addEventListener('change', event => {
+    host.lifetime.listen(fileInput, 'change', event => {
       const files = (event.target as HTMLInputElement).files;
       if (files) {
         handleDroppedFiles(host, Array.from(files));
@@ -237,18 +239,18 @@ export function setupBrowserFileHandlers(host: BrowserFileDragDropHost): void {
 
   // Add drag & drop support to the Add Point Cloud button
   if (addFileButton) {
-    addFileButton.addEventListener('dragover', event => {
+    host.lifetime.listen(addFileButton, 'dragover', event => {
       handleDragOver(event);
       addFileButton.style.backgroundColor = '#1177bb';
       addFileButton.style.transform = 'scale(1.02)';
     });
 
-    addFileButton.addEventListener('dragleave', () => {
+    host.lifetime.listen(addFileButton, 'dragleave', () => {
       addFileButton.style.backgroundColor = '';
       addFileButton.style.transform = '';
     });
 
-    addFileButton.addEventListener('drop', event => {
+    host.lifetime.listen(addFileButton, 'drop', event => {
       addFileButton.style.backgroundColor = '';
       addFileButton.style.transform = '';
       void handleDropEvent(host, event);
@@ -257,30 +259,30 @@ export function setupBrowserFileHandlers(host: BrowserFileDragDropHost): void {
 
   // Also add drag & drop to the entire main UI panel as fallback
   if (mainPanel) {
-    mainPanel.addEventListener('dragover', event => {
+    host.lifetime.listen(mainPanel, 'dragover', event => {
       handleDragOver(event);
     });
 
-    mainPanel.addEventListener('drop', event => {
+    host.lifetime.listen(mainPanel, 'drop', event => {
       void handleDropEvent(host, event);
     });
   }
 
   // Add drag & drop support to the entire window
-  document.addEventListener('dragover', event => {
+  host.lifetime.listen(document, 'dragover', event => {
     handleDragOver(event);
     // Add visual feedback to the entire window
     document.body.style.backgroundColor = 'rgba(0, 95, 184, 0.1)';
   });
 
-  document.addEventListener('dragleave', event => {
+  host.lifetime.listen(document, 'dragleave', event => {
     // Only remove highlight when leaving the entire document
     if (!event.relatedTarget || event.relatedTarget === document.documentElement) {
       document.body.style.backgroundColor = '';
     }
   });
 
-  document.addEventListener('drop', event => {
+  host.lifetime.listen(document, 'drop', event => {
     document.body.style.backgroundColor = '';
     void handleDropEvent(host, event);
   });
@@ -292,7 +294,7 @@ export function setupBrowserFileHandlers(host: BrowserFileDragDropHost): void {
 
 /** Receive a local depth image directly from images.f-kleinicke.de. */
 export function setupScientificImageHandoff(host: BrowserFileDragDropHost): void {
-  window.addEventListener('message', event => {
+  host.lifetime.listen(window, 'message', event => {
     if (!SCIENTIFIC_IMAGE_ORIGINS.has(event.origin)) {
       return;
     }
@@ -356,7 +358,7 @@ export async function handleDropEvent(
   }
 
   if (isVSCode) {
-    const filePaths = extractDroppedFilePaths(event.dataTransfer);
+    const filePaths = extractDroppedFilePaths(event.dataTransfer, isWebExtension);
     if (filePaths.length > 0) {
       host.showImmediateLoading({ fileName: `${filePaths.length} dropped file(s)` });
       filePaths.forEach((filePath, index) => {
@@ -375,7 +377,10 @@ export async function handleDropEvent(
   }
 }
 
-export function extractDroppedFilePaths(dataTransfer: DataTransfer | null): string[] {
+export function extractDroppedFilePaths(
+  dataTransfer: DataTransfer | null,
+  preserveUris = false
+): string[] {
   if (!dataTransfer) {
     return [];
   }
@@ -393,7 +398,9 @@ export function extractDroppedFilePaths(dataTransfer: DataTransfer | null): stri
         continue;
       }
 
-      if (line.startsWith('file://')) {
+      if (preserveUris && /^[a-z][a-z\d+.-]*:\/\//i.test(line)) {
+        paths.push(line);
+      } else if (line.startsWith('file://')) {
         try {
           const url = new URL(line);
           let pathName = decodeURIComponent(url.pathname);
@@ -421,7 +428,7 @@ export async function handleDroppedFiles(
     return;
   }
 
-  if (isVSCode) {
+  if (isVSCode && !isWebExtension) {
     host.showImmediateLoading({ fileName: `${files.length} dropped file(s)` });
     try {
       const droppedFiles = await Promise.all(
@@ -543,10 +550,7 @@ export async function handleBrowserFiles(
       await host.displayFiles([model]);
     }
     if (modelFiles.length) {
-      files = files.filter(
-        file =>
-          !isSceneModel(file.name) && !/\.(bin|png|jpe?g|tga|bmp|webp|gif|mtl)$/i.test(file.name)
-      );
+      files = files.filter(file => !isSceneModel(file.name) && !isModelCompanion(file.name));
       if (!files.length) {
         return;
       }
@@ -578,7 +582,7 @@ export async function handleBrowserFiles(
     const spatialDataArray: SpatialData[] = [];
     // Remember starting index to map newly added files
     const baseIndexStart = host.spatialFiles.length;
-    // Track depth metadata to populate fileDepthData after display
+    // Retain source metadata on each decoded depth file after display
     const depthMetaRecords: Array<{
       localIndex: number;
       fileName: string;
@@ -668,24 +672,37 @@ export async function handleBrowserFiles(
       console.log(`🖼️ Depth image detected: ${depthFile.name}`);
       try {
         // Ask for params (prompt); then convert via shared helper
-        const params = await host.promptForCameraParameters(depthFile.name);
+        const params = isWebExtension
+          ? { ...host.defaultDepthSettings }
+          : await host.promptForCameraParameters(depthFile.name);
         if (!params) {
           console.log(`⏭️ Skipping ${depthFile.name} - camera parameters cancelled`);
           continue;
         }
-        const parse = await convertDepthToUnified(depthFile.name, depthFile.data.buffer, {
-          fx: params.fx,
-          fy: params.fy ?? params.fx,
-          cx: params.cx ?? undefined,
-          cy: params.cy ?? undefined,
-          cameraModel: params.cameraModel,
-          depthType: params.depthType,
-          convention: params.convention ?? 'opengl',
-          baseline: params.baseline,
-          pngScaleFactor: params.pngScaleFactor,
-          depthScale: params.depthScale,
-          depthBias: params.depthBias,
-        });
+        const parse = await convertDepthToUnified(
+          depthFile.name,
+          depthFile.data.buffer,
+          {
+            fx: params.fx,
+            fy: params.fy ?? params.fx,
+            cx: params.cx ?? undefined,
+            cy: params.cy ?? undefined,
+            cameraModel: params.cameraModel,
+            depthType: params.depthType,
+            convention: params.convention ?? 'opengl',
+            baseline: params.baseline,
+            pngScaleFactor: params.pngScaleFactor,
+            depthScale: params.depthScale,
+            depthBias: params.depthBias,
+          },
+          // The worker gets the dialog's full parameters, distortion included.
+          (bytes, name) =>
+            host.processDepthToPointCloud(bytes, name, {
+              ...params,
+              fy: params.fy ?? params.fx,
+              convention: params.convention ?? 'opengl',
+            })
+        );
         const data = parse.data as SpatialData;
         (data as any).isDepthDerived = true;
         // Record dimensions if provided
@@ -725,7 +742,7 @@ export async function handleBrowserFiles(
         const jsonData = JSON.parse(jsonText);
 
         // Check if this is a camera profile JSON
-        if (jsonData && jsonData.cameras && typeof jsonData.cameras === 'object') {
+        if (isCameraProfileData(jsonData)) {
           console.log(`📷 Camera profile detected: ${file.name}`);
           host.handleCameraProfile(jsonData, file.name);
         } else {
@@ -742,7 +759,7 @@ export async function handleBrowserFiles(
     if (spatialDataArray.length > 0) {
       await host.displayFiles(spatialDataArray);
 
-      // Populate fileDepthData for newly added depth-derived files.
+      // Attach the source to each newly added depth-derived file.
       // The key is the index addNewFiles() actually assigned, read back off the
       // object - never `baseIndexStart + localIndex`. That sum was computed
       // before the camera-parameter prompt, and anything loaded while the
@@ -752,12 +769,12 @@ export async function handleBrowserFiles(
       for (const rec of depthMetaRecords) {
         const fileIndex =
           spatialDataArray[rec.localIndex]?.fileIndex ?? baseIndexStart + rec.localIndex;
-        host.fileDepthData.set(fileIndex, {
+        host.spatialFiles[fileIndex].depthSource = {
           originalData: rec.buffer,
           fileName: rec.fileName,
           cameraParams: rec.params,
           depthDimensions: rec.dims || { width: 0, height: 0 },
-        });
+        };
         if (rec.dims) {
           // Ensure cx/cy fields are populated correctly in UI
           host.updatePrinciplePointFields(fileIndex, rec.dims);

@@ -20,20 +20,28 @@ pub use inspection::{
 use std::mem;
 use wasm_bindgen::prelude::*;
 
+mod text_table;
+pub use text_table::parse_text_table;
 mod lidar;
+mod mesh;
 mod npy;
+mod obj;
 mod ply;
 mod registration;
+mod row_ranges;
 mod selection;
 pub use selection::{scalar_summary, select_point_indices};
 mod stonex;
 mod volume;
 pub use lidar::{parse_e57, parse_las, E57ImageResult, LidarCollectionResult, LidarScanResult};
+pub use mesh::{parse_off, parse_stl, MeshResult};
 pub use npy::{npy_inspect, npy_read, NpyArrayResult};
+pub use obj::{parse_obj, ObjResult};
 pub use ply::{parse_ply, parse_ply_at, parse_ply_native, PlyResult};
 pub use registration::bindings::{
     coarse_align, fit_correspondences, icp_refine, register_pair, RegistrationResult,
 };
+pub use row_ranges::{parse_row_range, plan_rows, row_stream};
 pub use stonex::{
     stonex_decode_frame, stonex_decode_scan, StonexRgbImage, StonexScanPoints, StonexStationSession,
 };
@@ -47,6 +55,10 @@ pub use volume::{
 pub struct PointCloudResult {
     source_indices: Vec<u32>,
     source_count: u32,
+    /// Every source row became a point, in order: the row map is the
+    /// identity and `source_indices` is left empty rather than holding one
+    /// index per point.
+    source_rows_identity: bool,
     vertex_count: u32,
     positions: Vec<f32>,
     colors: Vec<u8>,
@@ -72,6 +84,11 @@ impl PointCloudResult {
     }
     pub fn take_source_indices(&mut self) -> Vec<u32> {
         mem::take(&mut self.source_indices)
+    }
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn source_rows_identity(&self) -> bool {
+        self.source_rows_identity
     }
 
     #[wasm_bindgen(getter)]
@@ -436,6 +453,7 @@ impl Builder {
         PointCloudResult {
             source_indices: Vec::new(),
             source_count: 0,
+            source_rows_identity: false,
             vertex_count,
             positions: self.positions,
             colors: self.colors,
@@ -870,6 +888,14 @@ pub fn parse_pcd(data: &[u8]) -> Result<PointCloudResult, JsValue> {
     }
     .map_err(|e| JsValue::from_str(&e))?;
     result.metadata = header.metadata_json();
+    // Every row kept: say so instead of shipping one index per point - 32 MB
+    // for an eight-million-point cloud, transferred and validated for nothing.
+    if !result.source_indices.is_empty()
+        && result.source_indices.len() == result.source_count as usize
+    {
+        result.source_rows_identity = true;
+        result.source_indices = Vec::new();
+    }
     Ok(result)
 }
 
@@ -1208,6 +1234,7 @@ impl PcdPointSink {
         PointCloudResult {
             source_indices: self.source_indices,
             source_count: self.source_count,
+            source_rows_identity: false,
             vertex_count,
             positions: self.positions,
             colors: self.colors,
@@ -1238,6 +1265,65 @@ fn parse_pcd_binary_records(data: &[u8], header: &PcdHeader) -> Result<PointClou
         sink.push_point(data, &descs, |d| base + d.off);
     }
     Ok(sink.finish())
+}
+
+/// Where a `DATA binary` PCD's records are, as JSON
+/// `{"dataStart","stride","rows"}`, so the caller can split them into row
+/// ranges for several workers (`parse_pcd_binary_range`). Empty for any other
+/// encoding, or when `head` does not hold the whole header.
+#[wasm_bindgen]
+pub fn pcd_binary_plan(head: &[u8]) -> String {
+    let Ok(header) = parse_pcd_header(head) else {
+        return String::new();
+    };
+    if header.data_kind != "binary" {
+        return String::new();
+    }
+    let Ok((_, stride)) = pcd_field_descs(&header) else {
+        return String::new();
+    };
+    format!(
+        "{{\"dataStart\":{},\"stride\":{},\"rows\":{}}}",
+        header.data_start,
+        stride,
+        header.vertex_count()
+    )
+}
+
+/// `DATA binary` rows `first_row..`, decoded from those rows' bytes alone
+/// (`body`; whole records only) with the header read from `head`.
+///
+/// Source row indices are absolute, so the ranges of a file concatenate into
+/// exactly what `parse_pcd` returns - except that this never collapses an
+/// all-rows-kept map to the identity flag: only the caller, holding every
+/// range, can tell.
+///
+/// # Errors
+///
+/// A header that is incomplete or not `DATA binary`.
+#[wasm_bindgen]
+pub fn parse_pcd_binary_range(
+    head: &[u8],
+    body: &[u8],
+    first_row: u32,
+) -> Result<PointCloudResult, JsValue> {
+    let header = parse_pcd_header(head).map_err(|e| JsValue::from_str(&e))?;
+    if header.data_kind != "binary" {
+        return Err(JsValue::from_str("not a DATA binary PCD"));
+    }
+    let (descs, stride) = pcd_field_descs(&header).map_err(|e| JsValue::from_str(&e))?;
+    let rows = body.len() / stride;
+    let mut sink = PcdPointSink::new(&descs, rows);
+    for row in 0..rows {
+        let base = row * stride;
+        sink.push_point(body, &descs, |d| base + d.off);
+    }
+    let mut result = sink.finish();
+    for index in &mut result.source_indices {
+        *index += first_row;
+    }
+    result.metadata = header.metadata_json();
+    Ok(result)
 }
 
 /// `DATA binary_compressed`: an LZF-compressed, column-major payload behind two
@@ -1606,6 +1692,18 @@ impl StreamParser {
 }
 
 impl StreamParser {
+    /// A parser for data rows only, with the layout already decided.
+    pub(crate) fn with_builder(builder: Builder) -> StreamParser {
+        StreamParser {
+            format: 0,
+            builder: Some(builder),
+            header_done: true,
+            expected: 0,
+            carry: Vec::new(),
+            error: false,
+        }
+    }
+
     /// Process the data bytes of one chunk, stitching the previous chunk's
     /// trailing partial line (`carry`) onto the first line, and keeping this
     /// chunk's trailing partial line as the new carry. Avoids copying the chunk.
@@ -1900,6 +1998,79 @@ mod tests {
 #[cfg(test)]
 mod pcd_attribute_tests {
     use super::*;
+
+    #[test]
+    fn binary_pcd_ranges_concatenate_to_the_whole_file() {
+        // x y z, a packed rgb and an extra scalar; every seventh row NaN, so
+        // the source-row map is not the identity.
+        let rows = 1000u32;
+        let mut data = format!(
+            "FIELDS x y z rgb label\nSIZE 4 4 4 4 4\nTYPE F F F F U\nCOUNT 1 1 1 1 1\nWIDTH {rows}\nHEIGHT 1\nPOINTS {rows}\nDATA binary\n"
+        )
+        .into_bytes();
+        let data_start = data.len();
+        for row in 0..rows {
+            let x = if row % 7 == 3 {
+                f32::NAN
+            } else {
+                row as f32 * 0.5
+            };
+            for value in [x, -(row as f32), 1.5] {
+                data.extend(value.to_le_bytes());
+            }
+            let rgb = f32::from_bits(0x00ff_0000 | (row % 256) << 8 | (row * 3) % 256);
+            data.extend(rgb.to_le_bytes());
+            data.extend((row * 11).to_le_bytes());
+        }
+        let whole = parse_pcd(&data).unwrap();
+        let plan = pcd_binary_plan(&data[..data_start]);
+        assert_eq!(
+            plan,
+            format!("{{\"dataStart\":{data_start},\"stride\":20,\"rows\":{rows}}}")
+        );
+
+        let mut positions = Vec::new();
+        let mut colors = Vec::new();
+        let mut labels = Vec::new();
+        let mut indices = Vec::new();
+        for (first, last) in [(0u32, 333u32), (333, 334), (334, 1000)] {
+            let body = &data[data_start + first as usize * 20..data_start + last as usize * 20];
+            let part = parse_pcd_binary_range(&data[..data_start], body, first).unwrap();
+            positions.extend_from_slice(&part.positions);
+            colors.extend_from_slice(&part.colors);
+            labels.extend_from_slice(&part.scalars[0].1);
+            indices.extend_from_slice(&part.source_indices);
+        }
+        assert_eq!(positions, whole.positions);
+        assert_eq!(colors, whole.colors);
+        assert_eq!(labels, whole.scalars[0].1);
+        assert_eq!(indices, whole.source_indices);
+        assert!(
+            !whole.source_indices.is_empty(),
+            "NaN rows make a real row map"
+        );
+    }
+
+    #[test]
+    fn a_pcd_that_keeps_every_row_reports_an_identity_row_map() {
+        let header =
+            "FIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\nWIDTH 2\nHEIGHT 1\nPOINTS 2\n";
+        let mut binary = format!("{header}DATA binary\n").into_bytes();
+        for v in [1f32, 2., 3., 4., 5., 6.] {
+            binary.extend(v.to_le_bytes());
+        }
+        let ascii = format!("{header}DATA ascii\n1 2 3\n4 5 6\n").into_bytes();
+        for input in [binary, ascii] {
+            let result = parse_pcd(&input).unwrap();
+            assert!(result.source_rows_identity);
+            assert!(result.source_indices.is_empty());
+            assert_eq!(result.source_count, 2);
+        }
+        let dropped = format!("{header}DATA ascii\n1 2 3\nnan 5 6\n").into_bytes();
+        let result = parse_pcd(&dropped).unwrap();
+        assert!(!result.source_rows_identity);
+        assert_eq!(result.source_indices, vec![0]);
+    }
     #[test]
     fn attributes_align_after_nan_filter_in_all_encodings() {
         let header = "FIELDS x y z label descriptor\nSIZE 4 4 4 4 4\nTYPE F F F U F\nCOUNT 1 1 1 1 2\nWIDTH 3\nHEIGHT 1\nPOINTS 3\n";

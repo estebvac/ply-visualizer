@@ -1,3 +1,4 @@
+import { sendToWebview } from './webviewTransport';
 /**
  * Runs the X3A station pipeline for an already-open archive.
  *
@@ -20,8 +21,31 @@ import {
   type StonexStationPipelineTiming,
 } from '../../engine/src/parsers/stonexX3aParser';
 import { stonexCameraProjector } from '../wasmCameraModels';
-import { readFileFast } from './binaryTransfer';
+import {
+  colourStationsOnPool,
+  colourStonexScansInParallel,
+  decodeStonexScansInParallel,
+} from './parallelStonexColour';
+import { readFileShared } from './binaryTransfer';
 import { logStonexPhases } from './documentLoader';
+
+/** Panels whose running colour pass the user asked to stop. */
+const cancelRequests = new WeakSet<vscode.WebviewPanel>();
+
+/**
+ * Stop the panel's colour pass at its next step: the parse reports progress
+ * and finished scans through callbacks, and a cancelled run throws out of the
+ * next one. Scans already published keep their colour.
+ */
+export function cancelStationPipeline(webviewPanel: vscode.WebviewPanel): void {
+  cancelRequests.add(webviewPanel);
+}
+
+function cancelledError(): Error {
+  const error = new Error('Colouring cancelled.');
+  error.name = 'AbortError';
+  return error;
+}
 
 export interface StationPipelineHost {
   logPerf(line: string): void;
@@ -34,7 +58,7 @@ export async function handleStationPipeline(
   options: StonexStationPipelineOptions
 ): Promise<void> {
   if (!documentPath || !/\.x3a$/i.test(documentPath)) {
-    webviewPanel.webview.postMessage({
+    sendToWebview(webviewPanel, {
       type: 'stationPipelineResult',
       error: 'The station pipeline only applies to an open .x3a archive.',
     });
@@ -44,24 +68,39 @@ export async function handleStationPipeline(
   // The pipeline takes minutes on a large archive, so every step it announces
   // goes to the panel. Without this the button just says "Working..." and there
   // is no way to tell slow from stuck.
-  const notify = (message: string) =>
-    void webviewPanel.webview.postMessage({
+  cancelRequests.delete(webviewPanel);
+  const throwIfCancelled = () => {
+    if (cancelRequests.has(webviewPanel)) {
+      throw cancelledError();
+    }
+  };
+  const notify = (message: string) => {
+    throwIfCancelled();
+    void sendToWebview(webviewPanel, {
       type: 'stationPipelineProgress',
       message: message.replace(/^Stonex X3A: /, ''),
     });
+  };
 
   try {
     const startedAt = performance.now();
     const progressivelyPublishedScans = new Set<string>();
-    const bytes = await readFileFast(vscode.Uri.file(documentPath));
+    // Shared memory lets the decoder pool read each scan record in place.
+    const bytes = await readFileShared(vscode.Uri.file(documentPath));
     const readMs = performance.now() - startedAt;
-    const parser = new StonexX3aParser(stonexCameraProjector);
+    const parser = new StonexX3aParser(
+      stonexCameraProjector,
+      colourStonexScansInParallel,
+      decodeStonexScansInParallel,
+      colourStationsOnPool
+    );
     const parseStarted = performance.now();
     const parsed = await parser.parseAll(bytes, path.basename(documentPath), notify, {
       ...options,
       onScanColored: async update => {
+        throwIfCancelled();
         const scanName = `${update.scanStem}.x3r`;
-        const delivered = await webviewPanel.webview.postMessage({
+        const delivered = await sendToWebview(webviewPanel, {
           type: 'stationPipelineResult',
           partial: true,
           updates: [
@@ -106,7 +145,7 @@ export async function handleStationPipeline(
     const coloring = metadata?.stationColoringResult;
     const timing = metadata?.stationPipelineTiming as StonexStationPipelineTiming | undefined;
     const publishStarted = performance.now();
-    await webviewPanel.webview.postMessage({
+    await sendToWebview(webviewPanel, {
       type: 'stationPipelineResult',
       updates,
       summary: coloring
@@ -147,9 +186,13 @@ export async function handleStationPipeline(
         `(${parsed.length} scans)`
     );
   } catch (error) {
-    webviewPanel.webview.postMessage({
+    const cancelled = error instanceof Error && error.name === 'AbortError';
+    sendToWebview(webviewPanel, {
       type: 'stationPipelineResult',
       error: error instanceof Error ? error.message : String(error),
+      cancelled,
     });
+  } finally {
+    cancelRequests.delete(webviewPanel);
   }
 }

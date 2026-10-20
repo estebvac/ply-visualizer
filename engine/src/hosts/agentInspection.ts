@@ -1,11 +1,17 @@
+import { hasSourceRows, sourceRowAt } from '../utils/sourceRows';
 import { setAgentPointSizeMode } from './agentPointSizing';
 import { comparisonState } from './agentComparison';
 /* eslint-disable @typescript-eslint/naming-convention -- MCP wire keys */
 import * as THREE from 'three';
-import type { SpatialData } from '../interfaces';
+import type { ScalarArray, SpatialData } from '../interfaces';
 import type { SelectionManager } from '../SelectionManager';
 import { loadRegistrationWasm } from '../registration/wasmLoader';
 import { fitAgentView, type ControlHost } from './agentControls';
+
+/** The Rust inspectors read floats; integer fields are widened for them. */
+function asFloat32(values: ScalarArray): Float32Array {
+  return values instanceof Float32Array ? values : Float32Array.from(values);
+}
 
 export type Pose = {
   position: number[];
@@ -99,12 +105,12 @@ export async function agentPick(host: ControlHost, screen: number[]) {
     return pickSingleView(host, screen);
   }
   const side = screen[0] < 0.5 ? split.left : split.right;
-  const visible = host.fileVisibility.slice();
+  const visible = host.fileEntries.all.map(entry => ({ entry, visible: entry.state.visible }));
   const meshVisible = host.meshes.map(mesh => mesh?.visible);
   const aspect = host.camera.aspect;
   try {
-    host.fileVisibility.forEach((_, i) => {
-      host.fileVisibility[i] = i === side;
+    host.fileEntries.all.forEach((_, i) => {
+      host.fileEntries.require(i).state.visible = i === side;
       if (host.meshes[i]) {
         host.meshes[i]!.visible = i === side;
       }
@@ -113,7 +119,9 @@ export async function agentPick(host: ControlHost, screen: number[]) {
     host.camera.updateProjectionMatrix();
     return await pickSingleView(host, [screen[0] * 2 - (screen[0] < 0.5 ? 0 : 1), screen[1]]);
   } finally {
-    host.fileVisibility.splice(0, host.fileVisibility.length, ...visible);
+    visible.forEach(({ entry, visible }) => {
+      entry.state.visible = visible;
+    });
     host.meshes.forEach((mesh, i) => {
       if (mesh) {
         mesh.visible = meshVisible[i]!;
@@ -162,7 +170,9 @@ async function pickSingleView(host: ControlHost, screen: number[]) {
     source_row:
       sourceIndex === undefined
         ? null
-        : ((selected?.source ?? file)?.sourcePointIndices?.[sourceIndex] ?? null),
+        : (selected?.source ?? file)
+          ? sourceRowAt((selected?.source ?? file)!, sourceIndex)
+          : null,
     index_space:
       'source_point_index is decoded; source_row is original zero-based source record (depth raster: v*width+u), null when unavailable',
     attributes: Object.fromEntries(
@@ -237,7 +247,7 @@ export async function agentSelection(host: ControlHost, a: Record<string, any>) 
     a.indices ??
     wasm.select_point_indices(
       positions,
-      values ?? new Float32Array(),
+      values ? asFloat32(values) : new Float32Array(),
       new Float32Array(a.values ?? []),
       new Float64Array(matrix.elements),
       new Float64Array(a.bounds ?? []),
@@ -255,7 +265,7 @@ export async function agentSelection(host: ControlHost, a: Record<string, any>) 
       : '';
     throw new Error('Selection matched no points; previous selection is unchanged.' + available);
   }
-  const subset = <T extends Float32Array | Uint8Array>(
+  const subset = <T extends Float32Array | Uint8Array | Uint16Array | Int16Array>(
     array: T | null | undefined,
     stride: number
   ): T | null => {
@@ -277,8 +287,8 @@ export async function agentSelection(host: ControlHost, a: Record<string, any>) 
     faceCount: 0,
     vertexCount: indices.length,
     sourcePointCount: indices.length,
-    sourcePointIndices: source.sourcePointIndices?.length
-      ? Uint32Array.from(indices, index => source.sourcePointIndices![index])
+    sourcePointIndices: hasSourceRows(source)
+      ? Uint32Array.from(indices, index => sourceRowAt(source, index) ?? 0)
       : undefined,
     positionsArray: subset(positions, 3)!,
     colorsArray: subset(source.colorsArray, 3),
@@ -292,7 +302,9 @@ export async function agentSelection(host: ControlHost, a: Record<string, any>) 
   };
   clearAgentSelection(host);
   const s = state(host);
-  s.visibility = new Map(host.spatialFiles.map((file, i) => [file, host.fileVisibility[i]]));
+  s.visibility = new Map(
+    host.spatialFiles.map((file, i) => [file, host.fileEntries.require(i).state.visible])
+  );
   const before = pose(host);
   const i = host.spatialFiles.length;
   host.addNewFiles([data]);
@@ -340,7 +352,7 @@ export async function agentSelection(host: ControlHost, a: Record<string, any>) 
 }
 
 const summaries = new WeakMap<SpatialData, Record<string, unknown>>();
-export async function agentAttributes(files: SpatialData[]) {
+export async function agentAttributes(files: readonly SpatialData[]) {
   const wasm = (await loadRegistrationWasm()) as unknown as {
     scalar_summary(values: Float32Array): string;
   };
@@ -350,7 +362,7 @@ export async function agentAttributes(files: SpatialData[]) {
       summary = Object.fromEntries(
         Object.entries(file.scalarFields ?? {}).map(([name, values]) => [
           name,
-          JSON.parse(wasm.scalar_summary(values)),
+          JSON.parse(wasm.scalar_summary(asFloat32(values))),
         ])
       );
       summaries.set(file, summary);
@@ -443,7 +455,9 @@ export async function agentNamedSelections(host: ControlHost, a: Record<string, 
       };
       indices = wasm.combine_point_indices(left.indices, right.indices, a.action);
     }
-    const visibility = new Map(host.spatialFiles.map((file, i) => [file, host.fileVisibility[i]]));
+    const visibility = new Map(
+      host.spatialFiles.map((file, i) => [file, host.fileEntries.require(i).state.visible])
+    );
     if (!indices.length) {
       clearAgentSelection(host);
       visibility.forEach((visible, file) => {
@@ -489,7 +503,7 @@ export async function agentNamedSelections(host: ControlHost, a: Record<string, 
       selected_points: item.indices.length,
       object_index: host.spatialFiles.indexOf(item.data),
       source_object_index: host.spatialFiles.indexOf(item.source),
-      visible: host.fileVisibility[host.spatialFiles.indexOf(item.data)],
+      visible: host.fileEntries.require(host.spatialFiles.indexOf(item.data)).state.visible,
     })),
     active_selection: currentAgentSelection(host),
   };

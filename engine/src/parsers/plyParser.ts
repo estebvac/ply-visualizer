@@ -1,49 +1,7 @@
-import { parsePlyWasm } from './pointcloudWasm';
+import { parsePlyBytes } from './pointcloudWasm';
 import { isGaussianSplatLayout } from '../utils/scalarFields';
 
-export interface SpatialVertex {
-  x: number;
-  y: number;
-  z: number;
-  red?: number;
-  green?: number;
-  blue?: number;
-  alpha?: number;
-  nx?: number;
-  ny?: number;
-  nz?: number;
-  intensity?: number;
-}
-
-export interface SpatialFace {
-  indices: number[];
-}
-
-export interface SpatialData {
-  vertices: SpatialVertex[];
-  faces: SpatialFace[];
-  format: 'ascii' | 'binary_little_endian' | 'binary_big_endian';
-  version: string;
-  comments: string[];
-  vertexCount: number;
-  faceCount: number;
-  hasColors: boolean;
-  hasNormals: boolean;
-  hasIntensity?: boolean;
-  /** 3D Gaussian Splatting PLY layout: colors synthesized from f_dc_0..2. */
-  isGaussianSplat?: boolean;
-  /** Where splat mode can re-read the full original PLY (see interfaces.ts). */
-  splatSource?: { url?: string; bytes?: Uint8Array };
-  fileName?: string;
-  shortPath?: string; // parent/grandparent/filename for tooltip display
-  fileIndex?: number;
-  positionsArray?: Float32Array;
-  colorsArray?: Uint8Array | null;
-  normalsArray?: Float32Array | null;
-  intensityArray?: Float32Array | null;
-  scalarFields?: Record<string, Float32Array>;
-  useTypedArrays?: boolean;
-}
+import type { SpatialData } from '../interfaces';
 
 /**
  * PLY entry points that are not the parser.
@@ -64,6 +22,11 @@ export class PlyParser {
   /**
    * Parse a PLY into the viewer's shape. Delegates to the Rust parser; kept as
    * a method because call sites and tests address it this way.
+   *
+   * Through `parsePlyBytes`, not `parsePlyWasm`: copying the whole file into
+   * wasm memory grows that memory to the file plus its decoded arrays, and wasm
+   * memory never shrinks, so every viewer opened from a file picker kept that
+   * peak (182 MB for 3M points) for as long as it lived.
    */
   async parse(data: Uint8Array, timingCallback?: (message: string) => void): Promise<SpatialData> {
     const log = timingCallback || console.log;
@@ -71,7 +34,7 @@ export class PlyParser {
     // The wording of these two lines is asserted by the browser specs and read
     // by the timing panel; keep them in step with any change there.
     log(`📋 Parser: Starting PLY/XYZ parsing (${data.length} bytes)...`);
-    const parsed = await parsePlyWasm(data);
+    const parsed = await parsePlyBytes(data);
     log(
       `🎯 Parser: ${parsed.vertexCount.toLocaleString()} vertices, ` +
         `${parsed.faceCount.toLocaleString()} faces (${parsed.format})`
@@ -79,7 +42,8 @@ export class PlyParser {
     log(`🎯 Parser: Total parse time ${(performance.now() - parseStartTime).toFixed(1)}ms`);
     return {
       vertices: [],
-      faces: parsed.faces,
+      faces: [],
+      indicesArray: parsed.indicesArray,
       format: parsed.format,
       version: parsed.version,
       comments: parsed.comments,
@@ -223,7 +187,9 @@ export class PlyParser {
     let dataStartPos = headerEndPos;
     if (data[dataStartPos] === 13) {
       dataStartPos++;
-      if (data[dataStartPos] === 10) {dataStartPos++;}
+      if (data[dataStartPos] === 10) {
+        dataStartPos++;
+      }
     } else if (data[dataStartPos] === 10) {
       dataStartPos++;
     } else {

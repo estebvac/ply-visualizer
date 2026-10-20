@@ -147,6 +147,91 @@ iterative undistortion, Bayer sample); there is nothing there for LLVM to
 vectorise. Not adopted: a build flag that changes the shipped binary for no
 measured gain is a liability.
 
+### Three more traps (October 2026 load work)
+
+1. **The first wasm call in a fresh isolate runs on baseline code.** V8 compiles
+   wasm with Liftoff first and optimizes hot functions in the background, but a
+   call that is already running never switches. A whole-file parse is one call,
+   and every opened file is a fresh webview: binary PLY parsed in 315 ms against
+   110 ms once optimized. A 50k-vertex warm-up parse while the bytes are still
+   in flight fixes it (`warmUpPlyParser`). The same applies to extension-host
+   worker threads, which is why the decoder pool shares one compiled
+   `WebAssembly.Module` across workers (`parsePool.ts`).
+2. **This machine is memory-bound.** With ~20 GB of swap in use, a corpus of
+   several 300–600 MB files evicts itself from the page cache and the run
+   measures the disk. A/B one file at a time, and compare against HEAD in the
+   same session (below), never against an old number.
+3. **`postMessage` to a webview JSON-serializes everything that is not a
+   buffer.** An object per triangle made a 2M-triangle STL fail outright (V8
+   string limit) and an OBJ take 20 s. Ship typed arrays only.
+
+### Four more (depth, PLY and alignment work)
+
+1. **Webview workers silently fell back to the main thread.** A VS Code webview
+   page and its bundle are on different origins, so `new Worker(chunkUrl)`
+   throws there, and every depth conversion — decode and a 26-megapixel
+   projection — ran on the UI thread in one band (8–15 s) while the standalone
+   page, which is same-origin, used eight workers (1.7 s). The standalone page
+   is the fast test surface and could never show this. Put the thread a step ran
+   on into its PERF line (`on=worker/8 bands`) and read it in the extension.
+2. **Peak memory is time on this machine.** Binary PLY streamed into wasm memory
+   still held file plus output there (wasm memory never shrinks) plus the JS
+   copy: about 1 GB for a 341 MB cloud, and 4–19 s depending on swap. Decoding
+   chunk by chunk while the fetch runs keeps the heap at a few MB: ~1.7 s, and
+   steady.
+3. **`f64::min`/`max` are libm calls in wasm**, and a strided column FFT walks a
+   row per element. Both looked like arithmetic; both were memory or call
+   overhead. Rewrites that keep the operations and their order are
+   bit-identical, which is the bar for solver changes (compare the full stats
+   JSON of every pair, not one number).
+4. **A long-running `webpack --watch` keeps its old config.** After changing
+   `webpack.config.js`, a watcher started earlier rebuilds `out/` behind your
+   back with the previous options. Restart it, or check the bundle before
+   measuring.
+
+### Rendering and memory on Apple silicon (October 2026)
+
+Measured on an M1 Pro through Chromium's Metal ANGLE backend, frames timed with
+a `readPixels` after each render so the GPU work is inside the number:
+
+1. **Every WebGL buffer costs its size twice in the GPU process.** A bare page
+   uploading 200 MB grew the GPU process by 396 MB. `geometry.dispose()` frees
+   almost none of it - ANGLE pools the buffers - while losing the context frees
+   all of it. That is why a hidden viewer releases its context
+   (`visualization/contextRecovery.ts`) rather than its geometries.
+2. **Wasm memory is the other silent cost.** A whole-file PLY parse left the
+   page at 246 MB of wasm memory, and the depth worker ~390 MB beyond its decode
+   cache, for as long as the view stayed open. Look for it in a heap snapshot
+   (`Memory` behind a wasm `Instance`), and remember that workers' memory counts
+   in the same process but not in a main-thread snapshot.
+3. **The round-disc pass costs its discard, not its texture.** Replacing the
+   alpha-map lookup with an analytic `gl_PointCoord` test was no faster; the
+   discard itself defeats the GPU's hidden-surface removal. What helped was not
+   running a pass that rejects every vertex (`AdaptivePointRenderer`).
+4. **VS Code posts a typed array as its whole underlying buffer.** Its
+   serializer sends `view.buffer` plus an offset, and the webview copies all of
+   it. Per-scan recolour updates were `subarray` views into archive-wide arrays,
+   so eight messages moved 1.7 GB and took ~3 s of a 10 s recolour.
+   `sendToWebview` now copies such views to their own size; code that posts
+   `.buffer` itself must do the same (`ownBuffer` in binaryTransfer.ts).
+5. **Freed memory is not returned.** After an OHP_FRONT parse in Node, JS held
+   nothing yet the process stayed at ~4 GB resident: "Malloc Large (empty)" in
+   `vmmap --summary`, freed large blocks macOS keeps. Fewer large transient
+   copies is the lever; check with `vmmap`, not only a heap snapshot.
+6. **Refuted: overlapping X3A geometry delivery with the parallel colour pass.**
+   Both got slower and the geometry reached the screen later - the workers and
+   the 630 MB message copy compete for the same memory bandwidth.
+
+### A/B against HEAD
+
+Build HEAD once in a scratch worktree (`git worktree add --detach <dir> HEAD`,
+symlink `node_modules`, `engine/node_modules` and `.vscode-test`, then
+`npm run compile` there) and run `scripts/benchmark-vscode.mjs` from each tree
+for the same file, back to back. `PLY_PERF_QUIET_MS=4000` shortens the harness's
+quiet window for single-line formats. Every parser change in that work was also
+checked for byte-identical output against the old path (array hashes or
+field-by-field comparison), not only timed.
+
 ## 6. Amdahl is the honest answer
 
 When matching is 99% of align-all, a 3x matching win is a 2.9x win. When
@@ -156,14 +241,16 @@ has stopped being the bottleneck.
 
 ## Tools
 
-| Command                                        | What it does                                    |
-| ---------------------------------------------- | ----------------------------------------------- |
-| `npm run benchmark:vscode`                     | One build, real VS Code, per-step medians       |
-| `STEPS=open,alignAll,recolorAll …`             | Adds the align and colour steps to the scenario |
-| `FILES=a,b ITER=n`                             | Choose the corpus and the sample count          |
-| `cd engine && npm run bench:backend -- <file>` | WebGL vs WebGPU on one file                     |
-| `npm run test:node`                            | Parser/logic tests headless, in seconds         |
-| `cd engine && npm test`                        | Playwright engine suite                         |
+| Command                                        | What it does                                                             |
+| ---------------------------------------------- | ------------------------------------------------------------------------ |
+| `npm run benchmark:vscode`                     | One build, real VS Code, per-step medians                                |
+| `STEPS=open,alignAll,recolorAll …`             | Adds the align and colour steps to the scenario                          |
+| `STEPS=open,alignAllNested,alignAllComplex …`  | The two growing alignment strategies                                     |
+| `STEPS=open,reapplyDepth …`                    | Re-applies a depth image's settings (the cost of every parameter change) |
+| `FILES=a,b ITER=n`                             | Choose the corpus and the sample count                                   |
+| `cd engine && npm run bench:backend -- <file>` | WebGL vs WebGPU on one file                                              |
+| `npm run test:node`                            | Parser/logic tests headless, in seconds                                  |
+| `cd engine && npm test`                        | Playwright engine suite                                                  |
 
 ### How the scenario runs
 

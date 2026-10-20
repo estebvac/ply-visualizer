@@ -5,6 +5,7 @@
   import { viewerState } from '../state/viewer.svelte';
   import * as registration from '../registrationFeature';
   import {
+    cancelStationPipeline,
     canRunStationPipeline,
     firstArchiveScanIndex,
     runStationPipeline,
@@ -32,25 +33,53 @@
    * *which* pair to fix — the solver already knows, and asking them to hunt for
    * it is most of the work.
    */
-  function linkByHand(
-    group: {
-      indices: number[];
-      suggestion: { movingIndex: number; fixedIndex: number } | null;
-    } | null
-  ) {
-    if (!group?.suggestion) return;
-    singleFixed = group.suggestion.fixedIndex;
+  function linkByHand(group: registration.UnattachedGroup) {
+    if (!group.suggestion) return;
+    const indices = (ids: number[]) =>
+      ids.map(id => host.fileEntries.indexOf(id)).filter(index => index >= 0);
+    const moving = indices(group.ids);
+    const fixed = indices(
+      registrationState.alignedIds.length > 0
+        ? registrationState.alignedIds
+        : [group.suggestion.fixedId],
+    );
+    if (!moving.length || !fixed.length) return;
+    singleFixed = group.suggestion.fixedId;
     showSingle = true;
-    // The whole group moves against the whole placed scene, not one cloud
-    // against one cloud. The group is already solved internally, so it needs a
-    // single shared pose; and holding every placed cloud still means a feature
-    // can be picked wherever it is recognisable rather than only on the cloud
-    // the suggestion happened to name.
-    registration.beginGroupSession(host, group.indices, registrationState.alignedIndices.length > 0
-      ? registrationState.alignedIndices
-      : [group.suggestion.fixedIndex]);
+    registration.beginGroupSession(host, moving, fixed);
     registration.startGuidedMatching(host, false);
   }
+  /**
+   * Opens the single-pair workspace on one row of the last run: that cloud
+   * moves, the reference stays. A failed or doubtful row is exactly the pair
+   * the user would otherwise have to find again in two dropdowns.
+   */
+  function openRow(entryId: number): boolean {
+    const moving = host.fileEntries.indexOf(entryId);
+    if (moving < 0 || moving === anchorIndex || registrationState.busy) return false;
+    singleFixed = host.fileEntries.require(anchorIndex).id;
+    showSingle = true;
+    registration.beginSession(host, moving, anchorIndex);
+    return true;
+  }
+  function fixRow(entryId: number) {
+    if (openRow(entryId)) registration.startGuidedMatching(host, false);
+  }
+  async function refineRow(entryId: number) {
+    if (openRow(entryId)) await registration.refineIcp(host);
+  }
+
+  // Escape stops a running alignment or colour run, like the Cancel buttons.
+  function onKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Escape' || !showAlign) return;
+    if (!registrationState.busy && !stationPipelineUi.busy) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('input, textarea, select')) return;
+    if (registrationState.busy) registration.cancelAlignment(host);
+    else cancelStationPipeline(host);
+    event.preventDefault();
+  }
+
   // Off by default, like every other correction: the viewer shows the capture.
   let bandWhiteBalance = $state(false);
   // Grow outward from the reference instead of matching everything to it.
@@ -79,27 +108,32 @@
   // is what someone who just opened a multi-scan archive almost always wants.
   let anchorChoice = $state<number | null>(null);
 
-  // Recomputed on the file list's render tick rather than reactively: files
-  // load and unload through main.ts's parallel arrays, which are not
-  // themselves reactive.
+  // Registry membership changes are published through the file list's render tick.
   const alignable = $derived(
-    (filesState.renderTick, registration.registrationCandidates(host, -1))
+    (filesState.entries, registration.registrationCandidates(host, -1)),
   );
-  const hasObjects = $derived((filesState.renderTick, host.fileEntries.length > 0));
+  const hasObjects = $derived((filesState.entries, host.fileEntries.length > 0));
   // One cloud has nothing to align to, but the surrounding Tools menu also
   // contains measurement and viewer options and therefore remains useful.
   const available = $derived(alignable.length >= 2);
   const anchorIndex = $derived(
-    anchorChoice !== null && alignable.includes(anchorChoice) ? anchorChoice : (alignable[0] ?? 0)
+    anchorChoice !== null && alignable.some(index => host.fileEntries.require(index).id === anchorChoice)
+      ? host.fileEntries.indexOf(anchorChoice)
+      : (alignable[0] ?? 0),
   );
   const movingCount = $derived(Math.max(0, alignable.length - 1));
 
+  // Follows the reference until the user picks something else: correcting a
+  // pair is almost always correcting it against the cloud everything else was
+  // aligned to.
   const singleFixedIndex = $derived(
-    singleFixed !== null && alignable.includes(singleFixed) ? singleFixed : (alignable[0] ?? 0)
+    singleFixed !== null && alignable.some(index => host.fileEntries.require(index).id === singleFixed)
+      ? host.fileEntries.indexOf(singleFixed)
+      : anchorIndex,
   );
 
   // Only archives carry the per-band reference patches this reads.
-  const hasCameraProfiles = $derived((filesState.renderTick, (host.cameraGroups?.length ?? 0) > 0));
+  const hasCameraProfiles = $derived((filesState.entries, (host.cameraGroups?.length ?? 0) > 0));
 
   function applyBandWhiteBalance(enabled: boolean) {
     bandWhiteBalance = enabled;
@@ -115,24 +149,24 @@
     host.requestRender();
   }
 
-  const archiveIndex = $derived((filesState.renderTick, firstArchiveScanIndex(host)));
+  const archiveIndex = $derived((filesState.entries, firstArchiveScanIndex(host)));
   // Colouring needs the photographs and the camera profile out of the archive,
   // which only the extension host still has open. Hidden everywhere else.
-  const canRecolor = $derived((filesState.renderTick, canRunStationPipeline(host, archiveIndex)));
+  const canRecolor = $derived((filesState.entries, canRunStationPipeline(host, archiveIndex)));
 
   const entries = $derived(registrationState.alignEntries);
-  const alignedCount = $derived(entries.filter(entry => entry.state === 'aligned').length);
-  const failedCount = $derived(entries.filter(entry => entry.state === 'failed').length);
+  const alignedCount = $derived(entries.filter((entry) => entry.state === 'aligned').length);
+  const failedCount = $derived(entries.filter((entry) => entry.state === 'failed').length);
   // Percent of the run, not percent of success: the bar answers "how much
   // longer", and a failed cloud is as finished as an aligned one.
   const alignPercent = $derived(
-    entries.length === 0 ? 0 : Math.round((registrationState.alignDone / entries.length) * 100)
+    entries.length === 0 ? 0 : Math.round((registrationState.alignDone / entries.length) * 100),
   );
 
   const scans = $derived(stationPipelineUi.scans);
-  const coloredCount = $derived(scans.filter(scan => scan.colored).length);
+  const coloredCount = $derived(scans.filter((scan) => scan.colored).length);
   const colorPercent = $derived(
-    scans.length === 0 ? 0 : Math.round((coloredCount / scans.length) * 100)
+    scans.length === 0 ? 0 : Math.round((coloredCount / scans.length) * 100),
   );
 
   const STATE_ICON = { queued: '·', running: '◐', aligned: '✓', failed: '✕' } as const;
@@ -143,20 +177,19 @@
   // places are parsed, used as cameras and recoloured — and scope belongs
   // beside the button that consumes it.
   const archiveName = $derived(
-    (filesState.renderTick,
+    (filesState.entries,
     archiveIndex === null
       ? undefined
-      : (host.spatialFiles?.[archiveIndex]?.metadata?.containerFileName as string | undefined))
+      : (host.spatialFiles?.[archiveIndex]?.metadata?.containerFileName as string | undefined)),
   );
-  const places = $derived(
-    (filesState.renderTick, filesState.renderModeTick, capturePlaces(host, archiveName))
-  );
+  const places = $derived((filesState.entries, capturePlaces(host, archiveName)));
   const placeVisible = (place: { fileIndices: number[] }) =>
-    place.fileIndices.some(index => filesState.visibility[index] !== false);
+    place.fileIndices.some((index) => host.fileEntries.require(index).state.visible !== false);
+
+  const placesInScope = $derived(places.filter(placeVisible).length);
 
   function togglePlace(place: any, event: Event) {
     setCapturePlaceVisible(host, place, (event.currentTarget as HTMLInputElement).checked);
-    filesState.renderModeTick++;
   }
 
   function fileLabel(index: number): string {
@@ -164,7 +197,7 @@
   }
 
   function onAnchorChange(event: Event) {
-    anchorChoice = Number((event.currentTarget as HTMLSelectElement).value);
+    anchorChoice = host.fileEntries.require(Number((event.currentTarget as HTMLSelectElement).value)).id;
   }
 
   function toggleTools(): void {
@@ -180,7 +213,7 @@
     host.showStatus(
       enabled
         ? 'Measurement mode: ON — double-click or double-tap points to measure'
-        : 'Measurement mode: OFF — double-click or double-tap moves the rotation center'
+        : 'Measurement mode: OFF — double-click or double-tap moves the rotation center',
     );
   }
 
@@ -212,6 +245,8 @@
     </label>
   {/if}
 {/snippet}
+
+<svelte:window onkeydown={onKeydown} />
 
 {#if hasObjects}
   <button
@@ -292,6 +327,12 @@
         <h5>Align {movingCount} cloud{movingCount === 1 ? '' : 's'} to it</h5>
       </header>
       <div class="align-actions">
+        {#if registrationState.busy}
+          <button
+            class="registration-cancel"
+            onclick={() => registration.cancelAlignment(host)}
+           title="Esc">Cancel alignment</button>
+        {/if}
         <button
           class="global-align-run align-primary"
           onclick={() =>
@@ -345,6 +386,21 @@
           />
           Complex scene
         </label>
+        <label
+          class="align-inline-check"
+          title="Which axis points up in these scans. The coarse search turns clouds about it."
+        >
+          Up
+          <select
+            class="global-align-up-axis"
+            bind:value={registrationState.upAxis}
+            disabled={registrationState.busy}
+          >
+            <option value="z">Z</option>
+            <option value="y">Y</option>
+            <option value="x">X</option>
+          </select>
+        </label>
       </div>
 
       {#if entries.length > 0}
@@ -366,12 +422,31 @@
             {alignedCount} aligned{failedCount > 0 ? ` · ${failedCount} failed` : ''}
           {/if}
         </div>
+        {#if !registrationState.busy && registrationState.result}
+          <!-- The run's own sentence: what it aligned to, how long it took, and
+               where the solver ran. -->
+          <div class="align-message global-align-result">{registrationState.result}</div>
+        {/if}
         <ul class="global-align-results align-list">
-          {#each entries as entry (entry.index)}
+          {#each entries as entry (entry.id)}
             <li class={`align-row align-row-${entry.state}`}>
               <span class="align-icon">{STATE_ICON[entry.state]}</span>
               <span class="align-name" title={entry.name}>{entry.name}</span>
               <span class="align-detail">{entry.detail}</span>
+              {#if !registrationState.busy && (entry.state === 'aligned' || entry.state === 'failed')}
+                <span class="align-row-actions">
+                  <button
+                    class="align-row-fix"
+                    onclick={() => fixRow(entry.id)}
+                    title="Place this cloud on the reference by picking three matching points"
+                  >Fix</button>
+                  <button
+                    class="align-row-refine"
+                    onclick={() => refineRow(entry.id)}
+                    title="ICP against the reference from where this cloud sits now"
+                  >Refine</button>
+                </span>
+              {/if}
             </li>
           {/each}
         </ul>
@@ -387,12 +462,12 @@
             {#each registrationState.unattachedGroups as group, groupIndex (groupIndex)}
               <div class="align-gap-group">
                 <div class="align-gap-members">
-                  {group.indices.length === 1 ? 'This cloud' : `These ${group.indices.length} clouds`}
+                  {group.ids.length === 1 ? 'This cloud' : `These ${group.ids.length} clouds`}
                   stayed separate: <strong>{group.names.join(', ')}</strong>
                 </div>
                 {#if group.suggestion}
                   <div class="align-gap-suggest">
-                    {group.indices.length > 1
+                    {group.ids.length > 1
                       ? 'They are already aligned to each other, so they move as one and need a single placement.'
                       : 'It needs one placement.'}
                     Look near <strong>{group.suggestion.movingName}</strong> and
@@ -442,6 +517,13 @@
           <h5>Colour from the archive's cameras</h5>
         </header>
         <div class="align-actions">
+          {#if stationPipelineUi.busy}
+            <button
+              class="station-pipeline-cancel"
+              onclick={() => cancelStationPipeline(host)}
+              title="Stop after the scan being coloured now (Esc)"
+            >Cancel colouring</button>
+          {/if}
           <button
             class="global-align-recolor align-primary"
             onclick={() => runStationPipeline(host, archiveIndex, false)}
@@ -456,9 +538,15 @@
             disabled={stationPipelineUi.busy || registrationState.busy}
             title="Re-derives the alignment in the host first, discarding what is on screen"
           >
-            Register first
+            Re-register &amp; recolour
           </button>
         </div>
+        {#if places.length > 1 && placesInScope < places.length}
+          <p class="align-hint align-scope-hint">
+            Only {placesInScope} of {places.length} capture places are in scope; the hidden ones are
+            skipped (see Options).
+          </p>
+        {/if}
 
         {#if scans.length > 0}
           <div
@@ -499,14 +587,6 @@
             Also recolour scans that already have camera colour
           </label>
           {@render whiteBalanceToggle()}
-          <label class="align-check">
-            Up axis for the coarse search
-            <select bind:value={registrationState.upAxis}>
-              <option value="z">Z</option>
-              <option value="y">Y</option>
-              <option value="x">X</option>
-            </select>
-          </label>
 
           {#if places.length > 1}
             <div class="align-places">
@@ -558,7 +638,9 @@
           {/if}
         {/if}
       </section>
-    {:else}
+    {:else if hasCameraProfiles}
+      <!-- The up axis moved beside the align buttons; white balance is all
+           that is left here, and only cameras need it. -->
       <button
           class="align-disclosure align-options-toggle"
           onclick={() => (showOptions = !showOptions)}
@@ -566,14 +648,6 @@
         {showOptions ? '▾' : '▸'} Options
       </button>
       {#if showOptions}
-        <label class="align-check">
-          Up axis for the coarse search
-          <select bind:value={registrationState.upAxis}>
-            <option value="z">Z</option>
-            <option value="y">Y</option>
-            <option value="x">X</option>
-          </select>
-        </label>
         {@render whiteBalanceToggle()}
       {/if}
     {/if}
@@ -595,7 +669,7 @@
             id="global-align-single-fixed"
             value={singleFixedIndex}
             onchange={event =>
-              (singleFixed = Number((event.currentTarget as HTMLSelectElement).value))}
+              (singleFixed = host.fileEntries.require(Number((event.currentTarget as HTMLSelectElement).value)).id)}
           >
             {#each alignable as index (index)}
               <option value={index}>{fileLabel(index)}</option>
@@ -611,9 +685,20 @@
 {/if}
 
 <style>
+  .align-row-actions {
+    display: inline-flex;
+    gap: 4px;
+    margin-left: auto;
+    flex: 0 0 auto;
+  }
+  .align-row-actions button {
+    padding: 0 6px;
+    font-size: 11px;
+    line-height: 18px;
+  }
   .global-align-toggle {
     /* The add button keeps `flex: 1`; this one stays at its natural width so
-       the pair shares the row without a second layout rule. */
+         the pair shares the row without a second layout rule. */
     flex: 0 0 auto;
     white-space: nowrap;
   }
@@ -622,7 +707,7 @@
   }
   .align-menu {
     /* Breaks out of the flex row that holds the two buttons, so the menu is a
-       full-width panel underneath them rather than a third column. */
+         full-width panel underneath them rather than a third column. */
     flex-basis: 100%;
     background-color: var(--vscode-editor-background);
     border: 1px solid var(--vscode-panel-border);
@@ -695,8 +780,8 @@
   }
   .align-reference select {
     /* Full width on its own line: scan names are long and truncating the one
-       control that says what everything else is relative to is not a trade
-       worth making for one saved row. */
+         control that says what everything else is relative to is not a trade
+         worth making for one saved row. */
     display: block;
     width: 100%;
     font-size: 11px;
@@ -772,7 +857,11 @@
     padding: 8px 9px;
     border: 1px solid var(--vscode-editorWarning-foreground, #cca700);
     border-radius: 4px;
-    background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 8%, transparent);
+    background: color-mix(
+      in srgb,
+      var(--vscode-editorWarning-foreground, #cca700) 8%,
+      transparent
+    );
   }
   .align-gap-head {
     font-weight: 600;
@@ -801,15 +890,15 @@
     margin: 4px 0 0;
     padding: 0;
     /* Long captures run to dozens of scans; the list scrolls rather than
-       pushing the file list off the panel. */
+         pushing the file list off the panel. */
     max-height: 132px;
     overflow-y: auto;
   }
   .align-row {
     display: flex;
     /* Wraps rather than truncates. A scan name and its result together are
-       wider than the sidebar at any realistic width, and clipping "overlap
-       37%" to "overlap 3" turns the one number worth reading into a lie. */
+         wider than the sidebar at any realistic width, and clipping "overlap
+         37%" to "overlap 3" turns the one number worth reading into a lie. */
     flex-wrap: wrap;
     align-items: baseline;
     gap: 0 5px;
@@ -822,7 +911,7 @@
   }
   .align-name {
     /* The name is the one thing that may truncate, and only once it has taken
-       the whole row: half a scan name still identifies the row. */
+         the whole row: half a scan name still identifies the row. */
     flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
@@ -832,7 +921,7 @@
   .align-detail {
     flex: 0 0 auto;
     /* Right-aligned when it shares the row, indented under the name when it
-       wraps to its own — either way it is never cut off. */
+         wraps to its own — either way it is never cut off. */
     margin-left: auto;
     padding-left: 14px;
     font-family: var(--vscode-editor-font-family, monospace);

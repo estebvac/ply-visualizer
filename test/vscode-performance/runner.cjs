@@ -38,9 +38,14 @@ const PERF_LINE = /PERF\[([^\]]+)\][^\r\n]*?total ([0-9.]+)\s*ms([^\r\n]*)/g;
 const STEP_COMPLETION = {
   open: () => true,
   alignAll: tag => tag.startsWith('registration/align-all') || tag.startsWith('benchmark/skipped'),
+  alignAllNested: tag =>
+    tag.startsWith('registration/align-all-nested') || tag.startsWith('benchmark/skipped'),
+  alignAllComplex: tag =>
+    tag.startsWith('registration/align-all-complex') || tag.startsWith('benchmark/skipped'),
   refineAll: tag =>
     tag.startsWith('registration/refine-all') || tag.startsWith('benchmark/skipped'),
   recolorAll: tag => tag.startsWith('x3a/recolour-all') || tag.startsWith('benchmark/skipped'),
+  reapplyDepth: tag => tag.startsWith('depth/reapply') || tag.startsWith('benchmark/skipped'),
   registerAndRecolorAll: tag =>
     tag.startsWith('x3a/auto-match+recolour-all') || tag.startsWith('benchmark/skipped'),
 };
@@ -129,7 +134,9 @@ const isContainerSummary = tag => /^[^/]+\/all\b/.test(tag);
  * a container is involved, so the full window is only ever paid by formats
  * that emit a single line and are done.
  */
-const QUIET_MS = 20000;
+// PLY_PERF_QUIET_MS shortens the window for corpora of single-line formats,
+// where the generous default only adds idle time to every open.
+const QUIET_MS = Number(process.env.PLY_PERF_QUIET_MS || 20000);
 async function settle(logRoot, previousCount, deadline) {
   let lines = scrape(logRoot);
   let count = lines.length;
@@ -157,6 +164,12 @@ async function run() {
   if (!inputs.length || !logRoot || !resultFile) {
     throw new Error('Missing PLY performance runner environment');
   }
+
+  // On a fresh profile, openWith can wait indefinitely for a provider that
+  // has not activated yet. Match the integration runner before starting timing.
+  const extension = vscode.extensions.getExtension('kleinicke.ply-visualizer');
+  if (!extension) { throw new Error('PLY Visualizer extension is not installed'); }
+  await extension.activate();
 
   const results = [];
   for (const input of inputs) {

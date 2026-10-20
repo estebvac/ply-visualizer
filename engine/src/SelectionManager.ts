@@ -29,19 +29,17 @@ export type PointPickingImplementation = 'cpu' | 'webgpu';
  * Context interface providing access to scene state needed for selection
  */
 export interface SelectionContext {
-  fileEntries: FileEntryRegistry;
   camera: THREE.PerspectiveCamera;
-  meshes: THREE.Object3D[];
-  spatialFiles: any[];
-  poseGroups: THREE.Group[];
-  cameraGroups: THREE.Group[];
-  fileVisibility: boolean[];
-  pointSizes: number[];
+  meshes: readonly THREE.Object3D[];
+  spatialFiles: readonly any[];
+  poseGroups: readonly THREE.Group[];
+  cameraGroups: readonly THREE.Group[];
   screenSpaceScaling: boolean;
   /** Active Spark SplatMesh objects, aligned with spatialFiles. */
   splatMeshes?: (THREE.Object3D | null)[];
   /** Renderer clipping planes; points behind one of these are not visible or pickable. */
   clippingPlanes?: readonly THREE.Plane[];
+  fileEntries: FileEntryRegistry;
 }
 
 /**
@@ -66,13 +64,19 @@ export class SelectionManager {
   }
 
   async initializeWebGPUPicker(): Promise<void> {
-    const { WebGPUPointPicker } = await import(
-      /* webpackChunkName: "webgpu-point-picker" */ './WebGPUPointPicker'
-    );
-    const result = await WebGPUPointPicker.create();
-    this.webgpuPicker = result.picker;
-    this.webgpuUnavailableReason = result.unavailableReason;
-    this.pointPickingImplementation = result.picker ? 'webgpu' : 'cpu';
+    try {
+      const { WebGPUPointPicker } = await import(
+        /* webpackChunkName: "webgpu-point-picker" */ './WebGPUPointPicker'
+      );
+      const result = await WebGPUPointPicker.create();
+      this.webgpuPicker = result.picker;
+      this.webgpuUnavailableReason = result.unavailableReason;
+      this.pointPickingImplementation = result.picker ? 'webgpu' : 'cpu';
+    } catch (error) {
+      // An optional picker chunk must not prevent the WebGL viewer loading.
+      this.webgpuUnavailableReason = error instanceof Error ? error.message : String(error);
+      this.pointPickingImplementation = 'cpu';
+    }
   }
 
   isWebGPUPickingAvailable(): boolean {
@@ -148,6 +152,20 @@ export class SelectionManager {
     }
     const hit = this.pickPointScreenSpace(mouseScreenX, mouseScreenY, canvas, clouds);
     return hit ? this.resolvePickHit(hit, 'CPU') : null;
+  }
+
+  releaseUnusedPointBuffers(geometries: Set<THREE.BufferGeometry>): void {
+    if (!this.webgpuPicker) {
+      return;
+    }
+    const attributes = new Set<THREE.BufferAttribute | THREE.InterleavedBufferAttribute>();
+    for (const geometry of geometries) {
+      const position = geometry.getAttribute('position');
+      if (position) {
+        attributes.add(position);
+      }
+    }
+    this.webgpuPicker.retainPositionBuffers(attributes);
   }
 
   dispose(): void {
@@ -383,12 +401,12 @@ export class SelectionManager {
 
     for (let i = 0; i < this.context.cameraGroups.length; i++) {
       const unifiedIndex = cameraStartIndex + i;
-      if (!this.context.fileVisibility[unifiedIndex]) {
+      if (!this.context.fileEntries.require(unifiedIndex).state.visible) {
         continue;
       }
 
       const cameraGroup = this.context.cameraGroups[i];
-      const cameraScale = this.context.pointSizes[unifiedIndex] || 1.0;
+      const cameraScale = this.context.fileEntries.require(unifiedIndex).state.pointSize || 1.0;
 
       // Check each camera in the profile
       for (const cameraChild of cameraGroup.children) {
@@ -477,12 +495,12 @@ export class SelectionManager {
   ): THREE.Vector3 | null {
     for (let i = 0; i < this.context.poseGroups.length; i++) {
       const unifiedIndex = this.context.fileEntries.indexOfKind('pose', i);
-      if (!this.context.fileVisibility[unifiedIndex]) {
+      if (!this.context.fileEntries.require(unifiedIndex).state.visible) {
         continue;
       }
 
       const poseGroup = this.context.poseGroups[i];
-      const poseScale = this.context.pointSizes[unifiedIndex] || 1.0;
+      const poseScale = this.context.fileEntries.require(unifiedIndex).state.pointSize || 1.0;
 
       // Check keypoint spheres and connection lines
       const selectedPoint = this.selectPoseObject(
@@ -568,7 +586,7 @@ export class SelectionManager {
   ): THREE.Vector3 | null {
     // Find all visible triangle meshes
     const visibleMeshes = this.context.meshes.filter(
-      (mesh, index) => this.context.fileVisibility[index]
+      (mesh, index) => this.context.fileEntries.require(index).state.visible
     );
     const triangleMeshes = visibleMeshes.filter(mesh => {
       if (mesh.userData.sceneModel) {
@@ -650,7 +668,7 @@ export class SelectionManager {
    */
   private getVisiblePointClouds(): THREE.Points[] {
     const visibleMeshes = this.context.meshes.filter(
-      (mesh, index) => this.context.fileVisibility[index]
+      (mesh, index) => this.context.fileEntries.require(index).state.visible
     );
     const pointCloudMeshes = visibleMeshes.filter(mesh => {
       // Only target THREE.Points instances with PointsMaterial and no index buffer
@@ -941,7 +959,7 @@ export class SelectionManager {
     const worldCenter = new THREE.Vector3();
 
     for (let i = 0; i < this.context.meshes.length; i++) {
-      if (!this.context.fileVisibility[i]) {
+      if (!this.context.fileEntries.require(i).state.visible) {
         continue;
       }
       const mesh = this.context.meshes[i];
@@ -983,7 +1001,7 @@ export class SelectionManager {
 
     for (const { groups, indexOffset } of groupSets) {
       for (let i = 0; i < groups.length; i++) {
-        if (!this.context.fileVisibility[indexOffset + i]) {
+        if (!this.context.fileEntries.require(indexOffset + i).state.visible) {
           continue;
         }
         box.setFromObject(groups[i]);

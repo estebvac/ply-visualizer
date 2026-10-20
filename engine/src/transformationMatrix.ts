@@ -1,3 +1,4 @@
+import type { FileEntryRegistry } from './state/fileEntries';
 import * as THREE from 'three';
 import { SpatialData } from './interfaces';
 import { createTranslationMatrix } from './utils/matrix';
@@ -7,20 +8,17 @@ export interface TransformationMatrixHost {
   camera: THREE.PerspectiveCamera;
   cameraMatrix: THREE.Matrix4;
   controls: { target: THREE.Vector3 };
-  transformationMatrices: THREE.Matrix4[];
-  meshes: (THREE.Mesh | THREE.Points | THREE.LineSegments | null)[];
-  vertexPointsObjects: (THREE.Points | null)[];
-  voxelObjects: (THREE.InstancedMesh | null)[];
-  normalsVisualizers: (THREE.LineSegments | null)[];
-  multiMaterialGroups: (THREE.Group | null)[];
-  spatialFiles: SpatialData[];
-  poseGroups: THREE.Group[];
-  cameraGroups: THREE.Group[];
-  pointSizes: number[];
+  meshes: readonly (THREE.Mesh | THREE.Points | THREE.LineSegments | null)[];
+  voxelObjects?: readonly (THREE.InstancedMesh | null)[];
+
+  spatialFiles: readonly SpatialData[];
+  poseGroups: readonly THREE.Group[];
+  cameraGroups: readonly THREE.Group[];
   /** Present on the full visualizer host; mirrors transforms onto splat meshes. */
   splatMode?: { applyMatrix(fileIndex: number, matrix: THREE.Matrix4 | undefined): void };
   sectionPlanes?: { updateTransform(fileIndex: number, matrix: THREE.Matrix4): void };
   applyCameraScale(cameraProfileIndex: number, scale: number): void;
+  fileEntries: FileEntryRegistry;
 }
 
 function setObjectMatrix(object: THREE.Object3D, matrix: THREE.Matrix4): void {
@@ -56,8 +54,8 @@ export function setTransformationMatrix(
   fileIndex: number,
   matrix: THREE.Matrix4
 ): void {
-  if (fileIndex >= 0 && fileIndex < host.transformationMatrices.length) {
-    host.transformationMatrices[fileIndex].copy(matrix);
+  if (fileIndex >= 0 && fileIndex < host.fileEntries.length) {
+    host.fileEntries.require(fileIndex).transform.copy(matrix);
     applyTransformationMatrix(host, fileIndex);
   }
 }
@@ -66,8 +64,8 @@ export function getTransformationMatrix(
   host: TransformationMatrixHost,
   fileIndex: number
 ): THREE.Matrix4 {
-  if (fileIndex >= 0 && fileIndex < host.transformationMatrices.length) {
-    return host.transformationMatrices[fileIndex].clone();
+  if (fileIndex >= 0 && fileIndex < host.fileEntries.length) {
+    return host.fileEntries.require(fileIndex).transform.clone();
   }
   return new THREE.Matrix4(); // Return identity matrix if index is invalid
 }
@@ -76,18 +74,18 @@ export function getTransformationMatrixAsArray(
   host: TransformationMatrixHost,
   fileIndex: number
 ): number[] {
-  if (fileIndex >= 0 && fileIndex < host.transformationMatrices.length) {
-    return host.transformationMatrices[fileIndex].elements.slice();
+  if (fileIndex >= 0 && fileIndex < host.fileEntries.length) {
+    return host.fileEntries.require(fileIndex).transform.elements.slice();
   }
   return new THREE.Matrix4().elements.slice(); // Return identity matrix if index is invalid
 }
 
 export function applyTransformationMatrix(host: TransformationMatrixHost, fileIndex: number): void {
-  if (fileIndex < 0 || fileIndex >= host.transformationMatrices.length) {
+  if (fileIndex < 0 || fileIndex >= host.fileEntries.length) {
     return;
   }
 
-  const matrix = host.transformationMatrices[fileIndex];
+  const matrix = host.fileEntries.require(fileIndex).transform;
   host.sectionPlanes?.updateTransform(fileIndex, matrix);
 
   // Handle PLY/mesh files
@@ -98,26 +96,21 @@ export function applyTransformationMatrix(host: TransformationMatrixHost, fileIn
     }
 
     // Also apply transformation to vertex points visualization
-    const vertexPoints = host.vertexPointsObjects[fileIndex];
+    const vertexPoints = host.fileEntries.require(fileIndex).resources.vertexPoints;
     if (vertexPoints) {
       setObjectMatrix(vertexPoints, matrix);
     }
 
-    const voxels = host.voxelObjects[fileIndex];
-    if (voxels) {
-      setObjectMatrix(voxels, matrix);
-    }
-
     // Also apply transformation to normals visualizer
-    const normalsVisualizer = host.normalsVisualizers[fileIndex];
+    const normalsVisualizer = host.fileEntries.require(fileIndex).resources.normals;
     if (normalsVisualizer) {
       setObjectMatrix(normalsVisualizer, matrix);
     }
 
-    // Also apply transformation to multi-material groups (for OBJ files)
-    const multiMaterialGroup = host.multiMaterialGroups[fileIndex];
-    if (multiMaterialGroup) {
-      setObjectMatrix(multiMaterialGroup, matrix);
+    // Preserve voxel geometry transforms alongside point geometry.
+    const voxelObject = host.voxelObjects?.[fileIndex];
+    if (voxelObject) {
+      setObjectMatrix(voxelObject, matrix);
     }
 
     // Also mirror onto the splat mesh when this file renders as splats
@@ -145,15 +138,15 @@ export function applyTransformationMatrix(host: TransformationMatrixHost, fileIn
       setObjectMatrix(group, matrix);
 
       // Apply scaling only to visual elements, not position
-      const size = host.pointSizes[fileIndex] ?? 1.0;
+      const size = host.fileEntries.require(fileIndex).state.pointSize ?? 1.0;
       host.applyCameraScale(cameraIndex, size);
     }
   }
 }
 
 export function resetTransformationMatrix(host: TransformationMatrixHost, fileIndex: number): void {
-  if (fileIndex >= 0 && fileIndex < host.transformationMatrices.length) {
-    host.transformationMatrices[fileIndex].identity();
+  if (fileIndex >= 0 && fileIndex < host.fileEntries.length) {
+    host.fileEntries.require(fileIndex).transform.identity();
     applyTransformationMatrix(host, fileIndex);
   }
 }
@@ -163,8 +156,8 @@ export function multiplyTransformationMatrices(
   fileIndex: number,
   matrix: THREE.Matrix4
 ): void {
-  if (fileIndex >= 0 && fileIndex < host.transformationMatrices.length) {
-    host.transformationMatrices[fileIndex].multiply(matrix);
+  if (fileIndex >= 0 && fileIndex < host.fileEntries.length) {
+    host.fileEntries.require(fileIndex).transform.multiply(matrix);
     applyTransformationMatrix(host, fileIndex);
   }
 }
@@ -176,7 +169,7 @@ export function addTranslationToMatrix(
   y: number,
   z: number
 ): void {
-  if (fileIndex >= 0 && fileIndex < host.transformationMatrices.length) {
+  if (fileIndex >= 0 && fileIndex < host.fileEntries.length) {
     const translationMatrix = createTranslationMatrix(x, y, z);
     multiplyTransformationMatrices(host, fileIndex, translationMatrix);
   }
@@ -229,10 +222,4 @@ export function updateCameraControlsPanel(host: TransformationMatrixHost): void 
   viewerState.cameraPositionText = `(${pos.x.toFixed(3)}, ${pos.y.toFixed(3)}, ${pos.z.toFixed(3)})`;
   viewerState.cameraRotationText = `(${rotX.toFixed(1)}°, ${rotY.toFixed(1)}°, ${rotZ.toFixed(1)}°)`;
   viewerState.cameraTargetText = `(${target.x.toFixed(3)}, ${target.y.toFixed(3)}, ${target.z.toFixed(3)})`;
-  viewerState.cameraPositionX = pos.x;
-  viewerState.cameraPositionY = pos.y;
-  viewerState.cameraPositionZ = pos.z;
-  viewerState.cameraTargetX = target.x;
-  viewerState.cameraTargetY = target.y;
-  viewerState.cameraTargetZ = target.z;
 }

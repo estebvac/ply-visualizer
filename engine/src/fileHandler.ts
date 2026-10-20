@@ -3,6 +3,7 @@
  * Provides unified file type detection, parsing, and error handling
  */
 
+import type { DepthConversionResult } from './interfaces';
 import { PerfTimer } from './utils/perfLog';
 import { exportWithStatus } from './hosts/exportFile';
 import { formats } from './formats/formatRegistry';
@@ -57,37 +58,25 @@ export interface FileTypeInfo {
 }
 
 // Unified file data interface
-export interface UnifiedFileData {
-  vertices: any[];
-  faces?: any[];
-  format: string;
-  version?: string;
-  comments?: string[];
-  vertexCount: number;
-  faceCount: number;
-  hasColors: boolean;
-  hasNormals: boolean;
-  hasIntensity?: boolean;
-  fileName: string;
-  fileIndex?: number;
-  triangles?: any[]; // For STL format
-  positionsArray?: Float32Array;
-  colorsArray?: Uint8Array | null;
-  normalsArray?: Float32Array | null;
-  intensityArray?: Float32Array | null;
-  scalarFields?: Record<string, Float32Array>;
-  useTypedArrays?: boolean;
-  sourcePointCount?: number;
-  sourcePointIndices?: Uint32Array;
-  sourceOrigin?: [number, number, number];
-  metadata?: Record<string, unknown>;
-}
+export type UnifiedFileData = import('./interfaces').SpatialData;
 
 // Parser result interface
-export interface ParseResult {
-  data: UnifiedFileData;
-  type: string; // 'spatialData', 'stlData', 'objData', etc.
-}
+export type ParseResult =
+  | { type: 'jsonData'; data: { format: 'json'; fileName: string; comments: string[] } }
+  | {
+      type:
+        | 'spatialData'
+        | 'stlData'
+        | 'objData'
+        | 'pcdData'
+        | 'ptsData'
+        | 'kittiBinData'
+        | 'offData'
+        | 'gltfData'
+        | 'npyData'
+        | 'xyzData';
+      data: UnifiedFileData;
+    };
 
 // Error handling interface
 export interface FileError {
@@ -99,6 +88,14 @@ export interface FileError {
 /**
  * Detects file type information from filename
  */
+export function requiresImportOptions(fileName: string): boolean {
+  return formats.find(fileName.split('.').pop() ?? '')?.requiresImportOptions === true;
+}
+
+export function decodesInViewer(fileName: string): boolean {
+  return formats.find(fileName.split('.').pop() ?? '')?.decodeInViewer === true;
+}
+
 export function detectFileType(fileName: string): FileTypeInfo | null {
   const extension = fileName.toLowerCase().split('.').pop();
   if (!extension) {
@@ -176,71 +173,27 @@ export async function parseFileData(
  * Convert parser-specific data format to unified format
  */
 export function convertToUnifiedFormat(data: any, fileName: string): UnifiedFileData {
-  let vertices = data.vertices || [];
-  let faces = data.faces || [];
-
-  // Handle STL format specifically
-  if (data.triangles && Array.isArray(data.triangles)) {
-    console.log(`🔄 Converting STL data: ${data.triangles.length} triangles`);
-
-    // STL stores triangles directly with vertex coordinates
-    // We need to extract unique vertices and create face indices
-    const vertexMap = new Map<string, number>();
-    const convertedVertices: any[] = [];
-    const convertedFaces: any[] = [];
-
-    data.triangles.forEach((triangle: any) => {
-      const faceIndices: number[] = [];
-
-      // Process each vertex in the triangle
-      triangle.vertices.forEach((vertex: any) => {
-        // Create a unique key for the vertex
-        const vertexKey = `${vertex.x.toFixed(6)}_${vertex.y.toFixed(6)}_${vertex.z.toFixed(6)}`;
-
-        let vertexIndex = vertexMap.get(vertexKey);
-        if (vertexIndex === undefined) {
-          // New unique vertex
-          vertexIndex = convertedVertices.length;
-          vertexMap.set(vertexKey, vertexIndex);
-
-          convertedVertices.push({
-            x: vertex.x,
-            y: vertex.y,
-            z: vertex.z,
-            nx: triangle.normal?.x || 0,
-            ny: triangle.normal?.y || 0,
-            nz: triangle.normal?.z || 0,
-            red: triangle.color?.red || DEFAULT_COLORS.UNCOLORED_VERTEX.red,
-            green: triangle.color?.green || DEFAULT_COLORS.UNCOLORED_VERTEX.green,
-            blue: triangle.color?.blue || DEFAULT_COLORS.UNCOLORED_VERTEX.blue,
-          });
-        }
-
-        faceIndices.push(vertexIndex);
-      });
-
-      // Add the face with proper indices format
-      convertedFaces.push({
-        indices: faceIndices,
-      });
-    });
-
-    vertices = convertedVertices;
-    faces = convertedFaces;
-
-    console.log(`✅ STL conversion: ${vertices.length} unique vertices, ${faces.length} faces`);
-  }
+  const vertices = data.vertices || [];
+  const faces = data.faces || [];
 
   const unified: UnifiedFileData = {
+    ...data,
     vertices: vertices,
     faces: faces,
-    format: data.format || 'ascii',
+    format:
+      data.format === 'binary' || data.format === 'binary_compressed' || data.format === 'kitti-bin'
+        ? 'binary_little_endian'
+        : data.format === 'pts'
+          ? 'ascii'
+          : data.format || 'ascii',
     version: data.version || '1.0',
     comments: data.comments || [],
     vertexCount: data.vertexCount ?? vertices.length,
-    faceCount: faces.length,
+    faceCount: data.indicesArray ? data.indicesArray.length / 3 : faces.length,
     hasColors: data.hasColors || false,
-    hasNormals: data.hasNormals ?? !!data.triangles,
+    // OBJ normals use face-corner indices, not the unified vertex indices.
+    // No per-vertex normal array is produced here; mesh construction computes it.
+    hasNormals: /\.obj$/i.test(fileName) ? false : (data.hasNormals ?? false),
     hasIntensity: data.hasIntensity || false,
     fileName: fileName,
   };
@@ -254,6 +207,7 @@ export function convertToUnifiedFormat(data: any, fileName: string): UnifiedFile
     unified.scalarFields = data.scalarFields ?? {};
     unified.sourcePointCount = data.sourcePointCount;
     unified.sourcePointIndices = data.sourcePointIndices;
+    unified.sourceRowsIdentity = data.sourceRowsIdentity;
   }
 
   return unified;
@@ -325,10 +279,15 @@ export async function processFiles(
         }
       } else {
         const result = await parseFileData(file.data, fileType, file.name, timingCallback);
-        result.data.fileIndex = results.length;
+        if (result.type !== 'jsonData') {
+          result.data.fileIndex = results.length;
+        }
         results.push(result);
       }
     } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        continue;
+      }
       const fileError: FileError = {
         fileName: file.name,
         error: generateErrorMessage(file.name, fileType?.extension || '', error),
@@ -706,8 +665,107 @@ export async function collectCameraParamsForBrowserPrompt(
 export async function convertDepthToUnified(
   fileName: string,
   data: ArrayBuffer,
-  cameraParams: CameraParams & { depthScale?: number; depthBias?: number }
+  cameraParams: CameraParams & { depthScale?: number; depthBias?: number },
+  /**
+   * The viewer's depth worker (`processDepthToPointCloud`): decode and
+   * projection then run off the main thread, in parallel bands, like a depth
+   * image opened in VS Code. Without it everything runs here.
+   */
+  convert?: (
+    data: ArrayBuffer,
+    fileName: string,
+    cameraParams: CameraParams
+  ) => Promise<DepthConversionResult>
 ): Promise<ParseResult> {
+  // One PERF line for this path too (the extension path builds its own in
+  // depth/depthConversionPipeline.ts). No extension epochs exist here - the
+  // file came from a drop or picker - so the span is webview-only.
+  const perf = new PerfTimer(/\.tif(f)?$/i.test(fileName) ? 'tiff' : 'depth');
+  perf.file(fileName);
+  perf.note('MB', (data.byteLength / 1048576).toFixed(2));
+
+  let result: DepthConversionResult;
+  if (convert) {
+    const started = performance.now();
+    result = await convert(data, fileName, cameraParams);
+    const timings = result.timings;
+    if (timings) {
+      perf.add(timings.decodeCached ? 'decode(cached)' : 'decode', timings.decodeMs);
+      perf.add('project', timings.projectMs);
+      const workerIo = performance.now() - started - timings.decodeMs - timings.projectMs;
+      if (workerIo > 0.5) {
+        perf.add('worker-io', workerIo);
+      }
+      if (timings.info) {
+        perf.note('layout', timings.info);
+      }
+      if (timings.thread) {
+        perf.note('on', `${timings.thread}${timings.bands ? `/${timings.bands} bands` : ''}`);
+      }
+    } else {
+      perf.mark('convert');
+    }
+  } else {
+    result = await projectDepthHere(fileName, data, cameraParams, perf);
+  }
+
+  const isPfm = /\.pfm$/i.test(fileName);
+  const isNpy = /\.(npy|npz)$/i.test(fileName);
+  const isPng = /\.png$/i.test(fileName);
+  const fileType = isPfm ? 'PFM' : isNpy ? 'NPY' : isPng ? 'PNG' : 'TIF';
+
+  // Typed arrays, like the extension's depth path: one JavaScript object per
+  // point cost ~76 bytes of heap each (285 MB for a 3.7M-point TIFF).
+  const { colorsToUint8 } = await import('./depth/depthResultArrays');
+  const unified: UnifiedFileData = {
+    vertices: [],
+    faces: [],
+    useTypedArrays: true,
+    positionsArray: result.vertices.subarray(0, result.pointCount * 3),
+    colorsArray: colorsToUint8(result.colors?.subarray(0, result.pointCount * 3)),
+    normalsArray: null,
+    intensityArray: null,
+    scalarFields: {},
+    format: 'binary_little_endian',
+    version: '1.0',
+    comments: [
+      `Converted from ${fileType} depth image: ${fileName}`,
+      `Camera: ${cameraParams.cameraModel}`,
+      `Depth type: ${cameraParams.depthType}`,
+      `fx: ${cameraParams.fx}px${cameraParams.fy ? ', fy: ' + cameraParams.fy + 'px' : ''}`,
+      ...(cameraParams.baseline ? [`Baseline: ${cameraParams.baseline}mm`] : []),
+      ...(cameraParams.pngScaleFactor
+        ? [`Scale factor: scale=${cameraParams.pngScaleFactor}`]
+        : []),
+    ],
+    vertexCount: result.pointCount,
+    faceCount: 0,
+    hasColors: !!result.colors,
+    hasNormals: false,
+    fileName,
+  };
+
+  // Provide extra metadata helpful for UI/rehydration
+  (unified as any).isDepthDerived = true;
+  // Both converters report the image size, outside the declared result type.
+  const { width, height } = result as DepthConversionResult & { width?: number; height?: number };
+  if (width && height) {
+    (unified as any).depthDimensions = { width, height };
+  }
+
+  perf.note('verts', result.pointCount);
+  perf.summary();
+
+  return { data: unified, type: 'spatialData' };
+}
+
+/** Decode and project on the calling thread (no depth worker available). */
+async function projectDepthHere(
+  fileName: string,
+  data: ArrayBuffer,
+  cameraParams: CameraParams & { depthScale?: number; depthBias?: number },
+  perf: PerfTimer
+): Promise<DepthConversionResult> {
   const { registerDefaultReaders, registerReader, readDepth } =
     await import('./depth/DepthRegistry');
   const { normalizeDepth, projectToPointCloud } = await import('./depth/DepthProjector');
@@ -721,13 +779,6 @@ export async function convertDepthToUnified(
   }
 
   registerDefaultReaders();
-
-  // One PERF line for this path too (the extension path builds its own in
-  // depth/depthConversionPipeline.ts). No extension epochs exist here - the
-  // file came from a drop or picker - so the span is webview-only.
-  const perf = new PerfTimer(/\.tif(f)?$/i.test(fileName) ? 'tiff' : 'depth');
-  perf.file(fileName);
-  perf.note('MB', (data.byteLength / 1048576).toFixed(2));
 
   if (/\.png$/i.test(fileName) && cameraParams.pngScaleFactor) {
     const pngReader = new PngReader();
@@ -791,72 +842,8 @@ export async function convertDepthToUnified(
     p2: (cameraParams as any).p2 ? parseFloat(String((cameraParams as any).p2)) : undefined,
   } as any;
 
-  const result = projectToPointCloud(norm, projectionParams) as unknown as {
-    vertices: Float32Array;
-    colors?: Float32Array | Uint8Array;
-    pointCount: number;
-    width?: number;
-    height?: number;
-  };
+  const result = projectToPointCloud(norm, projectionParams) as unknown as DepthConversionResult;
 
   perf.mark('project');
-
-  const verts: any[] = new Array(result.pointCount);
-  const colorsAreUint8 = result.colors instanceof Uint8Array;
-  for (let i = 0; i < result.pointCount; i++) {
-    const x = result.vertices[i * 3];
-    const y = result.vertices[i * 3 + 1];
-    const z = result.vertices[i * 3 + 2];
-    if (result.colors) {
-      const r = colorsAreUint8 ? result.colors[i * 3] : Math.round(result.colors[i * 3] * 255);
-      const g = colorsAreUint8
-        ? result.colors[i * 3 + 1]
-        : Math.round(result.colors[i * 3 + 1] * 255);
-      const b = colorsAreUint8
-        ? result.colors[i * 3 + 2]
-        : Math.round(result.colors[i * 3 + 2] * 255);
-      verts[i] = { x, y, z, red: r, green: g, blue: b };
-    } else {
-      verts[i] = { x, y, z };
-    }
-  }
-
-  const isPfm = /\.pfm$/i.test(fileName);
-  const isNpy = /\.(npy|npz)$/i.test(fileName);
-  const isPng = /\.png$/i.test(fileName);
-  const fileType = isPfm ? 'PFM' : isNpy ? 'NPY' : isPng ? 'PNG' : 'TIF';
-
-  const unified: UnifiedFileData = {
-    vertices: verts,
-    faces: [],
-    format: 'binary_little_endian',
-    version: '1.0',
-    comments: [
-      `Converted from ${fileType} depth image: ${fileName}`,
-      `Camera: ${cameraParams.cameraModel}`,
-      `Depth type: ${cameraParams.depthType}`,
-      `fx: ${cameraParams.fx}px${cameraParams.fy ? ', fy: ' + cameraParams.fy + 'px' : ''}`,
-      ...(cameraParams.baseline ? [`Baseline: ${cameraParams.baseline}mm`] : []),
-      ...(cameraParams.pngScaleFactor
-        ? [`Scale factor: scale=${cameraParams.pngScaleFactor}`]
-        : []),
-    ],
-    vertexCount: verts.length,
-    faceCount: 0,
-    hasColors: !!result.colors,
-    hasNormals: false,
-    fileName,
-  };
-
-  // Provide extra metadata helpful for UI/rehydration
-  (unified as any).isDepthDerived = true;
-  if (result.width && result.height) {
-    (unified as any).depthDimensions = { width: result.width, height: result.height };
-  }
-
-  perf.mark('build-vertices');
-  perf.note('verts', result.pointCount);
-  perf.summary();
-
-  return { data: unified, type: 'spatialData' };
+  return result;
 }

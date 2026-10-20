@@ -52,7 +52,14 @@ test('adaptive two-pass is the default with an exact 3 px diameter cutoff', asyn
     return {
       sourceVisible: source.visible,
       roundParentIsSource: round.parent === source,
-      sharesGeometry: round.geometry === source.geometry,
+      // Its own geometry object (for its draw range), but the same attributes:
+      // no vertex data or GL buffer is duplicated.
+      sharesAttributes:
+        Object.keys(round.geometry.attributes).length ===
+          Object.keys(source.geometry.attributes).length &&
+        Object.entries(source.geometry.attributes).every(
+          ([name, attribute]) => round.geometry.attributes[name] === attribute
+        ),
       square: {
         hasMask: source.material.alphaMap !== null,
         alphaTest: source.material.alphaTest,
@@ -68,7 +75,7 @@ test('adaptive two-pass is the default with an exact 3 px diameter cutoff', asyn
 
   expect(state.sourceVisible).toBe(true);
   expect(state.roundParentIsSource).toBe(true);
-  expect(state.sharesGeometry).toBe(true);
+  expect(state.sharesAttributes).toBe(true);
   expect(state.square.hasMask).toBe(false);
   expect(state.square.alphaTest).toBe(0);
   expect(state.square.shader).toContain('gl_PointSize > 3.0');
@@ -82,7 +89,7 @@ test('round pass inherits an alignment applied after loading', async ({ page }) 
     const visualizer = (window as any).visualizer;
     const source = visualizer.meshes[0];
     const round = source.children.find((child: any) => child.name === 'adaptive-round-pass');
-    const aligned = visualizer.transformationMatrices[0].clone().makeTranslation(12, -3, 7);
+    const aligned = visualizer.fileEntries.require(0).transform.clone().makeTranslation(12, -3, 7);
     visualizer.setTransformationMatrix(0, aligned);
     source.updateWorldMatrix(true, true);
     return {

@@ -1,35 +1,137 @@
-/**
- * Stable identity and ordering for everything the file list shows.
- *
- * The panel addresses entries by a single "unified index" that spans three
- * collections in display order: `spatialFiles`, then `poseGroups`, then
- * `cameraGroups`. That index used to be recomputed at every call site as
- * `spatialFiles.length + poseGroups.length + cameraIndex`, which made an
- * existing entry's address depend on what was loaded *after* it: adding a point
- * cloud once a camera profile was on screen shifted every camera up one slot
- * while their per-entry state (visibility, scale, colour mode, transform)
- * stayed put, so the state silently attached to the wrong row.
- *
- * This registry owns the ordering instead. An entry's `id` is assigned once and
- * never reused, callers ask for indices rather than deriving them, and
- * insertion happens at the end of the entry's own kind block instead of the end
- * of the array.
- *
- * `parentId` is unused by the current loaders but is the reason the registry
- * exists in this shape: container formats that publish a cloud *and* their own
- * cameras (X3A and E57 today, COLMAP reconstructions later) need to say which
- * entries belong to which, rather than encoding it in a scene-graph name
- * prefix the way visualization/cameraFrames.ts has to.
- */
+import type { SpatialData } from '../interfaces';
+import type { FileObject } from '../visualization/fileObject';
+import type { PoseMeta, PoseJoint } from '../pose';
+import { Matrix4, Group, type LineSegments, type Points, type Object3D } from 'three';
+import type { MtlData } from '../parsers/mtlParser';
 
 export type FileEntryKind = 'spatial' | 'pose' | 'camera';
 
-export interface FileEntry {
-  /** Assigned once, never reused, stable across insertions and removals. */
-  readonly id: number;
-  readonly kind: FileEntryKind;
-  /** Entry that produced this one, for container formats; null at top level. */
-  parentId: number | null;
+export interface EntryPresentation {
+  /** Manual sidebar order; registry indices and rendering remain stable. */
+  listOrder: number | null;
+  depthIsDefault: boolean;
+  depthForm: import('../depth/panelState').DepthForm | null;
+  visible: boolean;
+  pointSize: number;
+  colorMode: string;
+  collapsed: boolean;
+  liveDepth: boolean;
+  depthPanelOpen: boolean;
+  solidVisible: boolean;
+  wireframeVisible: boolean;
+  pointsVisible: boolean;
+  normalsVisible: boolean;
+  splatModeActive: boolean;
+}
+
+export function defaultEntryPresentation(): EntryPresentation {
+  return {
+    listOrder: null,
+    depthIsDefault: false,
+    depthForm: null,
+    visible: true,
+    pointSize: 1,
+    colorMode: 'assigned',
+    collapsed: false,
+    liveDepth: false,
+    depthPanelOpen: false,
+    solidVisible: false,
+    wireframeVisible: false,
+    pointsVisible: true,
+    normalsVisible: false,
+    splatModeActive: false,
+  };
+}
+
+export interface SpatialEntryData {
+  data: SpatialData;
+  object: FileObject;
+}
+export interface PoseEntryData {
+  object: Group;
+  meta: PoseMeta;
+  joints: PoseJoint[];
+  edges: [number, number][];
+  useDatasetColors: boolean;
+  showLabels: boolean;
+  scaleByScore: boolean;
+  scaleByUncertainty: boolean;
+  convention: 'opencv' | 'opengl';
+  minScoreThreshold: number;
+  maxUncertaintyThreshold: number;
+  labelsGroup: Group | null;
+}
+export interface CameraEntryData {
+  object: Group;
+  name: string;
+  showLabels: boolean;
+  showCoords: boolean;
+}
+
+/** GPU resources stay outside Svelte's deep reactive state. */
+export class FileEntry {
+  spatial: SpatialEntryData | null = null;
+  pose: PoseEntryData | null = null;
+  camera: CameraEntryData | null = null;
+  readonly resources = {
+    normals: null as LineSegments | null,
+    vertexPoints: null as Points | null,
+    materialGroup: null as Group | null,
+    materialMeshes: null as Object3D[] | null,
+    materialColor: null as number | null,
+    materialName: null as string | null,
+    materialData: null as MtlData | null,
+  };
+  readonly transform = new Matrix4();
+  readonly depthUpdate = {
+    controller: undefined as AbortController | undefined,
+    version: 0,
+    inFlight: false,
+    queued: false,
+    timer: undefined as number | undefined,
+  };
+
+  cancelDepthWork(): void {
+    this.depthUpdate.version++;
+    this.depthUpdate.controller?.abort();
+    this.depthUpdate.controller = undefined;
+    this.depthUpdate.queued = false;
+    clearTimeout(this.depthUpdate.timer);
+    this.depthUpdate.timer = undefined;
+  }
+
+  beginDepthWork(): AbortSignal {
+    this.cancelDepthWork();
+    this.depthUpdate.controller = new AbortController();
+    return this.depthUpdate.controller.signal;
+  }
+
+  constructor(
+    readonly id: number,
+    readonly kind: FileEntryKind,
+    public parentId: number | null,
+    readonly state: EntryPresentation
+  ) {
+    if (kind === 'pose') {
+      this.pose = {
+        object: new Group(),
+        meta: { jointCount: 0, edgeCount: 0, fileName: '' },
+        joints: [],
+        edges: [],
+        useDatasetColors: false,
+        showLabels: false,
+        scaleByScore: false,
+        scaleByUncertainty: false,
+        convention: 'opengl',
+        minScoreThreshold: 0,
+        maxUncertaintyThreshold: 1,
+        labelsGroup: null,
+      };
+    }
+    if (kind === 'camera') {
+      this.camera = { object: new Group(), name: '', showLabels: false, showCoords: false };
+    }
+  }
 }
 
 /**
@@ -41,6 +143,49 @@ const KIND_ORDER: readonly FileEntryKind[] = ['spatial', 'pose', 'camera'];
 export class FileEntryRegistry {
   private entries: FileEntry[] = [];
   private nextId = 1;
+
+  constructor(
+    private readonly presentation: () => EntryPresentation = defaultEntryPresentation,
+    private readonly changed: (entries: readonly FileEntry[]) => void = () => {}
+  ) {}
+
+  ofKind(kind: FileEntryKind): FileEntry[] {
+    return this.entries.filter(entry => entry.kind === kind);
+  }
+
+  spatial(index: number): SpatialEntryData {
+    const value = this.require(this.indexOfKind('spatial', index)).spatial;
+    if (!value) {
+      throw new Error('Spatial entry has no data');
+    }
+    return value;
+  }
+  pose(index: number): PoseEntryData {
+    return this.require(this.indexOfKind('pose', index)).pose!;
+  }
+  camera(index: number): CameraEntryData {
+    return this.require(this.indexOfKind('camera', index)).camera!;
+  }
+
+  get all(): readonly FileEntry[] {
+    return this.entries;
+  }
+
+  require(index: number): FileEntry {
+    const entry = this.entries[index];
+    if (!entry) {
+      throw new RangeError(`No file entry at index ${index}`);
+    }
+    return entry;
+  }
+
+  get(id: number): FileEntry | undefined {
+    return this.entries.find(entry => entry.id === id);
+  }
+
+  private publish(): void {
+    this.changed([...this.entries]);
+  }
 
   /** Number of entries across every kind; the file list's row count. */
   get length(): number {
@@ -66,11 +211,24 @@ export class FileEntryRegistry {
     return start;
   }
 
+  prepare(kind: FileEntryKind, parentId: number | null = null): FileEntry {
+    return new FileEntry(this.nextId++, kind, parentId, this.presentation());
+  }
+
+  commit(entry: FileEntry): number {
+    if (this.get(entry.id)) {
+      throw new Error('Entry already committed');
+    }
+    const index = this.startOf(entry.kind) + this.countOf(entry.kind);
+    this.entries.splice(index, 0, entry);
+    this.publish();
+    return index;
+  }
+
   /** Appends to the end of `kind`'s block and reports where it landed. */
   add(kind: FileEntryKind, parentId: number | null = null): { entry: FileEntry; index: number } {
-    const entry: FileEntry = { id: this.nextId++, kind, parentId };
-    const index = this.startOf(kind) + this.countOf(kind);
-    this.entries.splice(index, 0, entry);
+    const entry = this.prepare(kind, parentId);
+    const index = this.commit(entry);
     return { entry, index };
   }
 
@@ -78,11 +236,10 @@ export class FileEntryRegistry {
    * Drops the entry at a unified index, and any entry that named it as a
    * parent, and so on down.
    *
-   * Returns everything removed in **descending index order**, which is what
-   * makes the caller's job safe: splicing its own per-entry arrays from the
-   * highest index first leaves earlier positions valid. Removing a container
-   * without its children would strand their scene objects with no row to
-   * control them.
+   * Returns removed entries with their former indices in descending order.
+   * Each returned entry still owns its records and resources for cleanup.
+   * Removing a container without its children would strand their scene objects
+   * with no row to control them.
    */
   removeAt(index: number): { entry: FileEntry; index: number }[] {
     if (!this.entries[index]) {
@@ -90,7 +247,7 @@ export class FileEntryRegistry {
     }
     const doomed = new Set<number>([this.entries[index].id]);
     // Repeat to a fixed point so grandchildren go too, whatever the order.
-    for (let changed = true; changed; ) {
+    for (let changed = true; changed;) {
       changed = false;
       for (const entry of this.entries) {
         if (entry.parentId !== null && doomed.has(entry.parentId) && !doomed.has(entry.id)) {
@@ -103,10 +260,13 @@ export class FileEntryRegistry {
     const removed: { entry: FileEntry; index: number }[] = [];
     for (let i = this.entries.length - 1; i >= 0; i--) {
       if (doomed.has(this.entries[i].id)) {
-        removed.push({ entry: this.entries[i], index: i });
+        const entry = this.entries[i];
+        entry.cancelDepthWork();
+        removed.push({ entry, index: i });
         this.entries.splice(i, 1);
       }
     }
+    this.publish();
     return removed;
   }
 
@@ -148,6 +308,10 @@ export class FileEntryRegistry {
   }
 
   clear(): void {
+    for (const entry of this.entries) {
+      entry.cancelDepthWork();
+    }
     this.entries = [];
+    this.publish();
   }
 }

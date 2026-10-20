@@ -1,3 +1,4 @@
+import type { FileEntryRegistry } from '../state/fileEntries';
 import * as THREE from 'three';
 import { SpatialData } from '../interfaces';
 import { perfLog } from '../utils/perfLog';
@@ -34,12 +35,10 @@ export interface SplatModeHost {
    * something this codebase can refactor away. See docs/WEBGPU_READINESS.md.
    */
   webglRenderer: THREE.WebGLRenderer | null;
-  spatialFiles: SpatialData[];
-  splatModeActive: boolean[];
-  fileVisibility: boolean[];
-  transformationMatrices: THREE.Matrix4[];
+  spatialFiles: readonly SpatialData[];
   requestRender(): void;
   showStatus(message: string): void;
+  fileEntries: FileEntryRegistry;
 }
 
 /**
@@ -88,11 +87,11 @@ export class SplatModeManager {
   }
 
   isActive(fileIndex: number): boolean {
-    return !!this.host.splatModeActive[fileIndex];
+    return !!this.host.fileEntries.require(fileIndex).state.splatModeActive;
   }
 
   anyActive(): boolean {
-    return this.host.splatModeActive.some(Boolean);
+    return this.host.fileEntries.all.some(entry => entry.state.splatModeActive);
   }
 
   /** True when the file is a 3DGS splat whose source is still reachable. */
@@ -417,9 +416,9 @@ export class SplatModeManager {
 
       this.splatMeshes[currentIndex] = mesh;
       this.host.scene.add(mesh);
-      this.applyMatrix(currentIndex, this.host.transformationMatrices[currentIndex]);
+      this.applyMatrix(currentIndex, this.host.fileEntries.require(currentIndex).transform);
 
-      this.host.splatModeActive[currentIndex] = true;
+      this.host.fileEntries.require(currentIndex).state.splatModeActive = true;
       if (this.maxSplatSizeValue[currentIndex] !== undefined) {
         this.applyMaxSplatSize(currentIndex);
       }
@@ -441,7 +440,7 @@ export class SplatModeManager {
           `Splat rendering failed: ${error instanceof Error ? error.message : String(error)}`
         );
         this.disposeMesh(currentIndex);
-        this.host.splatModeActive[currentIndex] = false;
+        this.host.fileEntries.require(currentIndex).state.splatModeActive = false;
         this.refreshVisibility(currentIndex);
       } else {
         this.host.showStatus('');
@@ -455,7 +454,7 @@ export class SplatModeManager {
   /** Back to points mode. The SplatMesh is disposed (GPU memory freed);
    *  re-enabling rebuilds it from splatSource. */
   disable(fileIndex: number): void {
-    this.host.splatModeActive[fileIndex] = false;
+    this.host.fileEntries.require(fileIndex).state.splatModeActive = false;
     this.disposeMesh(fileIndex);
     this.refreshVisibility(fileIndex);
     this.refreshButtons();
@@ -478,13 +477,23 @@ export class SplatModeManager {
   syncVisibility(fileIndex: number): void {
     const mesh = this.splatMeshes[fileIndex];
     if (mesh) {
-      mesh.visible = this.isActive(fileIndex) && (this.host.fileVisibility[fileIndex] ?? true);
+      mesh.visible =
+        this.isActive(fileIndex) &&
+        (this.host.fileEntries.require(fileIndex).state.visible ?? true);
     }
   }
 
-  /** Keep the parallel mesh array aligned when main splices its file arrays. */
-  onFileRemoved(fileIndex: number): void {
-    const data = this.host.spatialFiles[fileIndex];
+  dispose(): void {
+    for (let index = this.host.spatialFiles.length - 1; index >= 0; index--) {
+      this.onFileRemoved(index);
+    }
+    this.sparkRenderer?.removeFromParent();
+    this.sparkRenderer?.dispose();
+    this.sparkRenderer = null;
+  }
+
+  /** Keep feature state aligned when an entry is removed. */
+  onFileRemoved(fileIndex: number, data = this.host.spatialFiles[fileIndex]): void {
     const timer = this.filterTimers.get(data);
     if (timer !== undefined) {
       window.clearTimeout(timer);
