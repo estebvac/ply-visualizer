@@ -8,16 +8,12 @@ export interface TransformationMatrixHost {
   camera: THREE.PerspectiveCamera;
   cameraMatrix: THREE.Matrix4;
   controls: { target: THREE.Vector3 };
-  transformationMatrices: THREE.Matrix4[];
-  meshes: (THREE.Mesh | THREE.Points | THREE.LineSegments | null)[];
-  vertexPointsObjects: (THREE.Points | null)[];
-  voxelObjects: (THREE.InstancedMesh | null)[];
-  normalsVisualizers: (THREE.LineSegments | null)[];
-  multiMaterialGroups: (THREE.Group | null)[];
-  spatialFiles: SpatialData[];
-  poseGroups: THREE.Group[];
-  cameraGroups: THREE.Group[];
-  pointSizes: number[];
+  meshes: readonly (THREE.Mesh | THREE.Points | THREE.LineSegments | null)[];
+  voxelObjects?: readonly (THREE.InstancedMesh | null)[];
+
+  spatialFiles: readonly SpatialData[];
+  poseGroups: readonly THREE.Group[];
+  cameraGroups: readonly THREE.Group[];
   /** Present on the full visualizer host; mirrors transforms onto splat meshes. */
   splatMode?: { applyMatrix(fileIndex: number, matrix: THREE.Matrix4 | undefined): void };
   sectionPlanes?: { updateTransform(fileIndex: number, matrix: THREE.Matrix4): void };
@@ -105,15 +101,16 @@ export function applyTransformationMatrix(host: TransformationMatrixHost, fileIn
       setObjectMatrix(vertexPoints, matrix);
     }
 
-    const voxels = host.voxelObjects[fileIndex];
-    if (voxels) {
-      setObjectMatrix(voxels, matrix);
-    }
-
     // Also apply transformation to normals visualizer
     const normalsVisualizer = host.fileEntries.require(fileIndex).resources.normals;
     if (normalsVisualizer) {
       setObjectMatrix(normalsVisualizer, matrix);
+    }
+
+    // Preserve voxel geometry transforms alongside point geometry.
+    const voxelObject = host.voxelObjects?.[fileIndex];
+    if (voxelObject) {
+      setObjectMatrix(voxelObject, matrix);
     }
 
     // Also mirror onto the splat mesh when this file renders as splats
@@ -225,10 +222,4 @@ export function updateCameraControlsPanel(host: TransformationMatrixHost): void 
   viewerState.cameraPositionText = `(${pos.x.toFixed(3)}, ${pos.y.toFixed(3)}, ${pos.z.toFixed(3)})`;
   viewerState.cameraRotationText = `(${rotX.toFixed(1)}°, ${rotY.toFixed(1)}°, ${rotZ.toFixed(1)}°)`;
   viewerState.cameraTargetText = `(${target.x.toFixed(3)}, ${target.y.toFixed(3)}, ${target.z.toFixed(3)})`;
-  viewerState.cameraPositionX = pos.x;
-  viewerState.cameraPositionY = pos.y;
-  viewerState.cameraPositionZ = pos.z;
-  viewerState.cameraTargetX = target.x;
-  viewerState.cameraTargetY = target.y;
-  viewerState.cameraTargetZ = target.z;
 }
