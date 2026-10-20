@@ -119,8 +119,8 @@ suite('Progressive PLY remote loading', () => {
       );
       fs.writeFileSync(decodedHeavy, hugeVertexHeader);
       const parsed = parseProgressivePlyHeader(hugeVertexHeader);
-      assert.strictEqual(shouldUseProgressivePly(hugeVertexHeader.byteLength, parsed, config), true);
-      assert.strictEqual(shouldEagerlyPrefetchPly(hugeVertexHeader.byteLength, parsed, config), false);
+      assert.strictEqual(shouldUseProgressivePly(hugeVertexHeader.byteLength, { ...parsed, fixedVertexStride: parsed.vertexStride }, config), true);
+      assert.strictEqual(shouldEagerlyPrefetchPly(hugeVertexHeader.byteLength, { ...parsed, fixedVertexStride: parsed.vertexStride }, config), false);
       assert.strictEqual(probeEagerBinaryPlyPrefetch(decodedHeavy, config), null);
 
       fs.writeFileSync(ascii, 'ply\nformat ascii 1.0\nelement vertex 0\nend_header\n');
