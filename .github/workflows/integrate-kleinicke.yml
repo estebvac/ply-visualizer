@@ -1,0 +1,74 @@
+name: Integrate upstream fork into progressive PLY baseline
+on:
+  push:
+    branches: [integration/kleinicke-main]
+    paths: [.github/workflows/integrate-kleinicke.yml]
+permissions:
+  contents: write
+jobs:
+  merge:
+    if: github.repository == 'estebvac/ply-visualizer'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Merge fork with progressive PLY precedence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch --no-tags https://github.com/kleinicke/ply-visualizer.git main
+          echo "Fork tip: $(git rev-parse FETCH_HEAD)"
+          echo "Our tip:  $(git rev-parse HEAD)"
+          set +e
+          git merge --no-commit --no-ff -X ours FETCH_HEAD
+          merge_status=$?
+          set -e
+          if [[ "$merge_status" -ne 0 ]]; then
+            echo "Merge reported conflicts; retain local baseline for remaining unresolved paths"
+            git diff --name-only --diff-filter=U
+            while IFS= read -r -d '' file; do
+              git checkout --ours -- "$file"
+              git add -- "$file"
+            done < <(git diff --name-only --diff-filter=U -z)
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          pkg=json.loads(Path('package.json').read_text())
+          keys=set(pkg['contributes']['configuration']['properties'])
+          required={
+            'plyViewer.largePly.progressiveFileSizeMiB',
+            'plyViewer.largePly.progressiveDecodedSizeMiB',
+            'plyViewer.largePly.localMemoryBudgetMiB',
+            'plyViewer.largePly.visiblePointBudget',
+            'plyViewer.largePly.previewPoints',
+            'plyViewer.largePly.tilePoints',
+            'plyViewer.largePly.lodSamplePoints',
+          }
+          checks={
+           'progressive PLY configuration': required <= keys,
+           'progressive viewer implementation': Path('engine/src/progressivePlyManager.ts').is_file(),
+           'progressive host implementation': Path('src/progressivePly/service.ts').is_file(),
+           'viewer integration': 'progressivePlyManager.handleMessage' in Path('engine/src/main.ts').read_text(),
+           'host integration': 'progressivePlyService.handleMessage' in Path('src/pointCloudEditorProvider.ts').read_text(),
+           'single-file loader routing': 'tryOpenProgressivePly' in Path('src/providerHandlers/documentLoader.ts').read_text(),
+           'multi-file loader routing': 'tryOpenProgressivePly' in Path('src/providerHandlers/addFileHandlers.ts').read_text(),
+          }
+          for k,v in checks.items():
+            print(('PASS' if v else 'FAIL')+' '+k)
+          if not all(checks.values()):
+            raise SystemExit('Refusing to push: progressive PLY source integration invariant violated')
+          PY
+          git status --short
+          git add -A
+          if [[ -f .git/MERGE_HEAD ]]; then
+            git commit -m 'Integrate kleinicke/main while preserving progressive PLY [integration-generated]'
+          elif ! git diff --cached --quiet; then
+            git commit -m 'Integrate kleinicke/main while preserving progressive PLY [integration-generated]'
+          fi
+          git push origin HEAD:refs/heads/integration/kleinicke-main
+          echo "Integration tip: $(git rev-parse HEAD)"
