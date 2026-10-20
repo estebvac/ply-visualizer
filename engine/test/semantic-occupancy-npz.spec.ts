@@ -99,7 +99,7 @@ test('colored semantic NPZ opens as two points without requesting depth calibrat
     buffer: occupancyArchive(),
   });
   await expect(page.locator('#file-list .file-item')).toHaveCount(1, { timeout: 30_000 });
-  await expect(page.locator('#depth-ok')).toHaveCount(0);
+  await expect(page.locator('#depth-ok')).not.toBeVisible();
   const result = await page.evaluate(() => {
     const cloud = (window as any).visualizer.spatialFiles[0];
     return {
