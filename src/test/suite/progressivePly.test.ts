@@ -114,7 +114,7 @@ suite('Progressive PLY remote loading', () => {
 
       const hugeVertexHeader = Buffer.from(
         shortBinary.subarray(0, shortBinary.indexOf('end_header')).toString('ascii')
-          .replace('element vertex 4', 'element vertex 50000000') + 'end_header\\n',
+          .replace('element vertex 4', 'element vertex 50000000') + 'end_header\n',
         'ascii'
       );
       fs.writeFileSync(decodedHeavy, hugeVertexHeader);
@@ -123,7 +123,7 @@ suite('Progressive PLY remote loading', () => {
       assert.strictEqual(shouldEagerlyPrefetchPly(hugeVertexHeader.byteLength, parsed, config), false);
       assert.strictEqual(probeEagerBinaryPlyPrefetch(decodedHeavy, config), null);
 
-      fs.writeFileSync(ascii, 'ply\\nformat ascii 1.0\\nelement vertex 0\\nend_header\\n');
+      fs.writeFileSync(ascii, 'ply\nformat ascii 1.0\nelement vertex 0\nend_header\n');
       assert.strictEqual(probeEagerBinaryPlyPrefetch(ascii, config), null);
 
       // A reduced user-configured disk threshold also blocks eager prefetch.
