@@ -43,7 +43,7 @@ import { ProgressivePlyService } from './progressivePly/service';
 import { probeEagerBinaryPlyPrefetch } from './progressivePly/prefetch';
 
 // Shared file handling functionality
-import { detectFileType, detectFileTypeWithContent, isPlyBinary } from '../engine/src/fileHandler';
+import { detectFileType, detectFileTypeWithContent } from '../engine/src/fileHandler';
 
 export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProvider {
   private static readonly viewType = 'plyViewer.plyEditor';
