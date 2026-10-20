@@ -59,3 +59,25 @@ export function supportsProgressivePlyUri(uri: { scheme: string; fsPath: string 
     /\.ply$/i.test(uri.fsPath)
   );
 }
+
+/**
+ * Initial HTML PLY prefetch bypasses the extension host and parses the entire
+ * file in the viewer. It must not compete with remote progressive LOD.
+ *
+ * Be conservative for files at/above the configured disk threshold even if
+ * their 64-KiB probe is unparseable: the extension loader will decide which
+ * fallback to use, without silently allocating a whole cloud during startup.
+ * The decoded-memory threshold also applies to physically smaller PLYs.
+ */
+export function shouldEagerlyPrefetchPly(
+  fileSizeBytes: number,
+  header: ProgressivePlyRoutingHeader | null,
+  config: ProgressivePlyRoutingConfig = DEFAULT_PROGRESSIVE_PLY_ROUTING
+): boolean {
+  return (
+    Number.isFinite(fileSizeBytes) &&
+    fileSizeBytes >= 0 &&
+    fileSizeBytes < config.fileSizeThresholdBytes &&
+    !(header && shouldUseProgressivePly(fileSizeBytes, header, config))
+  );
+}
