@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/remote-large-ply-progressive-lod
+      - integration/kleinicke-main
   workflow_dispatch:
 
 concurrency:
