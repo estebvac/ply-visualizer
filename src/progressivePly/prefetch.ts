@@ -31,7 +31,7 @@ export function probeEagerBinaryPlyPrefetch(
     } catch {
       return null;
     }
-    if (header.format === 'ascii' || !shouldEagerlyPrefetchPly(size, header, config)) {
+    if (header.format === 'ascii' || !shouldEagerlyPrefetchPly(size, { ...header, fixedVertexStride: header.vertexStride }, config)) {
       return null;
     }
     return size;
