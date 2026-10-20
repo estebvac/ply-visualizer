@@ -480,7 +480,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
 
     // Show UI immediately. Reading/parsing starts in parallel below, while
     // The transport queues outbound messages until webviewReady.
-    const depthPrefetchUri = isDepthFile
+    const depthPrefetchUri = isDepthFile && fileType?.extension !== 'npz'
       ? depthImagePrefetchUri(document.uri, webviewPanel.webview)
       : undefined;
     webviewPanel.webview.html = this.getHtmlForWebview(
