@@ -22,6 +22,11 @@ export const viewerState = $state(
    *   cameraTargetX: number;
    *   cameraTargetY: number;
    *   cameraTargetZ: number;
+   *   webgpuPickingAvailable: boolean;
+   *   webgpuPickingUnavailableReason: string | null;
+   *   pointPickingImplementation: 'cpu' | 'webgpu';
+   *   webgpuPointRenderingAvailable: boolean;
+   *   webgpuPointRenderingUnavailableReason: string | null;
    * }}
    */ ({
     controlScheme: 'orbit',
@@ -48,5 +53,10 @@ export const viewerState = $state(
     cameraTargetX: 0,
     cameraTargetY: 0,
     cameraTargetZ: 0,
+    webgpuPickingAvailable: false,
+    webgpuPickingUnavailableReason: 'WebGPU availability is still being checked',
+    pointPickingImplementation: 'cpu',
+    webgpuPointRenderingAvailable: false,
+    webgpuPointRenderingUnavailableReason: 'WebGPU availability is still being checked',
   })
 );
