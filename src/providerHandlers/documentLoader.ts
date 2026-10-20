@@ -15,6 +15,7 @@ import {
 } from './parallelStonexColour';
 import { GltfParser } from '../../engine/src/parsers/gltfParser';
 import { NpyParser } from '../../engine/src/parsers/npyParser';
+import { tryDecodeSemanticNpz } from './semanticNpz';
 import { NrrdParser } from '../../engine/src/parsers/nrrdParser';
 import { buildInitialVolumeData, decorateVolumeData, retainVolume } from './volumeSessions';
 import {
@@ -484,6 +485,32 @@ export async function loadDocumentContent(
       } else {
         tagContainer(parsed, 'x3a', path.basename(documentUri.fsPath), loadStartedAtEpoch);
         await sendSpatialDataToWebview(webviewPanel, parsed, 'multiSpatialData');
+      }
+      return;
+    }
+
+    // NPZ is ambiguous: the same extension also represents camera depth maps.
+    // Read once, sniff archive members, then dispatch colored semantic occupancy
+    // or retain the original depth processing behavior. Never unpickle metadata.
+    if (fileType?.extension === 'npz') {
+      const bytes = await vscode.workspace.fs.readFile(documentUri);
+      const fileName = path.basename(documentUri.fsPath);
+      const shortPath = host.getShortPath(documentUri.fsPath);
+      const spatialData = await tryDecodeSemanticNpz(bytes, fileName);
+      if (spatialData) {
+        await sendSpatialDataToWebview(
+          webviewPanel,
+          [{ ...spatialData, fileName, shortPath }],
+          'multiSpatialData'
+        );
+      } else {
+        sendToWebview(webviewPanel, {
+          type: 'depthData',
+          postedAt: Date.now(),
+          fileName,
+          shortPath,
+          data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+        });
       }
       return;
     }
