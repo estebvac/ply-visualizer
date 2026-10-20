@@ -142,6 +142,7 @@ suite('Point Cloud Editor Provider Advanced Test Suite', () => {
     assert.ok(customEditors, 'Custom editors should be registered');
     assert.deepStrictEqual(customEditors.map((editor: any) => editor.viewType).sort(), [
       'plyViewer.kittiBin',
+      'plyViewer.numpyEditor',
       'plyViewer.plyEditor',
       'plyViewer.textTable',
     ]);
@@ -152,6 +153,16 @@ suite('Point Cloud Editor Provider Advanced Test Suite', () => {
     assert.deepStrictEqual(
       textEditor.selector.map((selector: any) => selector.filenamePattern).sort(),
       ['*.asc', '*.csv', '*.tsv', '*.txt']
+    );
+
+    const numpyEditor = customEditors.find(
+      (item: any) => item.viewType === 'plyViewer.numpyEditor'
+    );
+    assert.ok(numpyEditor, 'Optional NumPy 3D editor should be registered');
+    assert.strictEqual(numpyEditor.priority, 'option');
+    assert.deepStrictEqual(
+      numpyEditor.selector.map((selector: any) => selector.filenamePattern).sort(),
+      ['*.npy', '*.npz']
     );
 
     const editor = customEditors.find((item: any) => item.viewType === 'plyViewer.plyEditor');

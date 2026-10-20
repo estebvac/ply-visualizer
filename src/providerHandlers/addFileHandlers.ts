@@ -32,6 +32,7 @@ import {
 import { isColmapModelFile } from '../../engine/src/formats/colmap/colmapFiles';
 import { GltfParser } from '../../engine/src/parsers/gltfParser';
 import { NpyParser } from '../../engine/src/parsers/npyParser';
+import { tryDecodeSemanticNpz } from './semanticNpz';
 import { NrrdParser } from '../../engine/src/parsers/nrrdParser';
 import {
   detectFileTypeWithContent,
@@ -270,6 +271,27 @@ export async function handleAddFile(
 
         if (SPLAT_CONTAINER_EXTENSIONS.includes(fileExtension)) {
           sendSplatContainerUri(webviewPanel, files[i], fileName, shortPath, 'addFiles');
+          continue;
+        }
+
+        if (fileExtension === '.npz') {
+          const bytes = await vscode.workspace.fs.readFile(files[i]);
+          const spatialData = await tryDecodeSemanticNpz(bytes, fileName);
+          if (spatialData) {
+            await sendSpatialDataToWebview(
+              webviewPanel,
+              [{ ...spatialData, fileName, shortPath }],
+              'addFiles'
+            );
+          } else {
+            sendToWebview(webviewPanel, {
+              type: 'depthData',
+              fileName,
+              shortPath,
+              data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+              isAddFile: true,
+            });
+          }
           continue;
         }
 
@@ -654,6 +676,26 @@ export async function handleAddFileFromPath(
       return;
     }
 
+    if (ext === '.npz') {
+      const bytes = await vscode.workspace.fs.readFile(fileUri);
+      const spatialData = await tryDecodeSemanticNpz(bytes, fileName);
+      if (spatialData) {
+        await sendSpatialDataToWebview(
+          webviewPanel,
+          [{ ...spatialData, fileName, shortPath }],
+          'addFiles'
+        );
+      } else {
+        sendToWebview(webviewPanel, {
+          type: 'depthData',
+          fileName,
+          shortPath,
+          data: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+          isAddFile: true,
+        });
+      }
+      return;
+    }
     if (
       ext === '.tif' ||
       ext === '.tiff' ||
@@ -919,6 +961,19 @@ export async function handleDroppedFilesFromWebview(
           data: parsedData,
           isAddFile: true,
         });
+        continue;
+      }
+
+      if (ext === '.npz' && fileType.category === 'pointCloud') {
+        const spatialData = await tryDecodeSemanticNpz(fileData, fileName);
+        if (!spatialData) {
+          throw new Error('Semantic occupancy NPZ classified as point cloud but did not decode');
+        }
+        await sendSpatialDataToWebview(
+          webviewPanel,
+          [{ ...spatialData, fileName, shortPath }],
+          'addFiles'
+        );
         continue;
       }
 

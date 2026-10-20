@@ -3024,6 +3024,21 @@ function parse_row_range(data, layout, color) {
 exports.parse_row_range = parse_row_range;
 
 /**
+ * @param {Uint8Array} data
+ * @returns {PointCloudResult}
+ */
+function parse_semantic_occupancy_npz(data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.parse_semantic_occupancy_npz(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return PointCloudResult.__wrap(ret[0]);
+}
+exports.parse_semantic_occupancy_npz = parse_semantic_occupancy_npz;
+
+/**
  * Parse an STL file, binary or ASCII.
  * @param {Uint8Array} data
  * @returns {MeshResult}

@@ -768,6 +768,8 @@ export function parse_pts(data: Uint8Array): PointCloudResult;
  */
 export function parse_row_range(data: Uint8Array, layout: Uint8Array, color: number): PointCloudResult;
 
+export function parse_semantic_occupancy_npz(data: Uint8Array): PointCloudResult;
+
 /**
  * Parse an STL file, binary or ASCII.
  */

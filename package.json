@@ -230,6 +230,15 @@
         ]
       },
       {
+        "viewType": "plyViewer.numpyEditor",
+        "displayName": "3D Visualizer (NumPy NPY/NPZ)",
+        "priority": "option",
+        "selector": [
+          { "filenamePattern": "*.npy" },
+          { "filenamePattern": "*.npz" }
+        ]
+      },
+      {
         "viewType": "plyViewer.kittiBin",
         "displayName": "3D Point Cloud and Mesh Visualizer (KITTI BIN)",
         "priority": "option",
@@ -313,7 +322,7 @@
       },
       {
         "command": "plyViewer.convertNpyToPointCloud",
-        "title": "Convert NPY/NPZ to Point Cloud",
+        "title": "Open NPY/NPZ (Depth or Semantic Occupancy)",
         "category": "3D Visualizer"
       },
       {
@@ -360,7 +369,7 @@
       "explorer/context": [
         {
           "command": "plyViewer.openFile",
-          "when": "resourceExtname == .ply || resourceExtname == .xyz || resourceExtname == .xyzn || resourceExtname == .xyzrgb || resourceExtname == .txt || resourceExtname == .obj || resourceExtname == .stl || resourceExtname == .pcd || resourceExtname == .pts || resourceExtname == .off || resourceExtname == .gltf || resourceExtname == .glb || resourceExtname == .fbx || resourceExtname == .dae || resourceExtname == .3ds || resourceExtname == .3mf || resourceExtname == .amf || resourceExtname == .wrl || resourceExtname == .step || resourceExtname == .stp || resourceExtname == .iges || resourceExtname == .igs || resourceExtname == .brep || resourceExtname == .las || resourceExtname == .laz || resourceExtname == .e57 || resourceExtname == .x3a || resourceExtname == .x3r || resourceExtname == .bin || resourceExtname == .csv || resourceExtname == .tsv || resourceExtname == .asc",
+          "when": "resourceExtname == .ply || resourceExtname == .xyz || resourceExtname == .xyzn || resourceExtname == .xyzrgb || resourceExtname == .txt || resourceExtname == .obj || resourceExtname == .stl || resourceExtname == .pcd || resourceExtname == .pts || resourceExtname == .off || resourceExtname == .gltf || resourceExtname == .glb || resourceExtname == .fbx || resourceExtname == .dae || resourceExtname == .3ds || resourceExtname == .3mf || resourceExtname == .amf || resourceExtname == .wrl || resourceExtname == .step || resourceExtname == .stp || resourceExtname == .iges || resourceExtname == .igs || resourceExtname == .brep || resourceExtname == .las || resourceExtname == .laz || resourceExtname == .e57 || resourceExtname == .x3a || resourceExtname == .x3r || resourceExtname == .bin || resourceExtname == .csv || resourceExtname == .tsv || resourceExtname == .asc || resourceExtname == .npy || resourceExtname == .npz",
           "group": "navigation"
         },
         {
@@ -375,6 +384,11 @@
         }
       ],
       "editor/title/context": [
+        {
+          "command": "plyViewer.openFile",
+          "when": "resourceExtname == .npy || resourceExtname == .npz",
+          "group": "navigation"
+        },
         {
           "submenu": "plyViewer.imageConversion",
           "when": "resourceExtname == .tif || resourceExtname == .tiff || resourceExtname == .pfm || resourceExtname == .npy || resourceExtname == .npz || resourceExtname == .png || resourceExtname == .exr",

@@ -535,4 +535,226 @@ mod tests {
             "[{\"name\":\"\",\"shape\":[4,3],\"dtype\":\"<f4\"}]"
         );
     }
+
+    #[test]
+    fn semantic_npz_preserves_int64_indices_and_embedded_rgb() {
+        let linear = 16_777_217i64; // Cannot be represented exactly as f32.
+        let archive = npz(
+            &[
+                ("sparse_linear_indices.npy", npy("<i8", &[3],
+                    &[linear, linear+1, linear+8].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>())),
+                ("sparse_labels.npy", npy("<i4", &[3],
+                    &[7i32, 255, 7].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>())),
+                ("sparse_grid_shape.npy", npy("<i8", &[3],
+                    &[1000i64, 1000, 30].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>())),
+                ("voxel_size_m.npy", npy("<f8", &[1], &0.2f64.to_le_bytes())),
+                ("pc_range_m.npy", npy("<f8", &[6],
+                    &[-100f64, -100., 0., 100., 100., 6.].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>())),
+                ("unknown_label.npy", npy("<i4", &[1], &255i32.to_le_bytes())),
+                ("semantic_palette_ids.npy", npy("<i4", &[2],
+                    &[7i32, 255].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>())),
+                ("semantic_palette_rgb.npy", npy("|u1", &[2, 3],
+                    &[255, 230, 80, 64, 64, 64])),
+            ],
+            true
+        );
+        let cloud = semantic_occupancy_inner(&archive).unwrap();
+        assert_eq!(cloud.vertex_count, 2);
+        assert_eq!(cloud.source_count, 3);
+        assert_eq!(cloud.source_indices, vec![0, 2]);
+        assert_eq!(cloud.colors, vec![255, 230, 80, 255, 230, 80]);
+        assert_eq!(cloud.scalars[0].1, vec![7.0, 7.0]);
+        let xyz = |index: i64| {
+            let linear = index as usize;
+            [
+                (-100. + ((linear / 30_000) as f64 + 0.5) * 0.2) as f32,
+                (-100. + (((linear / 30) % 1000) as f64 + 0.5) * 0.2) as f32,
+                (((linear % 30) as f64 + 0.5) * 0.2) as f32,
+            ]
+        };
+        assert_eq!(cloud.positions, [xyz(linear), xyz(linear + 8)].concat());
+        let parsed: serde_json::Value = serde_json::from_str(&cloud.metadata).unwrap();
+        assert_eq!(parsed["unknown_voxel_count"], 1);
+        assert_eq!(parsed["rgb_source"], "semantic_palette_rgb");
+    }
+
+    #[test]
+    fn semantic_npz_rejects_depth_npz_without_sparse_keys() {
+        let archive = npz(&[("depth.npy", npy("<f4", &[2, 2], &f32_body(&[1.;4])))], true);
+        assert!(semantic_occupancy_inner(&archive).err().unwrap()
+            .contains("sparse_linear_indices"));
+    }
+
+}
+
+
+// Sparse semantic occupancy NPZ v1. Sparse int64 linear indices must not pass
+// through the legacy npy_read f32 decoder (which loses values above 2^24).
+fn sparse_member<'a>(
+    members: &'a [(String, Vec<u8>)],
+    name: &str,
+) -> Result<(NpyHeader, &'a [u8]), String> {
+    let raw = members.iter().find(|(key, _)| key == name)
+        .ok_or_else(|| format!("semantic occupancy NPZ missing '{name}'"))?.1.as_slice();
+    let h = parse_header(raw).map_err(|e| format!("{name}: {e}"))?;
+    if h.fortran_order { return Err(format!("{name}: Fortran-order is unsupported")); }
+    let count = h.shape.iter().try_fold(1usize, |a, b| a.checked_mul(*b))
+        .ok_or_else(|| format!("{name}: shape overflows"))?;
+    let size = count.checked_mul(h.dtype.size)
+        .ok_or_else(|| format!("{name}: byte size overflows"))?;
+    let end = h.data_start.checked_add(size).ok_or("NPY body overflow")?;
+    if end > raw.len() { return Err(format!("{name}: truncated NPY body")); }
+    Ok((h, &raw[raw.len().min(end)-size..end]))
+}
+
+fn sparse_int(h: &NpyHeader, bytes: &[u8], i: usize) -> Result<i64, String> {
+    if h.dtype.kind != b'i' && h.dtype.kind != b'u' && h.dtype.kind != b'b' {
+        return Err("expected integer dtype".into());
+    }
+    let offset = i.checked_mul(h.dtype.size).ok_or("index overflow")?;
+    let mut b = [0u8; 8];
+    let raw = &bytes[offset..offset+h.dtype.size];
+    if h.dtype.little_endian { b[..raw.len()].copy_from_slice(raw); }
+    else { for (j, v) in raw.iter().rev().enumerate() { b[j] = *v; } }
+    let v = u64::from_le_bytes(b);
+    if h.dtype.kind == b'i' {
+        Ok(match h.dtype.size {
+            1 => v as u8 as i8 as i64,
+            2 => v as u16 as i16 as i64,
+            4 => v as u32 as i32 as i64,
+            8 => v as i64,
+            _ => return Err("invalid integer width".into()),
+        })
+    } else {
+        i64::try_from(v).map_err(|_| "integer exceeds signed 64-bit range".into())
+    }
+}
+
+fn sparse_float(h: &NpyHeader, bytes: &[u8], i: usize) -> Result<f64, String> {
+    if h.dtype.kind != b'f' { return Err("expected floating-point geometry metadata".into()); }
+    let start = i.checked_mul(h.dtype.size).ok_or("index overflow")?;
+    let raw = &bytes[start..start+h.dtype.size];
+    let mut b = [0u8; 8];
+    if h.dtype.little_endian { b[..raw.len()].copy_from_slice(raw); }
+    else { for (j, v) in raw.iter().rev().enumerate() { b[j] = *v; } }
+    Ok(match h.dtype.size {
+        4 => f32::from_le_bytes(b[..4].try_into().unwrap()) as f64,
+        8 => f64::from_le_bytes(b),
+        _ => return Err("invalid float width".into()),
+    })
+}
+
+#[wasm_bindgen]
+pub fn parse_semantic_occupancy_npz(data: &[u8]) -> Result<crate::PointCloudResult, JsValue> {
+    semantic_occupancy_inner(data).map_err(|e| JsValue::from_str(&e))
+}
+
+fn semantic_occupancy_inner(data: &[u8]) -> Result<crate::PointCloudResult, String> {
+    use std::collections::HashMap;
+    if !is_npz(data) { return Err("expected NPZ archive".into()); }
+    let members = npz_members(data)?;
+    let (index_h, indices) = sparse_member(&members, "sparse_linear_indices")?;
+    let (label_h, labels) = sparse_member(&members, "sparse_labels")?;
+    if index_h.shape.len() != 1 || index_h.shape != label_h.shape {
+        return Err("sparse indices and labels must have the same 1D shape".into());
+    }
+    let n = index_h.shape[0];
+    if n > u32::MAX as usize { return Err("too many sparse voxels".into()); }
+    let (grid_h, grid_b) = sparse_member(&members, "sparse_grid_shape")?;
+    if grid_h.shape != [3] { return Err("sparse_grid_shape must have shape (3,)".into()); }
+    let mut grid = [0usize; 3];
+    for (axis, dim) in grid.iter_mut().enumerate() {
+        *dim = usize::try_from(sparse_int(&grid_h, grid_b, axis)?)
+            .map_err(|_| "negative grid dimension")?;
+        if *dim == 0 { return Err("grid dimension is zero".into()); }
+    }
+    let yz = grid[1].checked_mul(grid[2]).ok_or("grid size overflow")?;
+    let total = grid[0].checked_mul(yz).ok_or("grid size overflow")?;
+    let (voxel_h, voxel_b) = sparse_member(&members, "voxel_size_m")?;
+    if voxel_h.shape != [1] { return Err("voxel_size_m must have shape (1,)".into()); }
+    let voxel = sparse_float(&voxel_h, voxel_b, 0)?;
+    if !voxel.is_finite() || voxel <= 0.0 { return Err("invalid voxel size".into()); }
+    let (range_h, range_b) = sparse_member(&members, "pc_range_m")?;
+    if range_h.shape != [6] { return Err("pc_range_m must have shape (6,)".into()); }
+    let mut range = [0.0f64; 6];
+    for (i, v) in range.iter_mut().enumerate() { *v = sparse_float(&range_h, range_b, i)?; }
+    for axis in 0..3 {
+        if !range[axis].is_finite() || !range[axis+3].is_finite()
+            || (range[axis+3] - range[axis] - grid[axis] as f64 * voxel).abs() > 1e-5 {
+            return Err(format!("grid extent and pc_range_m disagree on axis {axis}"));
+        }
+    }
+    let (unknown_h, unknown_b) = sparse_member(&members, "unknown_label")?;
+    if unknown_h.shape != [1] { return Err("unknown_label must have shape (1,)".into()); }
+    let unknown = sparse_int(&unknown_h, unknown_b, 0)?;
+    let (ids_h, ids_b) = sparse_member(&members, "semantic_palette_ids")?;
+    if ids_h.shape.len() != 1 || ids_h.shape[0] == 0 {
+        return Err("semantic_palette_ids must be a nonempty 1D array".into());
+    }
+    let k = ids_h.shape[0];
+    let (rgb_h, rgb_b) = sparse_member(&members, "semantic_palette_rgb")?;
+    if rgb_h.shape != [k, 3] || rgb_h.dtype.kind != b'u' || rgb_h.dtype.size != 1 {
+        return Err("semantic_palette_rgb must have dtype uint8 and shape (K,3)".into());
+    }
+    let mut palette = HashMap::with_capacity(k);
+    for i in 0..k {
+        let id = sparse_int(&ids_h, ids_b, i)?;
+        if palette.insert(id, [rgb_b[i*3], rgb_b[i*3+1], rgb_b[i*3+2]]).is_some() {
+            return Err(format!("duplicate palette ID {id}"));
+        }
+    }
+    if !palette.contains_key(&unknown) { return Err("palette missing unknown label".into()); }
+    let mut positions = Vec::with_capacity(n.min(10_000_000)*3);
+    let mut colors = Vec::with_capacity(n.min(10_000_000)*3);
+    let mut semantic_labels = Vec::with_capacity(n.min(10_000_000));
+    let mut source_indices = Vec::with_capacity(n.min(10_000_000));
+    let mut min = [f32::INFINITY;3];
+    let mut max = [f32::NEG_INFINITY;3];
+    let mut unknown_count = 0usize;
+    for i in 0..n {
+        let index = usize::try_from(sparse_int(&index_h, indices, i)?)
+            .map_err(|_| format!("negative voxel index at {i}"))?;
+        if index >= total { return Err(format!("voxel index out of bounds at {i}")); }
+        let label = sparse_int(&label_h, labels, i)?;
+        let color = palette.get(&label)
+            .ok_or_else(|| format!("missing RGB for semantic label {label}"))?;
+        if label == unknown { unknown_count += 1; continue; }
+        let coords = [index / yz, (index / grid[2]) % grid[1], index % grid[2]];
+        for axis in 0..3 {
+            let p = (range[axis] + (coords[axis] as f64 + 0.5)*voxel) as f32;
+            positions.push(p);
+            min[axis] = min[axis].min(p);
+            max[axis] = max[axis].max(p);
+        }
+        colors.extend_from_slice(color);
+        let label_f32 = label as f32;
+        if label_f32 as i64 != label { return Err("semantic ID exceeds exact float32 range".into()); }
+        semantic_labels.push(label_f32);
+        source_indices.push(i as u32);
+    }
+    if semantic_labels.is_empty() { min=[0.0;3]; max=[0.0;3]; }
+    let count = semantic_labels.len();
+    let metadata = serde_json::json!({
+        "semantic_occupancy": true,
+        "sparse_grid_shape": grid,
+        "voxel_size_m": voxel,
+        "pc_range_m": range,
+        "unknown_label": unknown,
+        "unknown_voxel_count": unknown_count,
+        "source_voxel_count": n,
+        "rendered_voxel_count": count,
+        "flatten_order": "C",
+        "voxel_coordinate": "center",
+        "rgb_source": "semantic_palette_rgb"
+    }).to_string();
+    Ok(crate::PointCloudResult {
+        source_indices: if unknown_count == 0 { Vec::new() } else { source_indices },
+        source_count: n as u32,
+        source_rows_identity: unknown_count == 0,
+        vertex_count: count as u32,
+        positions, colors, normals: Vec::new(), intensity: Vec::new(),
+        has_colors: true, has_normals: false, has_intensity: false,
+        min, max, metadata,
+        scalars: vec![("semantic_label".to_string(), semantic_labels)],
+    })
 }

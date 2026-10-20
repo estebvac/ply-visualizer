@@ -15,6 +15,7 @@ import { KittiBinParser } from '../parsers/kittiBinParser';
 import { StonexX3aParser } from '../parsers/stonexX3aParser';
 import { GltfParser } from '../parsers/gltfParser';
 import { NpyParser } from '../parsers/npyParser';
+import { SemanticOccupancyNpzParser } from '../parsers/semanticOccupancyNpzParser';
 import { inspectNpyWasm, isNpyPointCloudShape } from '../parsers/pointcloudWasm';
 import { NrrdParser } from '../parsers/nrrdParser';
 import { sampleRange } from '../visualization/isosurface';
@@ -250,9 +251,29 @@ export function registerBuiltinFormats(
   });
 
   registry.register({
-    // Depth formats are projected by DepthRegistry, not parsed here.
-    extensions: ['tif', 'tiff', 'pfm', 'npz', 'png', 'exr'],
+    // Ordinary depth formats are projected by DepthRegistry, not parsed here.
+    extensions: ['tif', 'tiff', 'pfm', 'png', 'exr'],
     category: 'depthImage',
+  });
+
+  registry.register({
+    // NPZ may contain a depth image or a sparse semantic occupancy scene.
+    // Check archive members, NOT filename, to keep existing depth NPZ support.
+    extensions: ['npz'],
+    category: 'depthImage',
+    async refineCategory(data) {
+      const entries = await inspectNpyWasm(data);
+      const keys = new Set(entries.map(entry => entry.name));
+      return ['sparse_linear_indices', 'sparse_labels', 'sparse_grid_shape']
+        .every(name => keys.has(name)) ? 'pointCloud' : null;
+    },
+    async parse({ data, fileName, category, timingCallback }) {
+      if (category !== 'pointCloud') {
+        throw new Error('Depth NPZ archives must be decoded by the depth-image reader');
+      }
+      const spatialData = await new SemanticOccupancyNpzParser().parse(data, timingCallback);
+      return { data: { ...spatialData, fileName }, type: 'spatialData' };
+    },
   });
 
   registry.register({
