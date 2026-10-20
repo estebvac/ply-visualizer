@@ -535,6 +535,56 @@ mod tests {
             "[{\"name\":\"\",\"shape\":[4,3],\"dtype\":\"<f4\"}]"
         );
     }
+
+    #[test]
+    fn semantic_npz_preserves_int64_indices_and_embedded_rgb() {
+        let linear = 16_777_217i64; // Cannot be represented exactly as f32.
+        let archive = npz(
+            &[
+                ("sparse_linear_indices.npy", npy("<i8", &[3],
+                    &[linear, linear+1, linear+8].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>())),
+                ("sparse_labels.npy", npy("<i4", &[3],
+                    &[7i32, 255, 7].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>())),
+                ("sparse_grid_shape.npy", npy("<i8", &[3],
+                    &[1000i64, 1000, 30].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>())),
+                ("voxel_size_m.npy", npy("<f8", &[1], &0.2f64.to_le_bytes())),
+                ("pc_range_m.npy", npy("<f8", &[6],
+                    &[-100f64, -100., 0., 100., 100., 6.].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>())),
+                ("unknown_label.npy", npy("<i4", &[1], &255i32.to_le_bytes())),
+                ("semantic_palette_ids.npy", npy("<i4", &[2],
+                    &[7i32, 255].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>())),
+                ("semantic_palette_rgb.npy", npy("|u1", &[2, 3],
+                    &[255, 230, 80, 64, 64, 64])),
+            ],
+            true
+        );
+        let cloud = semantic_occupancy_inner(&archive).unwrap();
+        assert_eq!(cloud.vertex_count, 2);
+        assert_eq!(cloud.source_count, 3);
+        assert_eq!(cloud.source_indices, vec![0, 2]);
+        assert_eq!(cloud.colors, vec![255, 230, 80, 255, 230, 80]);
+        assert_eq!(cloud.scalars[0].1, vec![7.0, 7.0]);
+        let xyz = |index: i64| {
+            let linear = index as usize;
+            [
+                (-100. + ((linear / 30_000) as f64 + 0.5) * 0.2) as f32,
+                (-100. + (((linear / 30) % 1000) as f64 + 0.5) * 0.2) as f32,
+                (((linear % 30) as f64 + 0.5) * 0.2) as f32,
+            ]
+        };
+        assert_eq!(cloud.positions, [xyz(linear), xyz(linear + 8)].concat());
+        let parsed: serde_json::Value = serde_json::from_str(&cloud.metadata).unwrap();
+        assert_eq!(parsed["unknown_voxel_count"], 1);
+        assert_eq!(parsed["rgb_source"], "semantic_palette_rgb");
+    }
+
+    #[test]
+    fn semantic_npz_rejects_depth_npz_without_sparse_keys() {
+        let archive = npz(&[("depth.npy", npy("<f4", &[2, 2], &f32_body(&[1.;4])))], true);
+        assert!(semantic_occupancy_inner(&archive).err().unwrap()
+            .contains("sparse_linear_indices"));
+    }
+
 }
 
 
