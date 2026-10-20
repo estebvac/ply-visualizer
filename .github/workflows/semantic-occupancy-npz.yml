@@ -65,7 +65,7 @@ jobs:
           npm run build --workspace=engine
           npm exec -- playwright install --with-deps chromium
           cd engine
-          npm exec -- playwright test test/npy-rust-reader.spec.ts --workers=1 --retries=0
+          npm exec -- playwright test test/npy-rust-reader.spec.ts test/semantic-occupancy-npz.spec.ts --workers=1 --retries=0
 
       - name: Package NPZ verification VSIX
         run: npm exec -- vsce package --no-dependencies -o ply-visualizer-semantic-occupancy-npz.vsix
