@@ -3639,151 +3639,42 @@ export class PointCloudVisualizer {
           }
           this.volumeSources.delete(sessionId);
         }
+        // Retain our voxel representation while adopting the fork's atomic
+        // file-entry ownership and disposal sequence.
+        const voxelIndex = this.voxelObjects[index];
+        if (voxelIndex) {
+          this.scene.remove(voxelIndex);
+          voxelRenderer.disposeVoxelMesh(voxelIndex);
+        }
         disposeFileResources(entry, object, data);
       } else {
         disposeObjects([entry.pose?.object, entry.pose?.labelsGroup, entry.camera?.object]);
       }
     }
 
-    const voxels = this.voxelObjects[fileIndex];
-    if (voxels) {
-      this.scene.remove(voxels);
-      voxelRenderer.disposeVoxelMesh(voxels);
+    // Only spatial entries have the parallel voxel presentation arrays.
+    // Splice in descending index order to keep future files aligned.
+    for (const { entry, index } of [...removed].sort((a, b) => b.index - a.index)) {
+      if (!entry.spatial) continue;
+      this.voxelObjects.splice(index, 1);
+      this.voxelSizes.splice(index, 1);
+      this.voxelsVisible.splice(index, 1);
+      this.pointsVisible.splice(index, 1);
+      this.solidVisible.splice(index, 1);
+      this.wireframeVisible.splice(index, 1);
+      this.normalsVisible.splice(index, 1);
     }
 
-    // Remove normals visualizer from scene and dispose
-    const normalsVisualizer = this.normalsVisualizers[fileIndex];
-    if (normalsVisualizer) {
-      this.scene.remove(normalsVisualizer);
-      if (normalsVisualizer.geometry) {
-        normalsVisualizer.geometry.dispose();
-      }
-      if (normalsVisualizer.material) {
-        if (Array.isArray(normalsVisualizer.material)) {
-          normalsVisualizer.material.forEach(mat => mat.dispose());
-        } else {
-          normalsVisualizer.material.dispose();
-        }
+    // Optional WebGPU caches must release removed files even if no further
+    // pick or visibility render occurs (including removal of the last file).
+    const geometries = new Set<THREE.BufferGeometry>();
+    for (const entry of this.fileEntries.all) {
+      if (entry.spatial) {
+        geometries.add(entry.spatial.object.geometry);
       }
     }
-
-    // Remove vertex points object from scene and dispose
-    const vertexPoints = this.vertexPointsObjects[fileIndex];
-    if (vertexPoints) {
-      this.scene.remove(vertexPoints);
-      if (vertexPoints.geometry) {
-        vertexPoints.geometry.dispose();
-      }
-      if (vertexPoints.material) {
-        if (Array.isArray(vertexPoints.material)) {
-          vertexPoints.material.forEach(mat => mat.dispose());
-        } else {
-          vertexPoints.material.dispose();
-        }
-      }
-    }
-
-    // Remove multi-material group from scene and dispose
-    const multiMaterialGroup = this.multiMaterialGroups[fileIndex];
-    if (multiMaterialGroup) {
-      this.scene.remove(multiMaterialGroup);
-      multiMaterialGroup.traverse((obj: any) => {
-        if (obj.geometry && typeof obj.geometry.dispose === 'function') {
-          obj.geometry.dispose();
-        }
-        if (obj.material) {
-          if (Array.isArray(obj.material)) {
-            obj.material.forEach((m: any) => m.dispose && m.dispose());
-          } else if (typeof obj.material.dispose === 'function') {
-            obj.material.dispose();
-          }
-        }
-      });
-    }
-
-    // Remove from arrays
-    const volumeSessionId = this.spatialFiles[fileIndex]?.metadata?.volumeSessionId;
-    if (typeof volumeSessionId === 'string') {
-      const source = this.volumeSources.get(volumeSessionId);
-      if (source) {
-        source.generation++;
-      }
-      this.volumeSources.delete(volumeSessionId);
-    }
-    this.splatMode.onFileRemoved(fileIndex);
-    this.splatModeActive.splice(fileIndex, 1);
-    this.spatialFiles.splice(fileIndex, 1);
-    this.sectionPlanes.onFileRemoved(fileIndex);
-    this.meshes.splice(fileIndex, 1);
-    this.normalsVisualizers.splice(fileIndex, 1); // Remove normals visualizer for this file
-    this.vertexPointsObjects.splice(fileIndex, 1); // Remove vertex points object for this file
-    this.voxelObjects.splice(fileIndex, 1);
-    this.voxelSizes.splice(fileIndex, 1);
-    this.multiMaterialGroups.splice(fileIndex, 1); // Remove multi-material group for this file
-    this.materialMeshes.splice(fileIndex, 1); // Remove sub-meshes for this file
-    this.removeEntryAndChildren(fileIndex);
-    this.appliedMtlColors.splice(fileIndex, 1); // Remove MTL color for this file
-    this.appliedMtlNames.splice(fileIndex, 1); // Remove MTL name for this file
-    this.appliedMtlData.splice(fileIndex, 1); // Remove MTL data for this file
-
-    // Remove rendering mode states for this file
-    this.solidVisible.splice(fileIndex, 1);
-    this.wireframeVisible.splice(fileIndex, 1);
-    this.pointsVisible.splice(fileIndex, 1);
-    this.voxelsVisible.splice(fileIndex, 1);
-    this.normalsVisible.splice(fileIndex, 1);
-
-    // Remove Depth data if it exists for this file
-    this.fileDepthData.delete(fileIndex);
-
-    // Update Depth data indices for remaining files (shift down)
-    const newdepthData = new Map<number, any>();
-    for (const [key, value] of this.fileDepthData) {
-      if (key > fileIndex) {
-        newdepthData.set(key - 1, value);
-      } else if (key < fileIndex) {
-        newdepthData.set(key, value);
-      }
-    }
-    this.fileDepthData = newdepthData;
-
-    const shiftLiveDepthSet = (source: Set<number>): Set<number> => {
-      const next = new Set<number>();
-      for (const key of source) {
-        if (key > fileIndex) {
-          next.add(key - 1);
-        } else if (key < fileIndex) {
-          next.add(key);
-        }
-      }
-      return next;
-    };
-
-    const removedTimer = this.liveDepthUpdateTimers.get(fileIndex);
-    if (removedTimer !== undefined) {
-      window.clearTimeout(removedTimer);
-    }
-    const shiftedTimers = new Map<number, number>();
-    for (const [key, timer] of this.liveDepthUpdateTimers) {
-      if (key > fileIndex) {
-        shiftedTimers.set(key - 1, timer);
-      } else if (key < fileIndex) {
-        shiftedTimers.set(key, timer);
-      }
-    }
-    this.liveDepthUpdateTimers = shiftedTimers;
-    this.liveDepthUpdateFiles = shiftLiveDepthSet(this.liveDepthUpdateFiles);
-    this.liveDepthUpdateInFlight = shiftLiveDepthSet(this.liveDepthUpdateInFlight);
-    this.liveDepthUpdateQueued = shiftLiveDepthSet(this.liveDepthUpdateQueued);
-    const shiftedVersions = new Map<number, number>();
-    for (const [key, version] of this.liveDepthUpdateVersions) {
-      if (key > fileIndex) {
-        shiftedVersions.set(key - 1, version);
-      } else if (key < fileIndex) {
-        shiftedVersions.set(key, version);
-      }
-    }
-    this.liveDepthUpdateVersions = shiftedVersions;
+    this.selectionManager?.releaseUnusedPointBuffers(geometries);
+    this.webgpuVisibilityRenderer?.retainGeometries(geometries);
 
     // Reassign file indices
     this.fileEntries.ofKind('spatial').forEach((entry, index) => {
