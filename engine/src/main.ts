@@ -379,8 +379,14 @@ export class PointCloudVisualizer {
   /** Image names of the loaded COLMAP model, for matching streamed photos. */
   private colmapImageNames: string[] = [];
   private colmapImagesDone = 0;
-  spatialFiles: SpatialData[] = [];
-  meshes: (THREE.Mesh | THREE.Points | THREE.LineSegments)[] = [];
+  // FileEntryRegistry owns file records and GPU objects. These projections
+  // keep the legacy voxel/LOD APIs aligned with the fork's atomic file lifecycle.
+  get spatialFiles(): SpatialData[] {
+    return this.fileEntries.ofKind('spatial').map(entry => entry.spatial!.data);
+  }
+  get meshes(): (THREE.Mesh | THREE.Points | THREE.LineSegments)[] {
+    return this.fileEntries.ofKind('spatial').map(entry => entry.spatial!.object);
+  }
   normalsVisualizers: (THREE.LineSegments | null)[] = [];
   vertexPointsObjects: (THREE.Points | null)[] = []; // Vertex points for triangle meshes
   voxelObjects: (THREE.InstancedMesh | null)[] = [];
@@ -3524,6 +3530,11 @@ export class PointCloudVisualizer {
         entry.state.pointsVisible = true; // Show actual point data
       }
 
+      // Preserve the baseline's array-backed mode API until voxel mode is
+      // migrated to the fork's FileEntry state. Populate every loaded slot.
+      this.solidVisible.push(entry.state.solidVisible);
+      this.pointsVisible.push(entry.state.pointsVisible);
+      this.fileVisibility.push(true);
       // Wireframe, normals, and voxel view always start disabled.
       this.wireframeVisible.push(false);
       this.normalsVisible.push(false);
