@@ -768,6 +768,8 @@ export function parse_pts(data: Uint8Array): PointCloudResult;
  */
 export function parse_row_range(data: Uint8Array, layout: Uint8Array, color: number): PointCloudResult;
 
+export function parse_semantic_occupancy_npz(data: Uint8Array): PointCloudResult;
+
 /**
  * Parse an STL file, binary or ASCII.
  */
@@ -981,6 +983,7 @@ export interface InitOutput {
     readonly parse_ply_at: (a: number, b: number) => [number, number, number];
     readonly parse_pts: (a: number, b: number) => number;
     readonly parse_row_range: (a: number, b: number, c: number, d: number, e: number) => number;
+    readonly parse_semantic_occupancy_npz: (a: number, b: number) => [number, number, number];
     readonly parse_stl: (a: number, b: number) => number;
     readonly parse_text_table: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly parse_xyz: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
@@ -1067,6 +1070,12 @@ export interface InitOutput {
     readonly voxelmesh_vertex_count: (a: number) => number;
     readonly voxelmesh_voxel_count: (a: number) => number;
     readonly voxelmesh_voxel_size: (a: number) => [number, number];
+    readonly dealloc: (a: number, b: number) => void;
+    readonly objresult_vertex_count: (a: number) => number;
+    readonly stonexscanpoints_point_count: (a: number) => number;
+    readonly stonexrgbimage_height: (a: number) => number;
+    readonly stonexrgbimage_width: (a: number) => number;
+    readonly stonexstationsession_recolored: (a: number) => number;
     readonly meshresult_take_colors: (a: number) => [number, number];
     readonly plyresult_take_colors: (a: number) => [number, number];
     readonly pointcloudresult_take_colors: (a: number) => [number, number];
@@ -1075,13 +1084,6 @@ export interface InitOutput {
     readonly stonexrgbimage_take_data: (a: number) => [number, number];
     readonly voxelmesh_take_colors: (a: number) => [number, number];
     readonly alloc: (a: number) => number;
-    readonly stonexrgbimage_height: (a: number) => number;
-    readonly stonexrgbimage_width: (a: number) => number;
-    readonly stonexstationsession_recolored: (a: number) => number;
-    readonly objresult_vertex_count: (a: number) => number;
-    readonly stonexscanpoints_point_count: (a: number) => number;
-    readonly __wbg_stonexpreview_free: (a: number, b: number) => void;
-    readonly __wbg_stonexrgbimage_free: (a: number, b: number) => void;
     readonly meshresult_take_indices: (a: number) => [number, number];
     readonly meshresult_take_normals: (a: number) => [number, number];
     readonly meshresult_take_positions: (a: number) => [number, number];
@@ -1108,7 +1110,8 @@ export interface InitOutput {
     readonly voxelmesh_take_indices: (a: number) => [number, number];
     readonly voxelmesh_take_intensity: (a: number) => [number, number];
     readonly voxelmesh_take_positions: (a: number) => [number, number];
-    readonly dealloc: (a: number, b: number) => void;
+    readonly __wbg_stonexpreview_free: (a: number, b: number) => void;
+    readonly __wbg_stonexrgbimage_free: (a: number, b: number) => void;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

@@ -103,175 +103,11 @@ function passArrayF32ToWasm0(arg, malloc) {
     return ptr;
 }
 
-let cachedFloat64ArrayMemory0 = null;
-
-function getFloat64ArrayMemory0() {
-    if (cachedFloat64ArrayMemory0 === null || cachedFloat64ArrayMemory0.byteLength === 0) {
-        cachedFloat64ArrayMemory0 = new Float64Array(wasm.memory.buffer);
-    }
-    return cachedFloat64ArrayMemory0;
-}
-
-function passArrayF64ToWasm0(arg, malloc) {
-    const ptr = malloc(arg.length * 8, 8) >>> 0;
-    getFloat64ArrayMemory0().set(arg, ptr / 8);
-    WASM_VECTOR_LEN = arg.length;
-    return ptr;
-}
-
 function takeFromExternrefTable0(idx) {
     const value = wasm.__wbindgen_externrefs.get(idx);
     wasm.__externref_table_dealloc(idx);
     return value;
 }
-
-function getArrayU8FromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
-}
-
-function getArrayF32FromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return getFloat32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
-}
-
-let cachedUint16ArrayMemory0 = null;
-
-function getUint16ArrayMemory0() {
-    if (cachedUint16ArrayMemory0 === null || cachedUint16ArrayMemory0.byteLength === 0) {
-        cachedUint16ArrayMemory0 = new Uint16Array(wasm.memory.buffer);
-    }
-    return cachedUint16ArrayMemory0;
-}
-
-function getArrayU16FromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return getUint16ArrayMemory0().subarray(ptr / 2, ptr / 2 + len);
-}
-
-let cachedUint32ArrayMemory0 = null;
-
-function getUint32ArrayMemory0() {
-    if (cachedUint32ArrayMemory0 === null || cachedUint32ArrayMemory0.byteLength === 0) {
-        cachedUint32ArrayMemory0 = new Uint32Array(wasm.memory.buffer);
-    }
-    return cachedUint32ArrayMemory0;
-}
-
-function getArrayU32FromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return getUint32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
-}
-
-function passArray32ToWasm0(arg, malloc) {
-    const ptr = malloc(arg.length * 4, 4) >>> 0;
-    getUint32ArrayMemory0().set(arg, ptr / 4);
-    WASM_VECTOR_LEN = arg.length;
-    return ptr;
-}
-/**
- * Project selected 3D points after applying a row-major 4x4 transform.
- *
- * `positions` contains interleaved xyz values and `indices` selects the
- * points to project. The result contains interleaved uv values in index order;
- * rejected points are returned as NaN pairs. `max_normalized_x/y` provide an
- * optional pre-distortion calibration-domain guard (use infinity to disable).
- * @param {string} camera_model
- * @param {number} fx
- * @param {number} fy
- * @param {number} cx
- * @param {number} cy
- * @param {Float64Array} coefficients
- * @param {Float32Array} positions
- * @param {Uint32Array} indices
- * @param {Float64Array} transform
- * @param {number} max_normalized_x
- * @param {number} max_normalized_y
- * @returns {Float32Array}
- */
-exports.camera_project_points_indexed = function(camera_model, fx, fy, cx, cy, coefficients, positions, indices, transform, max_normalized_x, max_normalized_y) {
-    const ptr0 = passStringToWasm0(camera_model, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passArrayF64ToWasm0(coefficients, wasm.__wbindgen_malloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passArrayF32ToWasm0(positions, wasm.__wbindgen_malloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ptr3 = passArray32ToWasm0(indices, wasm.__wbindgen_malloc);
-    const len3 = WASM_VECTOR_LEN;
-    const ptr4 = passArrayF64ToWasm0(transform, wasm.__wbindgen_malloc);
-    const len4 = WASM_VECTOR_LEN;
-    const ret = wasm.camera_project_points_indexed(ptr0, len0, fx, fy, cx, cy, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, max_normalized_x, max_normalized_y);
-    if (ret[3]) {
-        throw takeFromExternrefTable0(ret[2]);
-    }
-    var v6 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
-    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-    return v6;
-};
-
-function getArrayF64FromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
-}
-/**
- * Unproject one pixel to a unit OpenCV-coordinate ray. Returns
- * `[valid, converged, iterations, x, y, z]`.
- * @param {string} camera_model
- * @param {number} fx
- * @param {number} fy
- * @param {number} cx
- * @param {number} cy
- * @param {Float64Array} coefficients
- * @param {number} u
- * @param {number} v
- * @returns {Float64Array}
- */
-exports.camera_unproject = function(camera_model, fx, fy, cx, cy, coefficients, u, v) {
-    const ptr0 = passStringToWasm0(camera_model, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passArrayF64ToWasm0(coefficients, wasm.__wbindgen_malloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.camera_unproject(ptr0, len0, fx, fy, cx, cy, ptr1, len1, u, v);
-    if (ret[3]) {
-        throw takeFromExternrefTable0(ret[2]);
-    }
-    var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-    return v3;
-};
-
-/**
- * @param {Float32Array} data
- * @param {number} width
- * @param {number} height
- * @param {string} kind
- * @param {string} camera_model
- * @param {string} convention
- * @param {number} fx
- * @param {number} fy
- * @param {number} cx
- * @param {number} cy
- * @param {Float64Array} coefficients
- * @returns {DepthProjectResult}
- */
-exports.project_depth_fast = function(data, width, height, kind, camera_model, convention, fx, fy, cx, cy, coefficients) {
-    const ptr0 = passArrayF32ToWasm0(data, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passStringToWasm0(camera_model, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ptr3 = passStringToWasm0(convention, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len3 = WASM_VECTOR_LEN;
-    const ptr4 = passArrayF64ToWasm0(coefficients, wasm.__wbindgen_malloc);
-    const len4 = WASM_VECTOR_LEN;
-    const ret = wasm.project_depth_fast(ptr0, len0, width, height, ptr1, len1, ptr2, len2, ptr3, len3, fx, fy, cx, cy, ptr4, len4);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return DepthProjectResult.__wrap(ret[0]);
-};
-
 /**
  * @param {Float32Array} data
  * @param {number} width
@@ -304,66 +140,21 @@ exports.normalize_depth_fast = function(data, width, height, kind, unit, scale, 
     return NormalizeDepthResult.__wrap(ret[0]);
 };
 
-/**
- * Project one OpenCV-coordinate ray. Returns
- * `[valid, converged, iterations, u, v]`.
- * @param {string} camera_model
- * @param {number} fx
- * @param {number} fy
- * @param {number} cx
- * @param {number} cy
- * @param {Float64Array} coefficients
- * @param {number} x
- * @param {number} y
- * @param {number} z
- * @returns {Float64Array}
- */
-exports.camera_project = function(camera_model, fx, fy, cx, cy, coefficients, x, y, z) {
-    const ptr0 = passStringToWasm0(camera_model, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passArrayF64ToWasm0(coefficients, wasm.__wbindgen_malloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.camera_project(ptr0, len0, fx, fy, cx, cy, ptr1, len1, x, y, z);
-    if (ret[3]) {
-        throw takeFromExternrefTable0(ret[2]);
-    }
-    var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-    return v3;
-};
+let cachedFloat64ArrayMemory0 = null;
 
-/**
- * @param {Float32Array} data
- * @param {number} width
- * @param {number} height
- * @param {string} kind
- * @param {string} camera_model
- * @param {string} convention
- * @param {number} fx
- * @param {number} fy
- * @param {number} cx
- * @param {number} cy
- * @param {Float64Array} coefficients
- * @returns {DepthProjectResult}
- */
-exports.project_depth_inspection = function(data, width, height, kind, camera_model, convention, fx, fy, cx, cy, coefficients) {
-    const ptr0 = passArrayF32ToWasm0(data, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passStringToWasm0(camera_model, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ptr3 = passStringToWasm0(convention, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len3 = WASM_VECTOR_LEN;
-    const ptr4 = passArrayF64ToWasm0(coefficients, wasm.__wbindgen_malloc);
-    const len4 = WASM_VECTOR_LEN;
-    const ret = wasm.project_depth_inspection(ptr0, len0, width, height, ptr1, len1, ptr2, len2, ptr3, len3, fx, fy, cx, cy, ptr4, len4);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
+function getFloat64ArrayMemory0() {
+    if (cachedFloat64ArrayMemory0 === null || cachedFloat64ArrayMemory0.byteLength === 0) {
+        cachedFloat64ArrayMemory0 = new Float64Array(wasm.memory.buffer);
     }
-    return DepthProjectResult.__wrap(ret[0]);
-};
+    return cachedFloat64ArrayMemory0;
+}
 
+function passArrayF64ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 8, 8) >>> 0;
+    getFloat64ArrayMemory0().set(arg, ptr / 8);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
 /**
  * One horizontal band of an image, projected with the *whole* image's depth
  * range and row offset.
@@ -411,6 +202,189 @@ exports.project_depth_band = function(data, width, height, row_offset, depth_min
     return DepthProjectResult.__wrap(ret[0]);
 };
 
+/**
+ * @param {Float32Array} data
+ * @param {number} width
+ * @param {number} height
+ * @param {string} kind
+ * @param {string} camera_model
+ * @param {string} convention
+ * @param {number} fx
+ * @param {number} fy
+ * @param {number} cx
+ * @param {number} cy
+ * @param {Float64Array} coefficients
+ * @returns {DepthProjectResult}
+ */
+exports.project_depth_fast = function(data, width, height, kind, camera_model, convention, fx, fy, cx, cy, coefficients) {
+    const ptr0 = passArrayF32ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(camera_model, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passStringToWasm0(convention, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ptr4 = passArrayF64ToWasm0(coefficients, wasm.__wbindgen_malloc);
+    const len4 = WASM_VECTOR_LEN;
+    const ret = wasm.project_depth_fast(ptr0, len0, width, height, ptr1, len1, ptr2, len2, ptr3, len3, fx, fy, cx, cy, ptr4, len4);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return DepthProjectResult.__wrap(ret[0]);
+};
+
+/**
+ * @param {Float32Array} data
+ * @param {number} width
+ * @param {number} height
+ * @param {string} kind
+ * @param {string} camera_model
+ * @param {string} convention
+ * @param {number} fx
+ * @param {number} fy
+ * @param {number} cx
+ * @param {number} cy
+ * @param {Float64Array} coefficients
+ * @returns {DepthProjectResult}
+ */
+exports.project_depth_inspection = function(data, width, height, kind, camera_model, convention, fx, fy, cx, cy, coefficients) {
+    const ptr0 = passArrayF32ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(camera_model, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passStringToWasm0(convention, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ptr4 = passArrayF64ToWasm0(coefficients, wasm.__wbindgen_malloc);
+    const len4 = WASM_VECTOR_LEN;
+    const ret = wasm.project_depth_inspection(ptr0, len0, width, height, ptr1, len1, ptr2, len2, ptr3, len3, fx, fy, cx, cy, ptr4, len4);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return DepthProjectResult.__wrap(ret[0]);
+};
+
+function getArrayF64FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
+}
+/**
+ * Project one OpenCV-coordinate ray. Returns
+ * `[valid, converged, iterations, u, v]`.
+ * @param {string} camera_model
+ * @param {number} fx
+ * @param {number} fy
+ * @param {number} cx
+ * @param {number} cy
+ * @param {Float64Array} coefficients
+ * @param {number} x
+ * @param {number} y
+ * @param {number} z
+ * @returns {Float64Array}
+ */
+exports.camera_project = function(camera_model, fx, fy, cx, cy, coefficients, x, y, z) {
+    const ptr0 = passStringToWasm0(camera_model, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(coefficients, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.camera_project(ptr0, len0, fx, fy, cx, cy, ptr1, len1, x, y, z);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v3;
+};
+
+let cachedUint32ArrayMemory0 = null;
+
+function getUint32ArrayMemory0() {
+    if (cachedUint32ArrayMemory0 === null || cachedUint32ArrayMemory0.byteLength === 0) {
+        cachedUint32ArrayMemory0 = new Uint32Array(wasm.memory.buffer);
+    }
+    return cachedUint32ArrayMemory0;
+}
+
+function passArray32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getUint32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function getArrayF32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getFloat32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+/**
+ * Project selected 3D points after applying a row-major 4x4 transform.
+ *
+ * `positions` contains interleaved xyz values and `indices` selects the
+ * points to project. The result contains interleaved uv values in index order;
+ * rejected points are returned as NaN pairs. `max_normalized_x/y` provide an
+ * optional pre-distortion calibration-domain guard (use infinity to disable).
+ * @param {string} camera_model
+ * @param {number} fx
+ * @param {number} fy
+ * @param {number} cx
+ * @param {number} cy
+ * @param {Float64Array} coefficients
+ * @param {Float32Array} positions
+ * @param {Uint32Array} indices
+ * @param {Float64Array} transform
+ * @param {number} max_normalized_x
+ * @param {number} max_normalized_y
+ * @returns {Float32Array}
+ */
+exports.camera_project_points_indexed = function(camera_model, fx, fy, cx, cy, coefficients, positions, indices, transform, max_normalized_x, max_normalized_y) {
+    const ptr0 = passStringToWasm0(camera_model, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(coefficients, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArrayF32ToWasm0(positions, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passArray32ToWasm0(indices, wasm.__wbindgen_malloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ptr4 = passArrayF64ToWasm0(transform, wasm.__wbindgen_malloc);
+    const len4 = WASM_VECTOR_LEN;
+    const ret = wasm.camera_project_points_indexed(ptr0, len0, fx, fy, cx, cy, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, max_normalized_x, max_normalized_y);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v6 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+    return v6;
+};
+
+/**
+ * Unproject one pixel to a unit OpenCV-coordinate ray. Returns
+ * `[valid, converged, iterations, x, y, z]`.
+ * @param {string} camera_model
+ * @param {number} fx
+ * @param {number} fy
+ * @param {number} cx
+ * @param {number} cy
+ * @param {Float64Array} coefficients
+ * @param {number} u
+ * @param {number} v
+ * @returns {Float64Array}
+ */
+exports.camera_unproject = function(camera_model, fx, fy, cx, cy, coefficients, u, v) {
+    const ptr0 = passStringToWasm0(camera_model, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArrayF64ToWasm0(coefficients, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.camera_unproject(ptr0, len0, fx, fy, cx, cy, ptr1, len1, u, v);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v3 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+    return v3;
+};
+
 function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
     getUint8ArrayMemory0().set(arg, ptr / 1);
@@ -448,62 +422,6 @@ exports.decode_depth_pfm = function(bytes) {
     return DepthRaster.__wrap(ret[0]);
 };
 
-let cachedInt32ArrayMemory0 = null;
-
-function getInt32ArrayMemory0() {
-    if (cachedInt32ArrayMemory0 === null || cachedInt32ArrayMemory0.byteLength === 0) {
-        cachedInt32ArrayMemory0 = new Int32Array(wasm.memory.buffer);
-    }
-    return cachedInt32ArrayMemory0;
-}
-
-function getArrayI32FromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return getInt32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
-}
-
-function getArrayJsValueFromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    const mem = getDataViewMemory0();
-    const result = [];
-    for (let i = ptr; i < ptr + 4 * len; i += 4) {
-        result.push(wasm.__wbindgen_externrefs.get(mem.getUint32(i, true)));
-    }
-    wasm.__externref_drop_slice(ptr, len);
-    return result;
-}
-/**
- * @param {Uint8Array} data
- * @param {number} page_index
- * @returns {TiffResult}
- */
-exports.decode_tiff_page_fast = function(data, page_index) {
-    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.decode_tiff_page_fast(ptr0, len0, page_index);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return TiffResult.__wrap(ret[0]);
-};
-
-/**
- * # Errors
- *
- * A malformed EXR header.
- * @param {Uint8Array} data
- * @returns {ExrZipPlanJs | undefined}
- */
-exports.exr_zip_plan = function(data) {
-    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.exr_zip_plan(ptr0, len0);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return ret[0] === 0 ? undefined : ExrZipPlanJs.__wrap(ret[0]);
-};
-
 /**
  * @param {Uint8Array} data
  * @returns {TiffResult}
@@ -520,20 +438,6 @@ exports.decode_tiff = function(data) {
 
 /**
  * @param {Uint8Array} data
- * @returns {PngResult}
- */
-exports.decode_png_samples_fast = function(data) {
-    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.decode_png_samples_fast(ptr0, len0);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return PngResult.__wrap(ret[0]);
-};
-
-/**
- * @param {Uint8Array} data
  * @returns {TiffStripPlan | undefined}
  */
 exports.tiff_strip_plan = function(data) {
@@ -541,25 +445,6 @@ exports.tiff_strip_plan = function(data) {
     const len0 = WASM_VECTOR_LEN;
     const ret = wasm.tiff_strip_plan(ptr0, len0);
     return ret === 0 ? undefined : TiffStripPlan.__wrap(ret);
-};
-
-/**
- * @param {Uint8Array} data
- * @returns {string}
- */
-exports.extract_exif_tags = function(data) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.extract_exif_tags(ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
 };
 
 /**
@@ -589,74 +474,20 @@ exports.decode_tiff_strip_range = function(blob, counts, first_strip, fields) {
 };
 
 /**
+ * # Errors
+ *
+ * A malformed EXR header.
  * @param {Uint8Array} data
- * @param {number} page_index
- * @returns {TiffResult}
+ * @returns {ExrZipPlanJs | undefined}
  */
-exports.decode_tiff_page = function(data, page_index) {
+exports.exr_zip_plan = function(data) {
     const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
     const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.decode_tiff_page(ptr0, len0, page_index);
+    const ret = wasm.exr_zip_plan(ptr0, len0);
     if (ret[2]) {
         throw takeFromExternrefTable0(ret[1]);
     }
-    return TiffResult.__wrap(ret[0]);
-};
-
-/**
- * @param {Uint8Array} data
- * @returns {ExrResult}
- */
-exports.decode_exr_fast = function(data) {
-    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.decode_exr_fast(ptr0, len0);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return ExrResult.__wrap(ret[0]);
-};
-
-/**
- * @param {Uint8Array} data
- * @returns {number}
- */
-exports.tiff_page_count = function(data) {
-    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.tiff_page_count(ptr0, len0);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return ret[0] >>> 0;
-};
-
-/**
- * @param {Uint8Array} data
- * @returns {PngResult}
- */
-exports.decode_png16_fast = function(data) {
-    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.decode_png16_fast(ptr0, len0);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return PngResult.__wrap(ret[0]);
-};
-
-/**
- * @param {Uint8Array} data
- * @returns {TiffResult}
- */
-exports.decode_tiff_fast = function(data) {
-    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.decode_tiff_fast(ptr0, len0);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return TiffResult.__wrap(ret[0]);
+    return ret[0] === 0 ? undefined : ExrZipPlanJs.__wrap(ret[0]);
 };
 
 /**
@@ -693,6 +524,174 @@ exports.decode_exr_zip_blocks = function(blob, counts, rows, width, kinds, selec
     wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
     return v6;
 };
+
+/**
+ * @param {Uint8Array} data
+ * @returns {TiffResult}
+ */
+exports.decode_tiff_fast = function(data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.decode_tiff_fast(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return TiffResult.__wrap(ret[0]);
+};
+
+/**
+ * @param {Uint8Array} data
+ * @param {number} page_index
+ * @returns {TiffResult}
+ */
+exports.decode_tiff_page = function(data, page_index) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.decode_tiff_page(ptr0, len0, page_index);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return TiffResult.__wrap(ret[0]);
+};
+
+/**
+ * @param {Uint8Array} data
+ * @param {number} page_index
+ * @returns {TiffResult}
+ */
+exports.decode_tiff_page_fast = function(data, page_index) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.decode_tiff_page_fast(ptr0, len0, page_index);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return TiffResult.__wrap(ret[0]);
+};
+
+/**
+ * @param {Uint8Array} data
+ * @returns {number}
+ */
+exports.tiff_page_count = function(data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.tiff_page_count(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return ret[0] >>> 0;
+};
+
+/**
+ * @param {Uint8Array} data
+ * @returns {string}
+ */
+exports.extract_exif_tags = function(data) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.extract_exif_tags(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+};
+
+/**
+ * @param {Uint8Array} data
+ * @returns {ExrResult}
+ */
+exports.decode_exr_fast = function(data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.decode_exr_fast(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return ExrResult.__wrap(ret[0]);
+};
+
+/**
+ * @param {Uint8Array} data
+ * @returns {PngResult}
+ */
+exports.decode_png16_fast = function(data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.decode_png16_fast(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return PngResult.__wrap(ret[0]);
+};
+
+/**
+ * @param {Uint8Array} data
+ * @returns {PngResult}
+ */
+exports.decode_png_samples_fast = function(data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.decode_png_samples_fast(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return PngResult.__wrap(ret[0]);
+};
+
+function getArrayU32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
+let cachedInt32ArrayMemory0 = null;
+
+function getInt32ArrayMemory0() {
+    if (cachedInt32ArrayMemory0 === null || cachedInt32ArrayMemory0.byteLength === 0) {
+        cachedInt32ArrayMemory0 = new Int32Array(wasm.memory.buffer);
+    }
+    return cachedInt32ArrayMemory0;
+}
+
+function getArrayI32FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getInt32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
+}
+
+function getArrayJsValueFromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    const mem = getDataViewMemory0();
+    const result = [];
+    for (let i = ptr; i < ptr + 4 * len; i += 4) {
+        result.push(wasm.__wbindgen_externrefs.get(mem.getUint32(i, true)));
+    }
+    wasm.__externref_drop_slice(ptr, len);
+    return result;
+}
+
+function getArrayU8FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+}
+
+let cachedUint16ArrayMemory0 = null;
+
+function getUint16ArrayMemory0() {
+    if (cachedUint16ArrayMemory0 === null || cachedUint16ArrayMemory0.byteLength === 0) {
+        cachedUint16ArrayMemory0 = new Uint16Array(wasm.memory.buffer);
+    }
+    return cachedUint16ArrayMemory0;
+}
+
+function getArrayU16FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint16ArrayMemory0().subarray(ptr / 2, ptr / 2 + len);
+}
 
 const DepthBandSessionFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
@@ -907,15 +906,6 @@ class DepthRaster {
         wasm.__wbg_depthraster_free(ptr, 0);
     }
     /**
-     * @returns {Float32Array}
-     */
-    take_data() {
-        const ret = wasm.depthraster_take_data(this.__wbg_ptr);
-        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
-        return v1;
-    }
-    /**
      * @returns {number}
      */
     get width() {
@@ -953,6 +943,15 @@ class DepthRaster {
      */
     set channels(arg0) {
         wasm.__wbg_set_depthraster_channels(this.__wbg_ptr, arg0);
+    }
+    /**
+     * @returns {Float32Array}
+     */
+    take_data() {
+        const ret = wasm.depthraster_take_data(this.__wbg_ptr);
+        var v1 = getArrayF32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
     }
 }
 if (Symbol.dispose) DepthRaster.prototype[Symbol.dispose] = DepthRaster.prototype.free;
