@@ -27,7 +27,7 @@ const hostSchemas = {
   stationPipelineCancel: {},
   depthFetchFailed: { fileName: optional(string) },
   addFile: {},
-  removeFile: { fileIndex: index, entryId: optional(index) },
+  removeFile: { fileIndex: index, entryId: optional(index), progressivePlySessionId: optional(string) },
   requestCameraParams: { requestId: optional(string) },
   requestCameraParamsWithScale: { requestId: optional(string) },
   savePlyFile: { content: string, defaultFileName: string },
