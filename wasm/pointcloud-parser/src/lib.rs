@@ -35,7 +35,7 @@ mod stonex;
 mod volume;
 pub use lidar::{parse_e57, parse_las, E57ImageResult, LidarCollectionResult, LidarScanResult};
 pub use mesh::{parse_off, parse_stl, MeshResult};
-pub use npy::{npy_inspect, npy_read, NpyArrayResult};
+pub use npy::{npy_inspect, npy_read, parse_semantic_occupancy_npz, NpyArrayResult};
 pub use obj::{parse_obj, ObjResult};
 pub use ply::{parse_ply, parse_ply_at, parse_ply_native, PlyResult};
 pub use registration::bindings::{
