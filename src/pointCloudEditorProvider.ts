@@ -40,8 +40,7 @@ import {
 import { createWebviewReadyGate, type WebviewReadyGate } from './providerHandlers/webviewReadyGate';
 import { clearVolume, reextractVolume } from './providerHandlers/volumeSessions';
 import { ProgressivePlyService } from './progressivePly/service';
-import { parseProgressivePlyHeader } from './progressivePly/header';
-import { shouldEagerlyPrefetchPly } from './progressivePly/routing';
+import { probeEagerBinaryPlyPrefetch } from './progressivePly/prefetch';
 
 // Shared file handling functionality
 import { detectFileType, detectFileTypeWithContent, isPlyBinary } from '../engine/src/fileHandler';
@@ -1481,47 +1480,16 @@ function binaryPlyPrefetchUri(
     return undefined;
   }
   try {
-    const fd = fs.openSync(uri.fsPath, 'r');
-    try {
-      const fileSize = fs.fstatSync(fd).size;
-      const settings = vscode.workspace.getConfiguration('plyViewer.largePly');
-      const routing = {
-        fileSizeThresholdBytes:
-          Math.max(1, settings.get<number>('progressiveFileSizeMiB', 256)) * 1024 * 1024,
-        decodedBytesThresholdBytes:
-          Math.max(1, settings.get<number>('progressiveDecodedSizeMiB', 512)) * 1024 * 1024,
-      };
-
-      // Prefetch kicks off a complete browser-side fetch and parse as soon as
-      // the HTML executes. Never launch it on a potentially progressive PLY:
-      // this previously downloaded multi-GB files despite successful LOD routing.
-      // The extension host is responsible for the large-file decision.
-      if (fileSize >= routing.fileSizeThresholdBytes) {
-        return undefined;
-      }
-
-      const head = Buffer.alloc(Math.min(fileSize, 65536));
-      const read = fs.readSync(fd, head, 0, head.length, 0);
-      const probe = head.subarray(0, read);
-      if (!isPlyBinary(probe)) {
-        return undefined;
-      }
-      let header;
-      try {
-        header = parseProgressivePlyHeader(probe);
-      } catch {
-        // An unusual/long header has not yet been classified. Do not start
-        // whole-cloud browser parsing ahead of the extension's loader.
-        return undefined;
-      }
-      if (!shouldEagerlyPrefetchPly(fileSize, header, routing)) {
-        return undefined;
-      }
-      return { uri: webview.asWebviewUri(uri).toString(), size: fileSize };
-    } finally {
-      fs.closeSync(fd);
-    }
+    const settings = vscode.workspace.getConfiguration('plyViewer.largePly');
+    const size = probeEagerBinaryPlyPrefetch(uri.fsPath, {
+      fileSizeThresholdBytes:
+        Math.max(1, settings.get<number>('progressiveFileSizeMiB', 256)) * 1024 * 1024,
+      decodedBytesThresholdBytes:
+        Math.max(1, settings.get<number>('progressiveDecodedSizeMiB', 512)) * 1024 * 1024,
+    });
+    return size === null ? undefined : { uri: webview.asWebviewUri(uri).toString(), size };
   } catch {
+    // Eager prefetch is optional; extension-host loading remains authoritative.
     return undefined;
   }
 }
