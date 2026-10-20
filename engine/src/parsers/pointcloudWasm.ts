@@ -165,6 +165,7 @@ interface PointcloudWasm {
   parse_obj(data: Uint8Array): RawObjResult;
   npy_inspect(data: Uint8Array): string;
   npy_read(data: Uint8Array, name: string): RawNpyResult;
+  parse_semantic_occupancy_npz(data: Uint8Array): RawResult;
   /** Present only in the browser build, where the loader attaches it. */
   memory?: WebAssembly.Memory;
 }
@@ -1187,6 +1188,17 @@ export async function readNpyWasm(data: Uint8Array, name = ''): Promise<NpyArray
   };
   raw.free?.();
   return array;
+}
+
+/** Decode self-contained sparse semantic occupancy, preserving exact int64 indices in Rust. */
+export async function parseSemanticOccupancyNpzWasm(
+  data: Uint8Array
+): Promise<WasmPointCloudResult> {
+  const wasm = await loadPointcloudWasm();
+  if (!wasm || typeof wasm.parse_semantic_occupancy_npz !== 'function') {
+    throw new Error('Semantic occupancy NPZ decoder unavailable; rebuild the pointcloud WASM');
+  }
+  return marshalWasmPointCloud(wasm.parse_semantic_occupancy_npz(data));
 }
 
 /**
