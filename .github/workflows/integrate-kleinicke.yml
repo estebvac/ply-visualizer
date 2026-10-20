@@ -63,6 +63,9 @@ jobs:
           if not all(checks.values()):
             raise SystemExit('Refusing to push: progressive PLY source integration invariant violated')
           PY
+          # GitHub App GITHUB_TOKEN cannot push changes to workflow definitions.
+          # Keep our validated baseline CI configuration unchanged.
+          git checkout HEAD -- .github/workflows/ci.yml
           git status --short
           git add -A
           if [[ -f .git/MERGE_HEAD ]]; then
