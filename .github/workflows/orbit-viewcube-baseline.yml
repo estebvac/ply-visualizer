@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - integration/orbit-viewcube-main-v2
+      - integration/kleinicke-main
   workflow_dispatch:
 
 
