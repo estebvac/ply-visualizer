@@ -242,7 +242,7 @@ export async function processFiles(
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
-    const fileType = detectFileType(file.name);
+    const fileType = await detectFileTypeWithContent(file.name, file.data);
 
     try {
       progressCallback?.(i + 1, files.length, file.name);
