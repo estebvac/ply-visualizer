@@ -168,6 +168,7 @@ end_header
       assert.ok(customEditors, 'Custom editors should be defined');
       assert.deepStrictEqual(customEditors.map((editor: any) => editor.viewType).sort(), [
         'plyViewer.kittiBin',
+        'plyViewer.numpyEditor',
         'plyViewer.plyEditor',
         'plyViewer.textTable',
       ]);
@@ -180,7 +181,17 @@ end_header
         ['*.asc', '*.csv', '*.tsv', '*.txt']
       );
 
-      const editor = customEditors.find((item: any) => item.viewType === 'plyViewer.plyEditor');
+      const numpyEditor = customEditors.find(
+      (item: any) => item.viewType === 'plyViewer.numpyEditor'
+    );
+    assert.ok(numpyEditor, 'Optional NumPy 3D editor should be registered');
+    assert.strictEqual(numpyEditor.priority, 'option');
+    assert.deepStrictEqual(
+      numpyEditor.selector.map((selector: any) => selector.filenamePattern).sort(),
+      ['*.npy', '*.npz']
+    );
+
+    const editor = customEditors.find((item: any) => item.viewType === 'plyViewer.plyEditor');
       assert.ok(editor, 'Main 3D custom editor should be defined');
       assert.strictEqual(editor.viewType, 'plyViewer.plyEditor');
       assert.strictEqual(editor.displayName, '3D Point Cloud and Mesh Visualizer (PLY, ...)');
