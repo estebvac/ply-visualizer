@@ -6,6 +6,24 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 
+/**
+ * Camera readback may normalize a quaternion and round-trip through spherical
+ * coordinates before it is inspected again. Compare its XYZ position with a
+ * tight tolerance, while requiring every other camera field to match exactly.
+ */
+function assertCameraPreserved(actual: any, expected: any): void {
+  assert.ok(Array.isArray(actual.position) && Array.isArray(expected.position));
+  assert.strictEqual(actual.position.length, 3);
+  assert.strictEqual(expected.position.length, 3);
+  for (let axis = 0; axis < 3; axis++) {
+    const a = actual.position[axis];
+    const b = expected.position[axis];
+    assert.ok(Number.isFinite(a) && Number.isFinite(b), `Non-finite camera axis ${axis}`);
+    assert.ok(Math.abs(a - b) <= 1e-9, `Camera axis ${axis} changed: ${a} vs ${b}`);
+  }
+  assert.deepStrictEqual({ ...actual, position: expected.position }, expected);
+}
+
 suite('Native VS Code agent tools — real webview', function () {
   this.timeout(180000);
   const scenes = new Set<string>();
@@ -148,7 +166,7 @@ suite('Native VS Code agent tools — real webview', function () {
       })
     ).data;
     assert.strictEqual(updated.renderer_id, renderer);
-    assert.deepStrictEqual(updated.camera, moved.camera);
+    assertCameraPreserved(updated.camera, moved.camera);
     assert.strictEqual(updated.objects.length, 2);
     const scene = (await call('list_3d_scenes')).data.scenes.find((s: any) => s.scene_id === id);
     assert.strictEqual(scene.host, 'vscode');
@@ -296,7 +314,7 @@ suite('Native VS Code agent tools — real webview', function () {
       const after = (await call('open_3d_url', { scene_id: id, url })).data;
       assert.strictEqual(after.renderer_id, before.renderer_id);
       assert.strictEqual(after.objects.length, before.objects.length + 1);
-      assert.deepStrictEqual(after.camera, before.camera);
+      assertCameraPreserved(after.camera, before.camera);
       const refused = await vscode.lm.invokeTool('viz3d_open_3d_url', {
         input: { scene_id: id, url, max_bytes: 1 },
         toolInvocationToken: undefined,
@@ -316,7 +334,7 @@ suite('Native VS Code agent tools — real webview', function () {
     const after = (await call('open_3d_files', { scene_id: manual.scene_id, paths: [file.fsPath] }))
       .data;
     assert.strictEqual(after.renderer_id, before.renderer_id);
-    assert.deepStrictEqual(after.camera, before.camera);
+    assertCameraPreserved(after.camera, before.camera);
     assert.strictEqual(after.objects.length, before.objects.length + 1);
     await call('close_3d_scene', { scene_id: manual.scene_id });
   });
