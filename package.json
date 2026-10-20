@@ -66,6 +66,7 @@
     "CloudCompare"
   ],
   "main": "./out/extension.js",
+  "browser": "./out/web/extension.js",
   "imports": {
     "#registration-wasm-loader": "./out/engine/src/registration/wasmLoader.js"
   },
@@ -237,6 +238,25 @@
             "filenamePattern": "*.bin"
           }
         ]
+      },
+      {
+        "viewType": "plyViewer.textTable",
+        "displayName": "3D Visualizer (text / height grid)",
+        "selector": [
+          {
+            "filenamePattern": "*.csv"
+          },
+          {
+            "filenamePattern": "*.tsv"
+          },
+          {
+            "filenamePattern": "*.txt"
+          },
+          {
+            "filenamePattern": "*.asc"
+          }
+        ],
+        "priority": "option"
       }
     ],
     "commands": [
@@ -262,6 +282,7 @@
       },
       {
         "command": "plyViewer.openDicomFolder",
+        "enablement": "!plyViewer.webHost",
         "title": "Open DICOM Folder as Volume",
         "category": "3D Visualizer"
       },
@@ -312,11 +333,13 @@
       },
       {
         "command": "plyViewer.selectDataset",
+        "enablement": "!plyViewer.webHost",
         "title": "Select Dataset Scene",
         "category": "3D Visualizer"
       },
       {
         "command": "plyViewer.clearDatasetCache",
+        "enablement": "!plyViewer.webHost",
         "title": "Clear Dataset Cache",
         "category": "3D Visualizer"
       }
@@ -337,7 +360,7 @@
       "explorer/context": [
         {
           "command": "plyViewer.openFile",
-          "when": "resourceExtname == .ply || resourceExtname == .xyz || resourceExtname == .xyzn || resourceExtname == .xyzrgb || resourceExtname == .txt || resourceExtname == .obj || resourceExtname == .stl || resourceExtname == .pcd || resourceExtname == .pts || resourceExtname == .off || resourceExtname == .gltf || resourceExtname == .glb || resourceExtname == .fbx || resourceExtname == .dae || resourceExtname == .3ds || resourceExtname == .3mf || resourceExtname == .amf || resourceExtname == .wrl || resourceExtname == .step || resourceExtname == .stp || resourceExtname == .iges || resourceExtname == .igs || resourceExtname == .brep || resourceExtname == .las || resourceExtname == .laz || resourceExtname == .e57 || resourceExtname == .x3a || resourceExtname == .x3r || resourceExtname == .bin",
+          "when": "resourceExtname == .ply || resourceExtname == .xyz || resourceExtname == .xyzn || resourceExtname == .xyzrgb || resourceExtname == .txt || resourceExtname == .obj || resourceExtname == .stl || resourceExtname == .pcd || resourceExtname == .pts || resourceExtname == .off || resourceExtname == .gltf || resourceExtname == .glb || resourceExtname == .fbx || resourceExtname == .dae || resourceExtname == .3ds || resourceExtname == .3mf || resourceExtname == .amf || resourceExtname == .wrl || resourceExtname == .step || resourceExtname == .stp || resourceExtname == .iges || resourceExtname == .igs || resourceExtname == .brep || resourceExtname == .las || resourceExtname == .laz || resourceExtname == .e57 || resourceExtname == .x3a || resourceExtname == .x3r || resourceExtname == .bin || resourceExtname == .csv || resourceExtname == .tsv || resourceExtname == .asc",
           "group": "navigation"
         },
         {
@@ -2674,11 +2697,12 @@
     ]
   },
   "scripts": {
+    "test:web": "webpack --config webpack.web-test.config.js && node scripts/test-web.cjs",
     "build:python-viewer": "webpack --config engine/webpack.local.cjs --mode=production && webpack --config engine/webpack.mcp-app.cjs --mode=production",
     "test:python-viewer": "python3 -m unittest discover -s packages/python/tests -v",
     "vscode:prepublish": "npm run clean && npm run compile",
     "compile": "webpack",
-    "build:wasm": "cd wasm/pointcloud-parser && wasm-pack build --target nodejs --release --out-dir pkg && wasm-pack build --target web --release --out-dir pkg-web && node -e \"require('fs').rmSync('pkg-web/.gitignore', { force: true })\" && cd ../tiff-decoder && wasm-pack build --target nodejs --release --out-dir pkg-nodejs && wasm-pack build --target no-modules --release --out-dir pkg-nomodules && cp pkg-nomodules/tiff_wasm.js ../../engine/media/wasm/tiff_wasm.js && cp pkg-nomodules/tiff_wasm_bg.wasm ../../engine/media/wasm/tiff_wasm_bg.wasm",
+    "build:wasm": "node scripts/build-wasm.mjs",
     "compile:tests": "tsc",
     "compile:all": "npm run compile && npm run compile:tests",
     "watch": "webpack --watch",
@@ -2687,7 +2711,7 @@
     "lint": "eslint src --ext ts && npm run lint:svelte",
     "lint:svelte": "npm run check --workspace=engine",
     "test": "node ./out/src/test/runTest.js",
-    "test:node": "npm run compile:tests && mocha --ui tdd \"out/src/test/suite/**/*.test.js\" --ignore \"out/src/test/suite/extension.test.js\" --ignore \"out/src/test/suite/extensionAdvanced.test.js\" --ignore \"out/src/test/suite/integration.test.js\" --ignore \"out/src/test/suite/pointCloudEditorProviderAdvanced.test.js\" --ignore \"out/src/test/suite/nativeAgent.test.js\"",
+    "test:node": "node --test scripts/prune-vscode-test-cache.test.cjs && npm run compile:tests && mocha --ui tdd \"out/src/test/suite/**/*.test.js\" --ignore \"out/src/test/suite/extension.test.js\" --ignore \"out/src/test/suite/extensionAdvanced.test.js\" --ignore \"out/src/test/suite/integration.test.js\" --ignore \"out/src/test/suite/pointCloudEditorProviderAdvanced.test.js\" --ignore \"out/src/test/suite/nativeAgent.test.js\"",
     "test:coverage": "npm run pretest && c8 node ./out/src/test/runTest.js",
     "coverage": "npm run test:coverage && npm run coverage:report",
     "coverage:report": "c8 report && node ./analyze-coverage.mjs",
@@ -2710,11 +2734,12 @@
     "@types/mocha": "^10.0.1",
     "@types/node": "22.20.0",
     "@types/pako": "^2.0.4",
-    "@types/three": "^0.185.3",
+    "@types/three": "^0.186.0",
     "@types/vscode": "1.106.0",
     "@typescript-eslint/eslint-plugin": "^8.66.0",
     "@typescript-eslint/parser": "^8.66.0",
     "@vscode/test-electron": "^3.1.0",
+    "@vscode/test-web": "^0.0.81",
     "@vscode/vsce": "^3.9.2",
     "c8": "^12.0.0",
     "copy-webpack-plugin": "^14.0.0",
@@ -2743,7 +2768,7 @@
     "ajv": "^8.20.0",
     "js-yaml": "^5.2.3",
     "lzma": "^2.3.2",
-    "three": "^0.185.1"
+    "three": "^0.186.1"
   },
   "vsce": {
     "dependencies": false
@@ -2767,11 +2792,12 @@
     "all": true
   },
   "lint-staged": {
-    "*.{js,ts,tsx,json,css,md}": [
+    "*.{json,css,md}": [
       "prettier --write"
     ],
     "*.{js,ts,tsx}": [
-      "eslint --fix"
+      "eslint --fix",
+      "prettier --write"
     ]
   },
   "extensionKind": [

@@ -132,7 +132,7 @@ test.describe('Global align menu', () => {
     // Move cloud 1 away so a successful run has something to undo.
     await page.evaluate(() => {
       const visualizer = (window as any).visualizer;
-      const matrix = visualizer.transformationMatrices[1].clone();
+      const matrix = visualizer.fileEntries.require(1).transform.clone();
       matrix.elements[12] = 3;
       visualizer.setTransformationMatrix(1, matrix);
     });
@@ -170,7 +170,7 @@ test.describe('Global align menu', () => {
     expect(clipped.overflowing).toBe(false);
     expect(clipped.text.length).toBeGreaterThan(0);
     const anchorMoved = await page.evaluate(() => {
-      const elements = (window as any).visualizer.transformationMatrices[0].elements;
+      const elements = (window as any).visualizer.fileEntries.require(0).transform.elements;
       return elements.some((value: number, index: number) => {
         const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
         return Math.abs(value - identity[index]) > 1e-6;
@@ -265,15 +265,19 @@ test.describe('Global align menu', () => {
 
     await page.evaluate(() => {
       const state = (window as any).__plyRegistrationState;
-      state.alignEntries = [{ index: 1, name: 'far corner', state: 'failed', detail: 'no match' }];
+      const entries = (window as any).visualizer.fileEntries;
+      const [fixedId, movingId] = [entries.at(0).id, entries.at(1).id];
+      state.alignEntries = [
+        { id: movingId, name: 'far corner', state: 'failed', detail: 'no match' },
+      ];
       state.alignDone = 1;
       state.unattachedGroups = [
         {
-          indices: [1],
+          ids: [movingId],
           names: ['far corner'],
           suggestion: {
-            movingIndex: 1,
-            fixedIndex: 0,
+            movingId,
+            fixedId,
             movingName: 'far corner',
             fixedName: 'main room',
             overlapPercent: 18,
@@ -326,16 +330,16 @@ test.describe('Global align menu', () => {
     await expect(page.locator('.global-align-complex')).not.toBeChecked();
     await page.locator('.global-align-nested').uncheck();
 
-    await page.locator('.align-options-toggle').click();
     // Plain PLYs carry no camera profile, so the toggle is absent rather than
-    // present and inert.
+    // present and inert - and with it the Options disclosure that holds it.
+    await expect(page.locator('.align-options-toggle')).toHaveCount(0);
     await expect(page.locator('.global-band-white-balance')).toHaveCount(0);
 
-    await page.evaluate(() => {
-      const visualizer = (window as any).visualizer;
-      visualizer.cameraGroups = [{ userData: { profileName: 'Site', colorCorrection: undefined } }];
-      visualizer.updateFileList();
-    });
+    // A real camera profile (the collection getters are read-only views).
+    await page
+      .locator('#hiddenFileInput')
+      .setInputFiles(path.resolve('../testfiles/json/camera_profile.json'));
+    await page.locator('.align-options-toggle').click();
     const toggle = page.locator('.global-band-white-balance');
     await expect(toggle).toBeVisible();
     await expect(toggle).not.toBeChecked();

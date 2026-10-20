@@ -1,6 +1,7 @@
-import { CameraParams, DepthConversionResult, SpatialData } from '../interfaces';
+import { fetchInRanges, RANGED_FETCH_MIN_BYTES } from '../utils/rangedFetch';
+import { CameraParams, DepthBytes, DepthConversionResult, SpatialData } from '../interfaces';
+import { depthBytesFromUri } from './depthBytes';
 import { PerfTimer } from '../utils/perfLog';
-import { depthSettingsState } from '../state/depthSettings.svelte';
 import { colorsToUint8 } from './depthResultArrays';
 import {
   collectCameraParamsForBrowserPrompt,
@@ -12,10 +13,11 @@ declare const acquireVsCodeApi: () => any;
 const isVSCode = typeof acquireVsCodeApi !== 'undefined';
 
 export interface DepthConversionPipelineHost {
+  fileEntries: import('../state/fileEntries').FileEntryRegistry;
   pendingDepthFiles: Map<
     string,
     {
-      data: ArrayBuffer;
+      data: ArrayBuffer | DepthBytes;
       fileName: string;
       shortPath?: string;
       isAddFile: boolean;
@@ -29,16 +31,7 @@ export interface DepthConversionPipelineHost {
     }
   >;
   vscode: { postMessage(message: any): void };
-  spatialFiles: SpatialData[];
-  fileDepthData: Map<
-    number,
-    {
-      originalData: ArrayBuffer;
-      fileName: string;
-      cameraParams: CameraParams;
-      depthDimensions: { width: number; height: number };
-    }
-  >;
+  spatialFiles: readonly SpatialData[];
   datasetTextures: Map<
     string,
     { fileName: string; sceneName: string; data: ArrayBuffer; arrayBuffer: ArrayBuffer }
@@ -51,7 +44,7 @@ export interface DepthConversionPipelineHost {
   addNewFiles(newFiles: SpatialData[]): void;
   displayFiles(dataArray: SpatialData[]): Promise<void>;
   processDepthToPointCloud(
-    depthData: ArrayBuffer,
+    depthData: ArrayBuffer | DepthBytes,
     fileName: string,
     cameraParams: CameraParams,
     colorImageData?: any
@@ -59,10 +52,75 @@ export interface DepthConversionPipelineHost {
   triggerDatasetCalibrationLoading(sceneMetadata: any): Promise<void>;
 }
 
+let depthPrefetch: { uri: string; bytes: Promise<ArrayBuffer> } | null = null;
+
+/**
+ * Start fetching the depth image this webview was opened for, while the viewer
+ * boots (the extension names it in `__DEPTH_PREFETCH__`). The extension then
+ * sends only the URI; posting the bytes after the viewer was ready used to put
+ * the whole transfer behind the boot.
+ */
+export function startDepthPrefetch(uri: unknown, size?: unknown): void {
+  if (typeof uri !== 'string' || !uri || depthPrefetch) {
+    return;
+  }
+  const whole = () =>
+    fetch(uri).then(response => {
+      if (!response.ok) {
+        throw new Error(`fetch failed: ${response.status}`);
+      }
+      return response.arrayBuffer();
+    });
+  // A large image arrives faster as concurrent ranges (see fetchInRanges).
+  const bytes =
+    typeof size === 'number' && Number.isFinite(size) && size >= RANGED_FETCH_MIN_BYTES
+      ? fetchInRanges(uri, size).catch(error => {
+          console.warn('[depth] ranged prefetch failed, fetching whole:', error);
+          return whole();
+        })
+      : whole();
+  bytes.catch(() => undefined);
+  depthPrefetch = { uri, bytes };
+}
+
+/** The prefetched bytes for `uri`, or a fresh fetch; null when neither works. */
+async function fetchDepthBytes(uri: string): Promise<ArrayBuffer | null> {
+  const prefetched = depthPrefetch?.uri === uri ? depthPrefetch.bytes : null;
+  depthPrefetch = null;
+  try {
+    if (prefetched) {
+      return await prefetched;
+    }
+  } catch {
+    // Fall through to one more attempt.
+  }
+  try {
+    const response = await fetch(uri);
+    return response.ok ? await response.arrayBuffer() : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function handleDepthData(
   host: DepthConversionPipelineHost,
   message: any
 ): Promise<void> {
+  if (!message.data && typeof message.fileUri === 'string') {
+    const bytes = await fetchDepthBytes(message.fileUri);
+    if (!bytes) {
+      // The extension reads the file and sends the bytes instead.
+      host.vscode.postMessage({ type: 'depthFetchFailed', fileName: message.fileName });
+      return;
+    }
+    // Opened from a file the webview can read again: keep a way to read it
+    // rather than the bytes (see depthBytes.ts).
+    message = {
+      ...message,
+      data: depthBytesFromUri(message.fileUri, bytes),
+      byteLength: bytes.byteLength,
+    };
+  }
   try {
     console.log('Received depth data for processing:', message.fileName);
 
@@ -81,7 +139,7 @@ export async function handleDepthData(
       loadStartedAt: message.loadStartedAt,
       postedAt: message.postedAt,
       receivedAt: Date.now(),
-      byteLength: (message.data && message.data.byteLength) || 0,
+      byteLength: message.byteLength ?? message.data?.byteLength ?? 0,
     });
 
     // Check if this is a dataset scene - store metadata but let UI load normally
@@ -199,7 +257,7 @@ export async function showDepthConversionUI(
 export async function processDepthWithDefaults(
   host: DepthConversionPipelineHost,
   fileName: string,
-  data: ArrayBuffer,
+  data: ArrayBuffer | DepthBytes,
   requestId: string
 ): Promise<void> {
   console.log('⚡ Processing depth with defaults for:', fileName);
@@ -300,6 +358,12 @@ export async function processDepthWithParams(
     if (timings.info) {
       perf.note('layout', timings.info);
     }
+    if (timings.thread) {
+      perf.note('on', `${timings.thread}${timings.bands ? `/${timings.bands} bands` : ''}`);
+    }
+    if (timings.phases) {
+      perf.note('stages', timings.phases);
+    }
   } else {
     perf.add('convert', convertMs);
   }
@@ -348,6 +412,7 @@ export async function processDepthWithParams(
   };
   (spatialData as any).useTypedArrays = true;
   (spatialData as any).positionsArray = result.vertices;
+  spatialData.positionBounds = result.positionBounds;
   (spatialData as any).colorsArray = colorsU8;
   (spatialData as any).normalsArray = null;
   (spatialData as any).intensityArray = null;
@@ -381,43 +446,18 @@ export async function processDepthWithParams(
     }
   }
 
-  // Cache the depth file data for later reprocessing BEFORE displaying
-  // This ensures dimensions are available when the UI is rendered. The index
-  // is still provisional here - addNewFiles() assigns the real one - so the
-  // entry is re-keyed below once it is known.
-  const provisionalIndex = spatialData.fileIndex || 0;
-  const displacedEntry = host.fileDepthData.get(provisionalIndex);
-  host.fileDepthData.set(provisionalIndex, {
+  spatialData.depthSource = {
     originalData: depthFileData.data,
     fileName: depthFileData.fileName,
-    cameraParams: cameraParams,
+    cameraParams,
     depthDimensions: dimensions,
-  });
-
-  // Add to scene - dimensions are now available in spatialData and fileDepthData
+  };
   if (depthFileData.isAddFile) {
     host.addNewFiles([spatialData]);
   } else {
     await host.displayFiles([spatialData]);
   }
-  // addNewFiles() is what assigns the index every panel control addresses this
-  // file by, and it is not always the one guessed above (anything that loaded
-  // while the camera-parameter dialog was open shifts it). Move the cache entry
-  // onto the real index, or "Apply settings" reports no cached depth data.
-  const assignedIndex = spatialData.fileIndex ?? provisionalIndex;
-  if (assignedIndex !== provisionalIndex) {
-    const cached = host.fileDepthData.get(provisionalIndex);
-    // Put back whatever the provisional slot held; the guess borrowed another
-    // depth file's key and that file still needs its own data.
-    if (displacedEntry) {
-      host.fileDepthData.set(provisionalIndex, displacedEntry);
-    } else {
-      host.fileDepthData.delete(provisionalIndex);
-    }
-    if (cached) {
-      host.fileDepthData.set(assignedIndex, cached);
-    }
-  }
+  const assignedIndex = spatialData.fileIndex!;
   perf.mark('geometry+display');
   perf.note('verts', result.pointCount);
   // The file name is already in the PERF[kind name] tag; no need to repeat it.
@@ -426,10 +466,7 @@ export async function processDepthWithParams(
   // A freshly converted depth file opens its settings: the numbers that
   // produced it are the ones most likely to need changing. Recorded as state
   // rather than poked into the DOM, so the panel's own toggle stays in step.
-  const openIndex = assignedIndex;
-  if (!depthSettingsState.openPanelIndices.includes(openIndex)) {
-    depthSettingsState.openPanelIndices.push(openIndex);
-  }
+  host.fileEntries.require(assignedIndex).state.depthPanelOpen = true;
 
   // Clean up
   host.pendingDepthFiles.delete(requestId);

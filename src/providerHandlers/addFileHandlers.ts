@@ -1,21 +1,35 @@
+import { sendToWebview } from './webviewTransport';
+import { decodesInViewer } from '../../engine/src/fileHandler';
 import { isSceneModel } from '../../engine/src/models/modelFormats';
 import { sendSceneModel } from './sceneModels';
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { PlyParser } from '../../engine/src/parsers/plyParser';
-import { ObjParser } from '../../engine/src/parsers/objParser';
-import { StlParser } from '../../engine/src/parsers/stlParser';
+import * as fs from 'fs';
+import { sendStreamedTextCloud } from './documentLoader';
 import {
+  detectXyzColorMode,
+  parseAsciiPlyWasm,
+  parseXyzWasm,
+  streamParseFile,
+} from '../wasmPointcloud';
+import { PlyParser } from '../../engine/src/parsers/plyParser';
+import {
+  parseObjWasm,
+  parseOffWasm,
   parsePcdWasm,
   parsePtsWasm,
+  parseStlWasm,
   toPcdPayload,
   toPointCloudPayload,
 } from '../../engine/src/parsers/pointcloudWasm';
-import { KittiBinParser } from '../../engine/src/parsers/kittiBinParser';
 import { StonexX3aParser } from '../../engine/src/parsers/stonexX3aParser';
 import { stonexCameraProjector } from '../wasmCameraModels';
+import {
+  colourStationsOnPool,
+  colourStonexScansInParallel,
+  decodeStonexScansInParallel,
+} from './parallelStonexColour';
 import { isColmapModelFile } from '../../engine/src/formats/colmap/colmapFiles';
-import { OffParser } from '../../engine/src/parsers/offParser';
 import { GltfParser } from '../../engine/src/parsers/gltfParser';
 import { NpyParser } from '../../engine/src/parsers/npyParser';
 import { NrrdParser } from '../../engine/src/parsers/nrrdParser';
@@ -32,9 +46,10 @@ import {
   sendUltimateRawBinary,
   sendSpatialDataToWebview,
   sendSplatContainerUri,
+  readFileShared,
   SPLAT_CONTAINER_EXTENSIONS,
 } from './binaryTransfer';
-import { parseLidarWasm } from '../wasmPointcloud';
+import { decodeLidar } from './parallelLidarParse';
 import { buildInitialVolumeData, decorateVolumeData, retainVolume } from './volumeSessions';
 
 export interface AddFileHost {
@@ -55,13 +70,87 @@ export interface AddFileHost {
   ): Promise<void>;
 }
 
-function decodeLidarData(
+/**
+ * Add a text point cloud - ASCII PLY or an XYZ variant - through the threaded
+ * text parser, streaming its parts in as the open path does, or below that
+ * parser's size floor through the single-thread Rust stream parser. Either way
+ * the webview receives typed arrays: the old routes parsed ASCII PLY with the
+ * JavaScript parser here and plain XYZ into one object per point in the page.
+ * False when the file is binary, a mesh, or otherwise not a plain text cloud;
+ * the caller then takes its whole-file path.
+ */
+async function streamTextCloudForAdd(
+  host: AddFileHost,
+  webviewPanel: vscode.WebviewPanel,
+  fileUri: vscode.Uri,
+  format: 'ply' | 'xyz' | 'xyzn' | 'xyzrgb'
+): Promise<boolean> {
+  if (fileUri.scheme !== 'file') {
+    return false;
+  }
+  try {
+    const handle = await fs.promises.open(fileUri.fsPath, 'r');
+    let head: Uint8Array;
+    try {
+      const buffer = Buffer.alloc(65536);
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+      head = buffer.subarray(0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+    if (format === 'ply' && isPlyBinary(head)) {
+      return false;
+    }
+    // XYZRGB has no type header: decide ints or floats once, from the head,
+    // exactly as the open path does.
+    const colorMode = format === 'xyzrgb' ? detectXyzColorMode(head, format) : 'auto';
+    const startedAt = Date.now();
+    host.setLoadStartedAt(startedAt);
+    const threaded = await sendStreamedTextCloud(
+      {
+        getShortPath: filePath => host.getShortPath(filePath),
+        logPerf: line => host.logPerf(line),
+        getCurrentLoadStartedAt: () => startedAt,
+      },
+      webviewPanel,
+      fileUri,
+      format,
+      colorMode,
+      format,
+      format === 'ply' ? 'ply' : 'xyz',
+      performance.now(),
+      true
+    );
+    if (threaded) {
+      return true;
+    }
+    const streamed = await streamParseFile(fileUri.fsPath, format, colorMode);
+    if (!streamed) {
+      return false;
+    }
+    await sendToWebview(webviewPanel, {
+      type: 'xyzVariantData',
+      fileName: path.basename(fileUri.fsPath),
+      shortPath: host.getShortPath(fileUri.fsPath),
+      fileSizeInBytes: fs.statSync(fileUri.fsPath).size,
+      data: streamed,
+      variant: format,
+      parseMode: 'wasm-stream',
+      isAddFile: true,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function decodeLidarData(
   bytes: Uint8Array,
   extension: 'las' | 'laz' | 'e57',
   fileName: string,
   shortPath: string
-): any[] {
-  return parseLidarWasm(bytes, extension, fileName).map(cloud => ({
+): Promise<any[]> {
+  return (await decodeLidar(bytes, extension, fileName)).map(cloud => ({
     vertices: [],
     faces: [],
     format: 'binary_little_endian' as const,
@@ -87,22 +176,6 @@ function decodeLidarData(
   }));
 }
 
-async function addKittiBinData(
-  host: AddFileHost,
-  webviewPanel: vscode.WebviewPanel,
-  bytes: Uint8Array,
-  fileName: string,
-  shortPath: string
-): Promise<void> {
-  const parsedData: any = await new KittiBinParser().parse(bytes, host.logPerf.bind(host));
-  parsedData.fileName = fileName;
-  parsedData.shortPath = shortPath;
-  parsedData.fileSizeInBytes = bytes.byteLength;
-  parsedData.faceCount = 0;
-  parsedData.faces = [];
-  await sendSpatialDataToWebview(webviewPanel, [parsedData], 'addFiles');
-}
-
 async function addStonexX3aData(
   host: AddFileHost,
   webviewPanel: vscode.WebviewPanel,
@@ -110,11 +183,12 @@ async function addStonexX3aData(
   fileName: string,
   shortPath: string
 ): Promise<void> {
-  const parsedData: any[] = await new StonexX3aParser(stonexCameraProjector).parseAll(
-    bytes,
-    fileName,
-    host.logPerf.bind(host)
-  );
+  const parsedData: any[] = await new StonexX3aParser(
+    stonexCameraProjector,
+    colourStonexScansInParallel,
+    decodeStonexScansInParallel,
+    colourStationsOnPool
+  ).parseAll(bytes, fileName, host.logPerf.bind(host));
   for (const scan of parsedData) {
     scan.shortPath = shortPath;
     scan.fileSizeInBytes = scan.metadata?.embeddedMemberSize ?? bytes.byteLength;
@@ -163,6 +237,17 @@ export async function handleAddFile(
         host.setLoadStartedAt(loadStartedAt);
         webviewPanel.webview.postMessage({ type: 'startLoading', fileName });
 
+        if (decodesInViewer(fileName)) {
+          const data = await vscode.workspace.fs.readFile(files[i]);
+          await sendToWebview(webviewPanel, {
+            type: 'fileData',
+            fileName,
+            shortPath,
+            data: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+            isAddFile: true,
+          });
+          continue;
+        }
         if (isSceneModel(fileName)) {
           await sendSceneModel(webviewPanel, files[i]);
           continue;
@@ -171,19 +256,14 @@ export async function handleAddFile(
         if (fileExtension === '.las' || fileExtension === '.laz' || fileExtension === '.e57') {
           const bytes = await vscode.workspace.fs.readFile(files[i]);
           const extension = fileExtension.slice(1) as 'las' | 'laz' | 'e57';
-          const data = decodeLidarData(bytes, extension, fileName, shortPath);
+          const data = await decodeLidarData(bytes, extension, fileName, shortPath);
           await sendSpatialDataToWebview(webviewPanel, data, 'multiSpatialData');
           continue;
         }
 
-        if (fileExtension === '.bin') {
-          const bytes = await vscode.workspace.fs.readFile(files[i]);
-          await addKittiBinData(host, webviewPanel, bytes, fileName, shortPath);
-          continue;
-        }
-
         if (fileExtension === '.x3a' || fileExtension === '.x3r') {
-          const bytes = await vscode.workspace.fs.readFile(files[i]);
+          // Shared memory lets the decoder pool split the archive's scans.
+          const bytes = await readFileShared(files[i]);
           await addStonexX3aData(host, webviewPanel, bytes, fileName, shortPath);
           continue;
         }
@@ -206,7 +286,7 @@ export async function handleAddFile(
           const depthData = await vscode.workspace.fs.readFile(files[i]);
 
           // Send depth data to webview for conversion
-          webviewPanel.webview.postMessage({
+          sendToWebview(webviewPanel, {
             type: 'depthData',
             fileName: fileName,
             shortPath: shortPath,
@@ -287,10 +367,13 @@ export async function handleAddFile(
 
         // Handle XYZ files
         if (fileExtension === '.xyz') {
+          if (await streamTextCloudForAdd(host, webviewPanel, files[i], 'xyz')) {
+            continue;
+          }
           const xyzData = await vscode.workspace.fs.readFile(files[i]);
 
           // Send XYZ data to webview for parsing
-          webviewPanel.webview.postMessage({
+          sendToWebview(webviewPanel, {
             type: 'xyzData',
             fileName: fileName,
             shortPath: shortPath,
@@ -305,10 +388,9 @@ export async function handleAddFile(
         // Handle OBJ files
         if (fileExtension === '.obj') {
           const objData = await vscode.workspace.fs.readFile(files[i]);
-          const objParser = new ObjParser();
-          const parsedData = await objParser.parse(objData);
+          const parsedData = await parseObjWasm(objData);
 
-          webviewPanel.webview.postMessage({
+          sendToWebview(webviewPanel, {
             type: 'objData',
             fileName: fileName,
             shortPath: shortPath,
@@ -323,13 +405,26 @@ export async function handleAddFile(
           continue;
         }
 
+        // OFF meshes decode in Rust here, like STL, so only packed buffers cross.
+        if (fileExtension === '.off') {
+          const offBytes = await vscode.workspace.fs.readFile(files[i]);
+          sendToWebview(webviewPanel, {
+            type: 'offData',
+            fileName: fileName,
+            shortPath: shortPath,
+            fileSizeInBytes: offBytes.byteLength,
+            data: await parseOffWasm(offBytes),
+            isAddFile: true,
+          });
+          continue;
+        }
+
         // Handle STL files
         if (fileExtension === '.stl') {
           const stlData = await vscode.workspace.fs.readFile(files[i]);
-          const stlParser = new StlParser();
-          const parsedData = await stlParser.parse(stlData);
+          const parsedData = await parseStlWasm(stlData);
 
-          webviewPanel.webview.postMessage({
+          sendToWebview(webviewPanel, {
             type: 'stlData',
             fileName: fileName,
             shortPath: shortPath,
@@ -357,7 +452,7 @@ export async function handleAddFile(
                 .replace(/\b-Infinity\b/g, 'null');
               parsed = JSON.parse(sanitizedText);
             }
-            webviewPanel.webview.postMessage({
+            sendToWebview(webviewPanel, {
               type: 'poseData',
               fileName: fileName,
               shortPath: shortPath,
@@ -378,7 +473,7 @@ export async function handleAddFile(
           const pcdData = await vscode.workspace.fs.readFile(files[i]);
           const parsedData = toPcdPayload(await parsePcdWasm(pcdData));
 
-          webviewPanel.webview.postMessage({
+          sendToWebview(webviewPanel, {
             type: 'pcdData',
             fileName: fileName,
             shortPath: shortPath,
@@ -395,7 +490,7 @@ export async function handleAddFile(
           const ptsData = await vscode.workspace.fs.readFile(files[i]);
           const parsedData = toPointCloudPayload(await parsePtsWasm(ptsData), 'pts');
 
-          webviewPanel.webview.postMessage({
+          sendToWebview(webviewPanel, {
             type: 'ptsData',
             fileName: fileName,
             shortPath: shortPath,
@@ -408,22 +503,6 @@ export async function handleAddFile(
         }
 
         // Handle OFF files
-        if (fileExtension === '.off') {
-          const offData = await vscode.workspace.fs.readFile(files[i]);
-          const offParser = new OffParser();
-          const parsedData = await offParser.parse(offData);
-
-          webviewPanel.webview.postMessage({
-            type: 'offData',
-            fileName: fileName,
-            shortPath: shortPath,
-            data: parsedData,
-            isAddFile: true,
-          });
-
-          console.log(`🎯 OFF Add File: ${fileName} sent for processing`);
-          continue;
-        }
 
         // Handle GLTF/GLB files
         if (fileExtension === '.gltf' || fileExtension === '.glb') {
@@ -431,7 +510,7 @@ export async function handleAddFile(
           const gltfParser = new GltfParser();
           const parsedData = await gltfParser.parse(gltfData);
 
-          webviewPanel.webview.postMessage({
+          sendToWebview(webviewPanel, {
             type: 'gltfData',
             fileName: fileName,
             shortPath: shortPath,
@@ -445,9 +524,19 @@ export async function handleAddFile(
 
         // Handle XYZN/XYZRGB variants
         if (fileExtension === '.xyzn' || fileExtension === '.xyzrgb') {
+          if (
+            await streamTextCloudForAdd(
+              host,
+              webviewPanel,
+              files[i],
+              fileExtension === '.xyzn' ? 'xyzn' : 'xyzrgb'
+            )
+          ) {
+            continue;
+          }
           const xyzData = await vscode.workspace.fs.readFile(files[i]);
 
-          webviewPanel.webview.postMessage({
+          sendToWebview(webviewPanel, {
             type: 'xyzVariantData',
             fileName: fileName,
             shortPath: shortPath,
@@ -472,7 +561,7 @@ export async function handleAddFile(
         console.error(`Failed to load file ${files[i].fsPath}:`, error);
         vscode.window.showErrorMessage(`Failed to load file ${files[i].fsPath}: ${error}`);
       } finally {
-        await webviewPanel.webview.postMessage({ type: 'backgroundOperationComplete' });
+        await sendToWebview(webviewPanel, { type: 'backgroundOperationComplete' });
       }
     }
   }
@@ -495,25 +584,30 @@ export async function handleAddFileFromPath(
     host.setLoadStartedAt(loadStartedAt);
     webviewPanel.webview.postMessage({ type: 'startLoading', fileName });
 
+    if (decodesInViewer(fileName)) {
+      const data = await vscode.workspace.fs.readFile(fileUri);
+      await sendToWebview(webviewPanel, {
+        type: 'fileData',
+        fileName,
+        shortPath,
+        data: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+        isAddFile: true,
+      });
+      return;
+    }
     if (isSceneModel(fileName)) {
       await sendSceneModel(webviewPanel, fileUri);
       return;
     }
     if (ext === '.las' || ext === '.laz' || ext === '.e57') {
       const bytes = await vscode.workspace.fs.readFile(fileUri);
-      const data = decodeLidarData(
+      const data = await decodeLidarData(
         bytes,
         ext.slice(1) as 'las' | 'laz' | 'e57',
         fileName,
         shortPath
       );
       await sendSpatialDataToWebview(webviewPanel, data, 'multiSpatialData');
-      return;
-    }
-
-    if (ext === '.bin') {
-      const bytes = await vscode.workspace.fs.readFile(fileUri);
-      await addKittiBinData(host, webviewPanel, bytes, fileName, shortPath);
       return;
     }
 
@@ -549,7 +643,7 @@ export async function handleAddFileFromPath(
       host.retainVolumeSession?.(webviewPanel, key);
       const data = buildInitialVolumeData(session);
       decorateVolumeData(data, key, session);
-      webviewPanel.webview.postMessage({
+      sendToWebview(webviewPanel, {
         type: 'volumeData',
         fileName: volumeDisplayName,
         shortPath,
@@ -570,7 +664,7 @@ export async function handleAddFileFromPath(
       ext === '.exr'
     ) {
       const depthData = await vscode.workspace.fs.readFile(fileUri);
-      webviewPanel.webview.postMessage({
+      sendToWebview(webviewPanel, {
         type: 'depthData',
         fileName,
         shortPath,
@@ -619,8 +713,11 @@ export async function handleAddFileFromPath(
       return;
     }
     if (ext === '.xyz') {
+      if (await streamTextCloudForAdd(host, webviewPanel, fileUri, 'xyz')) {
+        return;
+      }
       const xyzData = await vscode.workspace.fs.readFile(fileUri);
-      webviewPanel.webview.postMessage({
+      sendToWebview(webviewPanel, {
         type: 'xyzData',
         fileName,
         shortPath,
@@ -631,9 +728,8 @@ export async function handleAddFileFromPath(
     }
     if (ext === '.obj') {
       const objData = await vscode.workspace.fs.readFile(fileUri);
-      const objParser = new ObjParser();
-      const parsedData = await objParser.parse(objData);
-      webviewPanel.webview.postMessage({
+      const parsedData = await parseObjWasm(objData);
+      sendToWebview(webviewPanel, {
         type: 'objData',
         fileName,
         shortPath,
@@ -643,11 +739,22 @@ export async function handleAddFileFromPath(
       await host.tryAutoLoadMtl(webviewPanel, fileUri, parsedData, 0);
       return;
     }
+    if (ext === '.off') {
+      const offBytes = await vscode.workspace.fs.readFile(fileUri);
+      sendToWebview(webviewPanel, {
+        type: 'offData',
+        fileName,
+        shortPath,
+        fileSizeInBytes: offBytes.byteLength,
+        data: await parseOffWasm(offBytes),
+        isAddFile: true,
+      });
+      return;
+    }
     if (ext === '.stl') {
       const stlData = await vscode.workspace.fs.readFile(fileUri);
-      const stlParser = new StlParser();
-      const parsedData = await stlParser.parse(stlData);
-      webviewPanel.webview.postMessage({
+      const parsedData = await parseStlWasm(stlData);
+      sendToWebview(webviewPanel, {
         type: 'stlData',
         fileName,
         shortPath,
@@ -659,7 +766,7 @@ export async function handleAddFileFromPath(
     if (ext === '.pcd') {
       const pcdData = await vscode.workspace.fs.readFile(fileUri);
       const parsedData = toPcdPayload(await parsePcdWasm(pcdData));
-      webviewPanel.webview.postMessage({
+      sendToWebview(webviewPanel, {
         type: 'pcdData',
         fileName,
         shortPath,
@@ -671,7 +778,7 @@ export async function handleAddFileFromPath(
     if (ext === '.pts') {
       const ptsData = await vscode.workspace.fs.readFile(fileUri);
       const parsedData = toPointCloudPayload(await parsePtsWasm(ptsData), 'pts');
-      webviewPanel.webview.postMessage({
+      sendToWebview(webviewPanel, {
         type: 'ptsData',
         fileName,
         shortPath,
@@ -680,24 +787,12 @@ export async function handleAddFileFromPath(
       });
       return;
     }
-    if (ext === '.off') {
-      const offData = await vscode.workspace.fs.readFile(fileUri);
-      const offParser = new OffParser();
-      const parsedData = await offParser.parse(offData);
-      webviewPanel.webview.postMessage({
-        type: 'offData',
-        fileName,
-        shortPath,
-        data: parsedData,
-        isAddFile: true,
-      });
-      return;
-    }
+
     if (ext === '.gltf' || ext === '.glb') {
       const gltfData = await vscode.workspace.fs.readFile(fileUri);
       const gltfParser = new GltfParser();
       const parsedData = await gltfParser.parse(gltfData);
-      webviewPanel.webview.postMessage({
+      sendToWebview(webviewPanel, {
         type: 'gltfData',
         fileName,
         shortPath,
@@ -707,8 +802,18 @@ export async function handleAddFileFromPath(
       return;
     }
     if (ext === '.xyzn' || ext === '.xyzrgb') {
+      if (
+        await streamTextCloudForAdd(
+          host,
+          webviewPanel,
+          fileUri,
+          ext === '.xyzn' ? 'xyzn' : 'xyzrgb'
+        )
+      ) {
+        return;
+      }
       const xyzData = await vscode.workspace.fs.readFile(fileUri);
-      webviewPanel.webview.postMessage({
+      sendToWebview(webviewPanel, {
         type: 'xyzVariantData',
         fileName,
         shortPath,
@@ -723,7 +828,7 @@ export async function handleAddFileFromPath(
       `Failed to add file from path: ${error instanceof Error ? error.message : String(error)}`
     );
   } finally {
-    await webviewPanel.webview.postMessage({ type: 'backgroundOperationComplete' });
+    await sendToWebview(webviewPanel, { type: 'backgroundOperationComplete' });
   }
 }
 
@@ -737,7 +842,7 @@ export async function handleDroppedFilesFromWebview(
   // Forward them together and let the webview assemble the reconstruction.
   const colmapFiles = files.filter(file => file.name && isColmapModelFile(file.name) && file.data);
   if (colmapFiles.length > 0) {
-    webviewPanel.webview.postMessage({
+    sendToWebview(webviewPanel, {
       type: 'colmapModelFiles',
       files: colmapFiles.map(file => {
         const bytes = toUint8Array(file.data!);
@@ -770,9 +875,19 @@ export async function handleDroppedFilesFromWebview(
 
       const fileData = toUint8Array(droppedFile.data);
       const shortPath = fileName;
+      if (decodesInViewer(fileName)) {
+        await sendToWebview(webviewPanel, {
+          type: 'fileData',
+          fileName,
+          shortPath,
+          data: toArrayBuffer(fileData),
+          isAddFile: true,
+        });
+        continue;
+      }
       const ext = path.extname(fileName).toLowerCase();
       if (isSceneModel(fileName)) {
-        await webviewPanel.webview.postMessage({
+        await sendToWebview(webviewPanel, {
           type: 'sceneModelData',
           fileName,
           data: toArrayBuffer(fileData),
@@ -785,7 +900,7 @@ export async function handleDroppedFilesFromWebview(
       const fileType = await detectFileTypeWithContent(fileName, fileData);
 
       if (!fileType) {
-        webviewPanel.webview.postMessage({
+        sendToWebview(webviewPanel, {
           type: 'loadingError',
           fileName,
           fileType: ext || 'file',
@@ -797,7 +912,7 @@ export async function handleDroppedFilesFromWebview(
       if (fileType.extension === 'npy' && fileType.category === 'pointCloud') {
         const npyParser = new NpyParser();
         const parsedData = await npyParser.parse(fileData);
-        webviewPanel.webview.postMessage({
+        sendToWebview(webviewPanel, {
           type: 'npyData',
           fileName,
           shortPath,
@@ -808,7 +923,7 @@ export async function handleDroppedFilesFromWebview(
       }
 
       if (fileType.isDepthFile) {
-        webviewPanel.webview.postMessage({
+        sendToWebview(webviewPanel, {
           type: 'depthData',
           fileName,
           shortPath,
@@ -819,18 +934,13 @@ export async function handleDroppedFilesFromWebview(
       }
 
       if (ext === '.las' || ext === '.laz' || ext === '.e57') {
-        const data = decodeLidarData(
+        const data = await decodeLidarData(
           fileData,
           ext.slice(1) as 'las' | 'laz' | 'e57',
           fileName,
           shortPath
         );
         await sendSpatialDataToWebview(webviewPanel, data, 'multiSpatialData');
-        continue;
-      }
-
-      if (ext === '.bin') {
-        await addKittiBinData(host, webviewPanel, fileData, fileName, shortPath);
         continue;
       }
 
@@ -841,7 +951,7 @@ export async function handleDroppedFilesFromWebview(
 
       if (SPLAT_CONTAINER_EXTENSIONS.includes(ext)) {
         // No fetchable URI for dropped bytes — send them straight through.
-        webviewPanel.webview.postMessage({
+        sendToWebview(webviewPanel, {
           type: 'splatContainerUri',
           messageType: 'addFiles',
           data: toArrayBuffer(fileData),
@@ -867,6 +977,23 @@ export async function handleDroppedFilesFromWebview(
             host.logPerf.bind(host)
           );
         } else {
+          // Point clouds parse in Rust into typed arrays, as when opened;
+          // meshes (null) and 3DGS splats take the JavaScript parser.
+          const head = new TextDecoder('utf-8').decode(fileData.subarray(0, 4096));
+          const parsed = head.includes('f_dc_0') ? null : parseAsciiPlyWasm(fileData);
+          if (parsed) {
+            sendToWebview(webviewPanel, {
+              type: 'xyzVariantData',
+              fileName,
+              shortPath,
+              fileSizeInBytes: fileData.byteLength,
+              data: parsed,
+              variant: 'ply',
+              parseMode: 'wasm',
+              isAddFile: true,
+            });
+            continue;
+          }
           const parsedData = await parser.parse(fileData);
           parsedData.fileName = fileName;
           parsedData.shortPath = shortPath;
@@ -879,20 +1006,36 @@ export async function handleDroppedFilesFromWebview(
       }
 
       if (ext === '.xyz') {
-        webviewPanel.webview.postMessage({
-          type: 'xyzData',
-          fileName,
-          shortPath,
-          data: toArrayBuffer(fileData),
-          isAddFile: true,
-        });
+        // Parsed here in Rust into typed arrays; the page's own XYZ handler
+        // builds an object per point.
+        const parsed = parseXyzWasm(fileData, 'xyz');
+        sendToWebview(
+          webviewPanel,
+          parsed
+            ? {
+                type: 'xyzVariantData',
+                fileName,
+                shortPath,
+                fileSizeInBytes: fileData.byteLength,
+                data: parsed,
+                variant: 'xyz',
+                parseMode: 'wasm',
+                isAddFile: true,
+              }
+            : {
+                type: 'xyzData',
+                fileName,
+                shortPath,
+                data: toArrayBuffer(fileData),
+                isAddFile: true,
+              }
+        );
         continue;
       }
 
       if (ext === '.obj') {
-        const objParser = new ObjParser();
-        const parsedData = await objParser.parse(fileData);
-        webviewPanel.webview.postMessage({
+        const parsedData = await parseObjWasm(fileData);
+        sendToWebview(webviewPanel, {
           type: 'objData',
           fileName,
           shortPath,
@@ -902,10 +1045,21 @@ export async function handleDroppedFilesFromWebview(
         continue;
       }
 
+      if (ext === '.off') {
+        sendToWebview(webviewPanel, {
+          type: 'offData',
+          fileName,
+          shortPath,
+          fileSizeInBytes: fileData.byteLength,
+          data: await parseOffWasm(fileData),
+          isAddFile: true,
+        });
+        continue;
+      }
+
       if (ext === '.stl') {
-        const stlParser = new StlParser();
-        const parsedData = await stlParser.parse(fileData);
-        webviewPanel.webview.postMessage({
+        const parsedData = await parseStlWasm(fileData);
+        sendToWebview(webviewPanel, {
           type: 'stlData',
           fileName,
           shortPath,
@@ -917,7 +1071,7 @@ export async function handleDroppedFilesFromWebview(
 
       if (ext === '.pcd') {
         const parsedData = toPcdPayload(await parsePcdWasm(fileData));
-        webviewPanel.webview.postMessage({
+        sendToWebview(webviewPanel, {
           type: 'pcdData',
           fileName,
           shortPath,
@@ -929,21 +1083,8 @@ export async function handleDroppedFilesFromWebview(
 
       if (ext === '.pts') {
         const parsedData = toPointCloudPayload(await parsePtsWasm(fileData), 'pts');
-        webviewPanel.webview.postMessage({
+        sendToWebview(webviewPanel, {
           type: 'ptsData',
-          fileName,
-          shortPath,
-          data: parsedData,
-          isAddFile: true,
-        });
-        continue;
-      }
-
-      if (ext === '.off') {
-        const offParser = new OffParser();
-        const parsedData = await offParser.parse(fileData);
-        webviewPanel.webview.postMessage({
-          type: 'offData',
           fileName,
           shortPath,
           data: parsedData,
@@ -955,7 +1096,7 @@ export async function handleDroppedFilesFromWebview(
       if (ext === '.gltf' || ext === '.glb') {
         const gltfParser = new GltfParser();
         const parsedData = await gltfParser.parse(fileData);
-        webviewPanel.webview.postMessage({
+        sendToWebview(webviewPanel, {
           type: 'gltfData',
           fileName,
           shortPath,
@@ -966,7 +1107,7 @@ export async function handleDroppedFilesFromWebview(
       }
 
       if (ext === '.xyzn' || ext === '.xyzrgb') {
-        webviewPanel.webview.postMessage({
+        sendToWebview(webviewPanel, {
           type: 'xyzVariantData',
           fileName,
           shortPath,
@@ -977,7 +1118,7 @@ export async function handleDroppedFilesFromWebview(
         continue;
       }
     } catch (error) {
-      webviewPanel.webview.postMessage({
+      sendToWebview(webviewPanel, {
         type: 'loadingError',
         fileName,
         fileType: path.extname(fileName).slice(1).toUpperCase() || 'file',

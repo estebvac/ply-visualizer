@@ -60,7 +60,8 @@ export class DepthConverter {
   async processDepthToPointCloud(
     depthData: ArrayBuffer,
     fileName: string,
-    cameraParams: CameraParams
+    cameraParams: CameraParams,
+    signal?: AbortSignal
   ): Promise<DepthConversionResult> {
     try {
       console.log(
@@ -74,22 +75,28 @@ export class DepthConverter {
       }
 
       // Timed for the caller's single PERF line, mirroring depthWorker.ts.
+      signal?.throwIfAborted();
       const decodeStart = performance.now();
       const decoded = await this.decodeDepthImage(depthData, fileName, cameraParams);
       const decodeMs = performance.now() - decodeStart;
 
+      signal?.throwIfAborted();
       const projectStart = performance.now();
-      const result = await this.projectDecodedDepthImage(decoded, fileName, cameraParams);
+      const result = await this.projectDecodedDepthImage(decoded, fileName, cameraParams, signal);
       result.timings = {
         decodeMs,
         projectMs: performance.now() - projectStart,
         info: decoded.meta?.decodeInfo,
+        thread: 'main',
+        bands: (result as { bands?: number }).bands,
+        phases: (result as { phases?: string }).phases,
       };
 
       console.log(`TIF to PLY conversion complete: ${result.pointCount} points`);
 
       return result as unknown as DepthConversionResult;
     } catch (error) {
+      signal?.throwIfAborted();
       throw new Error(
         `Failed to process depth file: ${error instanceof Error ? error.message : String(error)}`
       );
@@ -139,6 +146,20 @@ export class DepthConverter {
     }
 
     const { image, meta } = await readDepth(fileName, depthData);
+    // A reader that misread its header must fail here, with a message, rather
+    // than hand the projection a NaN-sized image it never returns from.
+    if (
+      !Number.isInteger(image.width) ||
+      !Number.isInteger(image.height) ||
+      image.width <= 0 ||
+      image.height <= 0 ||
+      image.data.length < image.width * image.height
+    ) {
+      throw new Error(
+        `Could not read ${fileName}: decoded size ${image.width} x ${image.height} ` +
+          `with ${image.data.length} samples`
+      );
+    }
     return { image, meta };
   }
 
@@ -149,8 +170,10 @@ export class DepthConverter {
   async projectDecodedDepthImage(
     decoded: DecodedDepthImage,
     fileName: string,
-    cameraParams: CameraParams
+    cameraParams: CameraParams,
+    signal?: AbortSignal
   ): Promise<DepthConversionResult> {
+    signal?.throwIfAborted();
     const { image, meta: baseMeta } = decoded;
 
     // Auto-calculate cx/cy if not provided
@@ -203,7 +226,9 @@ export class DepthConverter {
       depthScale: cameraParams.depthScale,
       depthBias: cameraParams.depthBias,
     };
+    const normalizeStarted = performance.now();
     const norm = normalizeDepth(image, normalizationMeta);
+    const normalizeMs = performance.now() - normalizeStarted;
 
     // Prepare projection parameters
     const projectionParams = {
@@ -250,7 +275,10 @@ export class DepthConverter {
   - depthScale: ${cameraParams.depthScale ?? 'not set'}
   - depthBias: ${cameraParams.depthBias ?? 'not set'}`);
 
+    signal?.throwIfAborted();
     const result = await projectToPointCloudParallel(norm, projectionParams);
+    signal?.throwIfAborted();
+    result.phases = `normalize ${normalizeMs.toFixed(0)}${result.phases ? ` · ${result.phases}` : ''}`;
 
     if (result.projectionDiagnostics?.rejectedCount) {
       console.warn(

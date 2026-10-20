@@ -728,21 +728,7 @@ fn parse_ply_inner(data: &[u8]) -> Result<PlyResult, String> {
         ));
     }
 
-    let metadata = format!(
-        "{{\"format\":\"{}\",\"version\":\"{}\",\"comments\":[{}]}}",
-        match header.encoding {
-            Encoding::Ascii => "ascii",
-            Encoding::BinaryLittleEndian => "binary_little_endian",
-            Encoding::BinaryBigEndian => "binary_big_endian",
-        },
-        header.version,
-        header
-            .comments
-            .iter()
-            .map(|c| format!("\"{}\"", c.replace('\\', "\\\\").replace('"', "\\\"")))
-            .collect::<Vec<_>>()
-            .join(",")
-    );
+    let metadata = metadata_json(&header);
 
     let actual = actual as u32;
     let (min, max) = if actual == 0 {
@@ -769,6 +755,261 @@ fn parse_ply_inner(data: &[u8]) -> Result<PlyResult, String> {
         max,
         metadata,
     })
+}
+
+/// Header facts as JSON: format, version and comments.
+fn metadata_json(header: &PlyHeader) -> String {
+    format!(
+        "{{\"format\":\"{}\",\"version\":\"{}\",\"comments\":[{}]}}",
+        match header.encoding {
+            Encoding::Ascii => "ascii",
+            Encoding::BinaryLittleEndian => "binary_little_endian",
+            Encoding::BinaryBigEndian => "binary_big_endian",
+        },
+        header.version,
+        header
+            .comments
+            .iter()
+            .map(|c| format!("\"{}\"", c.replace('\\', "\\\\").replace('"', "\\\"")))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+/// A binary point cloud decoded while it is still arriving.
+///
+/// `parse_ply_at` needs the whole file in wasm memory before it starts, so a
+/// 341 MB cloud sat in the heap next to its own decoded arrays - about twice
+/// the file - and wasm memory never shrinks, so the page kept that high-water
+/// mark for its whole life. On a machine already in swap that was the
+/// difference between four and nineteen seconds. This takes the vertex records
+/// a chunk at a time, as the fetch delivers them, into a scratch buffer, and
+/// decodes them with the same loops into chunk-sized outputs that the caller
+/// copies straight into the final arrays. The decode then overlaps the
+/// transfer, and the heap stays a few megabytes.
+///
+/// Only fixed-stride binary vertex records with no faces qualify; anything
+/// else (ASCII, meshes, list properties) returns `None` from `open` and goes
+/// through `parse_ply_at`.
+#[wasm_bindgen]
+pub struct PlyVertexStream {
+    sink: VertexSink,
+    fields: Vec<BinaryField>,
+    layout: Option<FastLayout>,
+    little: bool,
+    stride: usize,
+    data_start: usize,
+    vertex_count: usize,
+    decoded: usize,
+    chunk_records: usize,
+    min: [f32; 3],
+    max: [f32; 3],
+    non_finite: Option<usize>,
+    metadata: String,
+    input: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl PlyVertexStream {
+    /// `head` is the start of the file, through `end_header`. Undefined when
+    /// the file cannot be streamed (see the type).
+    pub fn open(head: &[u8]) -> Option<PlyVertexStream> {
+        let header = parse_header(head).ok()?;
+        if header.encoding == Encoding::Ascii {
+            return None;
+        }
+        // The vertex records must start at the body and nothing after them may
+        // matter: faces would make it a mesh.
+        let first = header.elements.first()?;
+        if first.name != "vertex"
+            || header
+                .elements
+                .iter()
+                .skip(1)
+                .any(|element| element.name == "face" && element.count > 0)
+        {
+            return None;
+        }
+        let plan = plan_vertex(first).ok()?;
+        let stride = plan.stride.filter(|stride| *stride > 0)?;
+        let fields: Vec<BinaryField> = plan
+            .targets
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| **t != Target::Ignore)
+            .map(|(i, t)| BinaryField {
+                target: *t,
+                offset: plan.offsets[i],
+                ty: plan.types[i],
+            })
+            .collect();
+        let layout = fast_layout(&fields, &plan);
+        // About 4 MB of records per chunk: large enough that the per-call cost
+        // vanishes, small enough to stay in cache and keep the heap small.
+        let chunk_records = (4 << 20) / stride + 1;
+        Some(PlyVertexStream {
+            metadata: metadata_json(&header),
+            little: header.encoding == Encoding::BinaryLittleEndian,
+            data_start: header.data_start,
+            vertex_count: first.count,
+            sink: VertexSink::new(plan, 0),
+            fields,
+            layout,
+            stride,
+            decoded: 0,
+            chunk_records,
+            min: [f32::INFINITY; 3],
+            max: [f32::NEG_INFINITY; 3],
+            non_finite: None,
+            input: Vec::new(),
+        })
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn data_start(&self) -> usize {
+        self.data_start
+    }
+    #[wasm_bindgen(getter)]
+    pub fn vertex_count(&self) -> usize {
+        self.vertex_count
+    }
+    #[wasm_bindgen(getter)]
+    pub fn stride(&self) -> usize {
+        self.stride
+    }
+    /// Records the scratch buffer holds; feed at most this many per `decode`.
+    #[wasm_bindgen(getter)]
+    pub fn chunk_records(&self) -> usize {
+        self.chunk_records
+    }
+    #[wasm_bindgen(getter)]
+    pub fn has_colors(&self) -> bool {
+        self.sink.plan.has_colors
+    }
+    #[wasm_bindgen(getter)]
+    pub fn has_normals(&self) -> bool {
+        self.sink.plan.has_normals
+    }
+    #[wasm_bindgen(getter)]
+    pub fn has_intensity(&self) -> bool {
+        self.sink.plan.has_intensity
+    }
+    #[wasm_bindgen(getter)]
+    pub fn is_gaussian_splat(&self) -> bool {
+        self.sink.plan.is_splat
+    }
+    #[wasm_bindgen(getter)]
+    pub fn metadata_json(&self) -> String {
+        self.metadata.clone()
+    }
+    #[wasm_bindgen(getter)]
+    pub fn scalar_field_names(&self) -> Vec<String> {
+        self.sink.plan.scalar_names.clone()
+    }
+    /// Vertices decoded so far.
+    #[wasm_bindgen(getter)]
+    pub fn decoded(&self) -> usize {
+        self.decoded
+    }
+    /// The first vertex (1-based) with a non-finite coordinate, or 0.
+    #[wasm_bindgen(getter)]
+    pub fn first_non_finite(&self) -> usize {
+        self.non_finite.map_or(0, |index| index + 1)
+    }
+
+    /// Where the caller writes the next records: room for `chunk_records`.
+    /// Valid until the next call into the module.
+    pub fn input_ptr(&mut self) -> *mut u8 {
+        let capacity = self.chunk_records * self.stride;
+        if self.input.len() < capacity {
+            self.input.resize(capacity, 0);
+        }
+        self.input.as_mut_ptr()
+    }
+
+    /// Decode the first `records` records of the scratch buffer; returns how
+    /// many were decoded (never more than the header declared). The outputs
+    /// are then readable at the `*_ptr` addresses, `records` vertices long.
+    pub fn decode(&mut self, records: usize) -> usize {
+        let n = records
+            .min(self.chunk_records)
+            .min(self.vertex_count - self.decoded);
+        if n == 0 {
+            return 0;
+        }
+        let input = &self.input[..n * self.stride];
+        match &self.layout {
+            Some(layout) => read_vertices_fast(
+                input,
+                0,
+                self.stride,
+                n,
+                self.little,
+                layout,
+                &mut self.sink,
+            ),
+            None => read_vertices_generic(
+                input,
+                0,
+                self.stride,
+                n,
+                self.little,
+                &self.fields,
+                &mut self.sink,
+            ),
+        }
+        for axis in 0..3 {
+            if self.sink.min[axis] < self.min[axis] {
+                self.min[axis] = self.sink.min[axis];
+            }
+            if self.sink.max[axis] > self.max[axis] {
+                self.max[axis] = self.sink.max[axis];
+            }
+        }
+        if self.non_finite.is_none() {
+            if let Some(index) = self.sink.positions[..n * 3]
+                .iter()
+                .position(|value| !value.is_finite())
+            {
+                self.non_finite = Some(self.decoded + index / 3);
+            }
+        }
+        self.decoded += n;
+        n
+    }
+
+    pub fn positions_ptr(&self) -> *const f32 {
+        self.sink.positions.as_ptr()
+    }
+    pub fn colors_ptr(&self) -> *const u8 {
+        self.sink.colors.as_ptr()
+    }
+    pub fn normals_ptr(&self) -> *const f32 {
+        self.sink.normals.as_ptr()
+    }
+    pub fn intensity_ptr(&self) -> *const f32 {
+        self.sink.intensity.as_ptr()
+    }
+    pub fn scalar_ptr(&self, index: usize) -> *const f32 {
+        self.sink
+            .scalars
+            .get(index)
+            .map_or(std::ptr::null(), Vec::as_ptr)
+    }
+    /// [min_x, min_y, min_z, max_x, max_y, max_z] over everything decoded.
+    pub fn bbox(&self) -> Vec<f32> {
+        if self.decoded == 0 {
+            return vec![0.0; 6];
+        }
+        vec![
+            self.min[0],
+            self.min[1],
+            self.min[2],
+            self.max[0],
+            self.max[1],
+            self.max[2],
+        ]
+    }
 }
 
 /// Reads whitespace-separated numbers, one element record per line.
@@ -1062,8 +1303,157 @@ fn read_binary_body(
     Ok(())
 }
 
-#[allow(clippy::needless_range_loop)] // the index addresses several buffers at once
+/// Bounds update by comparison. `f32::min`/`max` ignore NaN the same way,
+/// but wasm has no instruction with those semantics, so they compile to calls
+/// into libm - a measurable share of the whole loop on eight million vertices.
+#[inline]
+fn widen(min: &mut [f32; 3], max: &mut [f32; 3], xyz: [f32; 3]) {
+    for axis in 0..3 {
+        if xyz[axis] < min[axis] {
+            min[axis] = xyz[axis];
+        }
+        if xyz[axis] > max[axis] {
+            max[axis] = xyz[axis];
+        }
+    }
+}
+
 fn read_vertices_fast(
+    data: &[u8],
+    start: usize,
+    stride: usize,
+    n: usize,
+    little: bool,
+    layout: &FastLayout,
+    sink: &mut VertexSink,
+) {
+    // One loop per combination of the per-file choices, so none of them is a
+    // branch per vertex. The layouts outside this table are rare enough for
+    // the dynamic version.
+    let rgb = layout.rgb.is_some();
+    let normals = layout.normals.is_some();
+    match (
+        little,
+        layout.xyz_f64,
+        rgb,
+        normals,
+        layout.intensity.is_some(),
+    ) {
+        (true, false, true, true, false) => {
+            vertex_loop::<true, false, true, true, false>(data, start, stride, n, layout, sink);
+        }
+        (true, false, true, false, false) => {
+            vertex_loop::<true, false, true, false, false>(data, start, stride, n, layout, sink);
+        }
+        (true, false, false, false, false) => {
+            vertex_loop::<true, false, false, false, false>(data, start, stride, n, layout, sink);
+        }
+        (true, false, false, true, false) => {
+            vertex_loop::<true, false, false, true, false>(data, start, stride, n, layout, sink);
+        }
+        (true, false, false, false, true) => {
+            vertex_loop::<true, false, false, false, true>(data, start, stride, n, layout, sink);
+        }
+        (true, false, true, false, true) => {
+            vertex_loop::<true, false, true, false, true>(data, start, stride, n, layout, sink);
+        }
+        (true, true, true, false, false) => {
+            vertex_loop::<true, true, true, false, false>(data, start, stride, n, layout, sink);
+        }
+        (true, true, false, false, false) => {
+            vertex_loop::<true, true, false, false, false>(data, start, stride, n, layout, sink);
+        }
+        _ => vertex_loop_dynamic(data, start, stride, n, little, layout, sink),
+    }
+}
+
+#[inline]
+fn f32_le<const LITTLE: bool>(record: &[u8], at: usize) -> f32 {
+    let bytes = [record[at], record[at + 1], record[at + 2], record[at + 3]];
+    if LITTLE {
+        f32::from_le_bytes(bytes)
+    } else {
+        f32::from_be_bytes(bytes)
+    }
+}
+
+#[inline]
+fn f64_le<const LITTLE: bool>(record: &[u8], at: usize) -> f64 {
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&record[at..at + 8]);
+    if LITTLE {
+        f64::from_le_bytes(bytes)
+    } else {
+        f64::from_be_bytes(bytes)
+    }
+}
+
+// Double-precision positions are narrowed on purpose: the GPU buffers are f32.
+#[allow(clippy::too_many_arguments, clippy::cast_possible_truncation)]
+fn vertex_loop<
+    const LITTLE: bool,
+    const F64: bool,
+    const RGB: bool,
+    const NORMALS: bool,
+    const INTENSITY: bool,
+>(
+    data: &[u8],
+    start: usize,
+    stride: usize,
+    n: usize,
+    layout: &FastLayout,
+    sink: &mut VertexSink,
+) {
+    sink.reserve_exact(n);
+    let [ox, oy, oz] = layout.xyz;
+    let rgb = layout.rgb.unwrap_or([0; 3]);
+    let nrm = layout.normals.unwrap_or([0; 3]);
+    let inten = layout.intensity.unwrap_or(0);
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    let records = data[start..start + n * stride].chunks_exact(stride);
+    let positions = sink.positions.chunks_exact_mut(3);
+    for (i, (record, position)) in records.zip(positions).enumerate() {
+        let xyz = if F64 {
+            [
+                f64_le::<LITTLE>(record, ox) as f32,
+                f64_le::<LITTLE>(record, oy) as f32,
+                f64_le::<LITTLE>(record, oz) as f32,
+            ]
+        } else {
+            [
+                f32_le::<LITTLE>(record, ox),
+                f32_le::<LITTLE>(record, oy),
+                f32_le::<LITTLE>(record, oz),
+            ]
+        };
+        position.copy_from_slice(&xyz);
+        widen(&mut min, &mut max, xyz);
+        if RGB {
+            let i3 = i * 3;
+            sink.colors[i3] = record[rgb[0]];
+            sink.colors[i3 + 1] = record[rgb[1]];
+            sink.colors[i3 + 2] = record[rgb[2]];
+        }
+        if NORMALS {
+            let i3 = i * 3;
+            sink.normals[i3] = f32_le::<LITTLE>(record, nrm[0]);
+            sink.normals[i3 + 1] = f32_le::<LITTLE>(record, nrm[1]);
+            sink.normals[i3 + 2] = f32_le::<LITTLE>(record, nrm[2]);
+        }
+        if INTENSITY {
+            sink.intensity[i] = f32_le::<LITTLE>(record, inten);
+        }
+    }
+    sink.min = min;
+    sink.max = max;
+}
+
+/// The same loop with the choices made per vertex, for the uncommon layouts
+/// the table above does not list.
+// The index addresses several buffers at once; f64 positions narrow to the f32 GPU buffers.
+#[allow(clippy::needless_range_loop, clippy::cast_possible_truncation)]
+fn vertex_loop_dynamic(
     data: &[u8],
     start: usize,
     stride: usize,
@@ -1099,12 +1489,7 @@ fn read_vertices_fast(
         positions[i3] = x;
         positions[i3 + 1] = y;
         positions[i3 + 2] = z;
-        min[0] = min[0].min(x);
-        min[1] = min[1].min(y);
-        min[2] = min[2].min(z);
-        max[0] = max[0].max(x);
-        max[1] = max[1].max(y);
-        max[2] = max[2].max(z);
+        widen(&mut min, &mut max, [x, y, z]);
 
         if let Some(rgb) = layout.rgb {
             colors[i3] = data[base + rgb[0]];
@@ -1289,6 +1674,83 @@ mod tests {
 
     /// The same content in binary must produce the same numbers — the two
     /// encodings had separate loops in the parser this replaces.
+    /// Feed `bytes` to a stream in pieces of `piece` bytes the way the webview
+    /// does: whole records into the scratch buffer, the rest carried over.
+    fn stream_all(
+        bytes: &[u8],
+        piece: usize,
+    ) -> (PlyVertexStream, Vec<f32>, Vec<u8>, Vec<Vec<f32>>) {
+        let head_end = find_subslice(bytes, b"end_header\n").unwrap() + 11;
+        let mut stream = PlyVertexStream::open(&bytes[..head_end]).expect("streamable");
+        let stride = stream.stride();
+        let mut positions = Vec::new();
+        let mut colors = Vec::new();
+        let mut scalars = vec![Vec::new(); stream.scalar_field_names().len()];
+        let mut pending: Vec<u8> = Vec::new();
+        let body = &bytes[stream.data_start()..];
+        let mut flush = |stream: &mut PlyVertexStream, pending: &mut Vec<u8>, last: bool| loop {
+            // Full scratch buffers while data arrives; whatever is left at the end.
+            let whole = (pending.len() / stride).min(stream.chunk_records());
+            if whole == 0 || (!last && whole < stream.chunk_records()) {
+                break;
+            }
+            let ptr = stream.input_ptr();
+            unsafe { std::ptr::copy_nonoverlapping(pending.as_ptr(), ptr, whole * stride) };
+            let n = stream.decode(whole);
+            positions.extend_from_slice(&stream.sink.positions[..n * 3]);
+            if stream.has_colors() {
+                colors.extend_from_slice(&stream.sink.colors[..n * 3]);
+            }
+            for (i, out) in scalars.iter_mut().enumerate() {
+                out.extend_from_slice(&stream.sink.scalars[i][..n]);
+            }
+            pending.drain(..whole * stride);
+            if n == 0 {
+                break;
+            }
+        };
+        for chunk in body.chunks(piece) {
+            pending.extend_from_slice(chunk);
+            flush(&mut stream, &mut pending, false);
+        }
+        flush(&mut stream, &mut pending, true);
+        (stream, positions, colors, scalars)
+    }
+
+    #[test]
+    fn streamed_binary_vertices_match_the_whole_file_parse() {
+        let count = 50_000usize;
+        let mut bytes = format!(
+            "ply\nformat binary_little_endian 1.0\nelement vertex {count}\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nproperty float quality\nend_header\n"
+        )
+        .into_bytes();
+        for i in 0..count {
+            let f = i as f32;
+            for v in [f * 0.5, -f, f * 0.25 + 3.0] {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+            bytes.extend_from_slice(&[(i % 256) as u8, (i * 7 % 256) as u8, 9]);
+            bytes.extend_from_slice(&(f * 2.0).to_le_bytes());
+        }
+        let whole = parse_ply_inner(&bytes).unwrap();
+        for piece in [1, 7, 4096, 65_536, 1 << 22] {
+            let (stream, positions, colors, scalars) = stream_all(&bytes, piece);
+            assert_eq!(stream.decoded(), count, "piece {piece}");
+            assert_eq!(positions, whole.positions, "piece {piece}");
+            assert_eq!(colors, whole.colors, "piece {piece}");
+            assert_eq!(scalars, whole.scalars, "piece {piece}");
+            assert_eq!(stream.bbox(), whole.bbox(), "piece {piece}");
+            assert_eq!(stream.first_non_finite(), 0);
+        }
+    }
+
+    #[test]
+    fn streaming_declines_meshes_and_ascii() {
+        let mesh = b"ply\nformat binary_little_endian 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 1\nproperty list uchar int vertex_indices\nend_header\n";
+        assert!(PlyVertexStream::open(mesh).is_none());
+        assert!(PlyVertexStream::open(&ascii_cube()).is_none());
+    }
+
     #[test]
     fn binary_ply_agrees_with_ascii() {
         let mut binary = b"ply\nformat binary_little_endian 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nelement face 1\nproperty list uchar int vertex_indices\nend_header\n".to_vec();

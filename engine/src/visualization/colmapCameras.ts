@@ -18,14 +18,10 @@ interface ColmapCameraHost {
   scene: THREE.Scene;
   spatialFiles: { length: number };
   fileEntries: FileEntryRegistry;
-  cameraGroups: THREE.Group[];
-  cameraNames: string[];
-  cameraShowLabels: boolean[];
-  cameraShowCoords: boolean[];
-  fileVisibility: boolean[];
-  pointSizes: number[];
-  individualColorModes: string[];
-  transformationMatrices: THREE.Matrix4[];
+  cameraGroups: readonly THREE.Group[];
+  cameraNames: readonly string[];
+  cameraShowLabels: readonly boolean[];
+  cameraShowCoords: readonly boolean[];
 }
 
 export function addColmapCameraVisualization(host: ColmapCameraHost, data: SpatialData): boolean {
@@ -56,13 +52,11 @@ export function addColmapCameraVisualization(host: ColmapCameraHost, data: Spati
   }
 
   host.scene.add(profile);
-  host.cameraGroups.push(profile);
-  host.cameraNames.push(`${profileName} cameras`);
   // The cameras belong to the cloud that carried the model - the entry that
   // was just added, which is the last spatial one. Removing it removes them.
   const parent = host.fileEntries.at(
     host.fileEntries.indexOfKind('spatial', host.spatialFiles.length - 1)
   );
-  registerCameraEntry(host, parent?.id ?? null);
+  registerCameraEntry(host, profile, `${profileName} cameras`, parent?.id ?? null);
   return true;
 }

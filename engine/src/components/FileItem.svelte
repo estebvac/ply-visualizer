@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { longPressFileReorder } from './longPressFileReorder';
+  import type { FileItemHost, FileRow } from './fileListTypes';
   import ModelAnimationPanel from './ModelAnimationPanel.svelte';
   import { filesState } from '../state/files.svelte';
   import { runWithFileActivity } from '../fileActivity';
@@ -15,7 +17,6 @@
   import TransformSection from './TransformSection.svelte';
   import VolumePanel from './VolumePanel.svelte';
   import {
-    setStonexColorCorrection,
     setStonexImageDistortion,
     setStonexImagesVisible,
     setStonexScannerVisible,
@@ -26,53 +27,40 @@
     type StonexColorCorrection,
   } from '../visualization/stonexColorCorrection';
 
-  let {
-    host,
-    index,
-    kind,
-  }: { host: any; index: number; kind: 'pointcloud' | 'pose' | 'camera' } = $props();
-
+  let { host, row }: { host: FileItemHost; row: FileRow } = $props();
   ensureKeyboardModifierTracking();
-
-  const data = $derived(
-    (filesState.renderTick, kind === 'pointcloud' ? host.spatialFiles[index] : null)
-  );
-  // Position within poseGroups/cameraGroups. The per-pose toggle arrays and the
-  // camera label arrays are keyed by it; host methods take the unified index.
-  const poseIndex = $derived((filesState.renderTick, host.fileEntries.kindIndexAt(index)));
-  const meta = $derived(
-    (filesState.renderTick, kind === 'pose' ? host.poseMeta[poseIndex] : null)
-  );
-  const cameraIndex = $derived((filesState.renderTick, host.fileEntries.kindIndexAt(index)));
-  const cameraGroup = $derived(
-    (filesState.renderTick, kind === 'camera' ? host.cameraGroups[cameraIndex] : null)
-  );
-  const cameraProfileName = $derived(
-    (filesState.renderTick, kind === 'camera' ? host.cameraNames[cameraIndex] : '')
-  );
+  const index = $derived(row.index);
+  const kind = $derived(row.kind);
+  const data = $derived(row.data);
+  const poseIndex = $derived(row.kindIndex);
+  const cameraIndex = $derived(row.kindIndex);
+  const meta = $derived(row.pose);
+  const cameraGroup = $derived(row.cameraGroup);
+  const cameraProfileName = $derived(row.cameraName);
   // Set by sources that fetch their images after the frames are on screen
   // (COLMAP). Absent for sources whose previews are embedded and already
   // decoded, so nothing extra is shown for those.
   const cameraImageProgress = $derived.by(() => {
-    filesState.renderTick;
+    filesState.entries;
     return kind === 'camera'
-      ? (cameraGroup?.userData.imageProgress as { done: number; total: number } | undefined) ?? null
+      ? ((cameraGroup?.userData.imageProgress as { done: number; total: number } | undefined) ??
+          null)
       : null;
   });
 
-  const visible = $derived(filesState.visibility[index] ?? true);
-  const collapsed = $derived(filesState.collapsed[index] ?? false);
-  const colorMode = $derived(filesState.colorModes[index] ?? 'assigned');
+  const visible = $derived(row.entry.state.visible ?? true);
+  const collapsed = $derived(row.entry.state.collapsed ?? false);
+  const colorMode = $derived(row.entry.state.colorMode ?? 'assigned');
 
   const isDepthDerivedFile = $derived(
     kind === 'pointcloud' &&
       data &&
-      (host.isDepthDerivedFile(data) || (data as any).isDepthDerived)
+      (host.isDepthDerivedFile(data) || (data as any).isDepthDerived),
   );
 
   const colorOptions = $derived.by(() => {
-    filesState.renderTick;
-    filesState.renderModeTick;
+    filesState.entries;
+
     return kind === 'pointcloud' && data
       ? getPointCloudColorOptions(host, data, index, colorMode === 'original')
       : [];
@@ -82,7 +70,7 @@
   // scan itself stored no colour. Worth saying out loud: those colours are a
   // projection result, not measured data.
   const photoColoredPoints = $derived.by(() => {
-    filesState.renderTick;
+    filesState.entries;
     return kind === 'pointcloud'
       ? ((data?.metadata?.e57PhotographicallyColoredPoints as number | undefined) ?? null)
       : null;
@@ -90,18 +78,22 @@
   const photoColoredPercent = $derived(
     photoColoredPoints && data?.vertexCount
       ? Math.round((photoColoredPoints / data.vertexCount) * 100)
-      : 0
+      : 0,
   );
-
 
   function colorIndicatorStyle(): string {
     if (kind === 'pointcloud' && colorMode === 'original' && data?.hasColors) {
       return 'background: linear-gradient(45deg, #ff0000, #00ff00, #0000ff); border: 1px solid #666;';
     }
-    if (kind === 'pointcloud' && colorMode?.startsWith('intensity') && host.hasIntensityData(data)) {
+    if (
+      kind === 'pointcloud' &&
+      data &&
+      colorMode?.startsWith('intensity') &&
+      host.hasIntensityData(data)
+    ) {
       return 'background: linear-gradient(90deg, #111, #fff); border: 1px solid #666;';
     }
-    if (kind === 'pointcloud' && colorMode?.startsWith('scalar:')) {
+    if (kind === 'pointcloud' && data && colorMode?.startsWith('scalar:')) {
       if (colorMode.endsWith(':grayscale')) {
         return 'background: linear-gradient(90deg, #111, #fff); border: 1px solid #666;';
       }
@@ -123,12 +115,10 @@
     const newCollapsed = !collapsed;
     if (event.shiftKey) {
       for (let fileIndex = 0; fileIndex < host.fileEntries.length; fileIndex++) {
-        host.fileItemsCollapsed[fileIndex] = newCollapsed;
-        filesState.collapsed[fileIndex] = newCollapsed;
+        host.fileEntries.require(fileIndex).state.collapsed = newCollapsed;
       }
     } else {
-      host.fileItemsCollapsed[index] = newCollapsed;
-      filesState.collapsed[index] = newCollapsed;
+      row.entry.state.collapsed = newCollapsed;
     }
   }
 
@@ -143,7 +133,7 @@
       // Synchronize once the browser has completed the cancelled default
       // action; all other checkboxes update reactively through filesState.
       window.setTimeout(() => {
-        checkbox.checked = filesState.visibility[index] ?? true;
+        checkbox.checked = row.entry.state.visible ?? true;
       }, 0);
       return;
     }
@@ -171,7 +161,7 @@
           fileData &&
           !host.splatMode?.isActive(fileIndex) &&
           getPointCloudColorOptions(host, fileData, fileIndex).some(
-            option => option.value === value
+            (option) => option.value === value,
           )
         ) {
           host.onFileColorModeChange(fileIndex, value);
@@ -181,26 +171,28 @@
   }
 
   const renderModeButtons = $derived(
-    kind === 'pointcloud' && data ? getRenderModeOptions(host, data) : []
+    kind === 'pointcloud' && data ? getRenderModeOptions(host, data) : [],
   );
   const renderModeGridColumns = $derived(
-    { 1: '1fr', 2: '1fr 1fr', 3: '1fr 1fr 1fr', 4: '1fr 1fr 1fr 1fr' }[renderModeButtons.length] ||
-      '1fr'
+    { 1: '1fr', 2: '1fr 1fr', 3: '1fr 1fr 1fr', 4: '1fr 1fr 1fr 1fr' }[
+      renderModeButtons.length
+    ] || '1fr',
   );
   const canRenderSplats = $derived(
-    kind === 'pointcloud' && !!data && !!host.splatMode?.canEnable(data)
+    kind === 'pointcloud' && !!data && !!host.splatMode?.canEnable(data),
   );
   const canRenderVoxels = $derived(
     kind === 'pointcloud' && !!data && canVoxelizePointCloud(data)
   );
   const splatActive = $derived.by(() => {
-    filesState.renderModeTick;
     return canRenderSplats && !!host.splatMode?.isActive(index);
   });
 
   // Volume voxels are solid boxes sized from the voxel spacing, so there is no
   // point sprite whose size could be tuned.
-  const hasPointSize = $derived(!data?.sceneModel && data?.metadata?.volumeRenderMode !== 'voxels');
+  const hasPointSize = $derived(
+    !data?.sceneModel && data?.metadata?.volumeRenderMode !== 'voxels',
+  );
 
   function onRenderModeClick(event: MouseEvent, mode: string) {
     if (!event.shiftKey) {
@@ -224,7 +216,7 @@
   function isRenderModeActive(mode: string): boolean {
     // Re-evaluate parallel-array state without remounting the complete file
     // list (which would discard its scroll position and local row state).
-    filesState.renderModeTick;
+
     return isRenderModeActiveFor(index, mode);
   }
 
@@ -245,11 +237,11 @@
         return fileSplatActive;
       case 'mesh':
       case 'solid':
-        return host.solidVisible[fileIndex] ?? true;
+        return host.fileEntries.require(fileIndex).state.solidVisible ?? true;
       case 'wireframe':
-        return host.wireframeVisible[fileIndex] ?? false;
+        return host.fileEntries.require(fileIndex).state.wireframeVisible ?? false;
       case 'normals':
-        return host.normalsVisible[fileIndex] ?? false;
+        return host.fileEntries.require(fileIndex).state.normalsVisible ?? false;
       default:
         return false;
     }
@@ -266,7 +258,7 @@
   function syncMaxSplatSizeControls(value: number) {
     const slider = document.getElementById(`max-splat-size-${index}`) as HTMLInputElement | null;
     const input = document.getElementById(
-      `max-splat-size-value-${index}`
+      `max-splat-size-value-${index}`,
     ) as HTMLInputElement | null;
     if (slider) {
       slider.value = String(host.splatMode.getMaxSplatSizeSlider(index));
@@ -279,7 +271,7 @@
   function onMaxSplatSizeSliderInput(e: Event) {
     const value = host.splatMode?.setMaxSplatSizeSlider(
       index,
-      parseFloat((e.target as HTMLInputElement).value)
+      parseFloat((e.target as HTMLInputElement).value),
     );
     if (value !== undefined) {
       syncMaxSplatSizeControls(value);
@@ -313,14 +305,14 @@
       typeof (data as any)?.metadata?.recommendedPointSize === 'number' &&
       (data as any).metadata.recommendedPointSize > 0
       ? (data as any).metadata.recommendedPointSize
-      : 0.001
+      : 0.001,
   );
   const pointSize = $derived(
     kind === 'pose'
-      ? (filesState.pointSizes[index] ?? 0.02)
+      ? (row.entry.state.pointSize ?? 0.02)
       : kind === 'camera'
-        ? (filesState.pointSizes[index] ?? 1.0)
-        : filesState.pointSizes[index] || recommendedPointSize
+        ? (row.entry.state.pointSize ?? 1.0)
+        : row.entry.state.pointSize || recommendedPointSize,
   );
   const sizePrecision = $derived(kind === 'pose' ? 3 : kind === 'camera' ? 1 : 4);
   const pointSizeSliderMax = $derived(Math.max(0.1, recommendedPointSize * 4));
@@ -333,7 +325,7 @@
 
   function setPointSizeForIndex(fileIndex: number, value: number) {
     host.updatePointSize(fileIndex, value);
-    filesState.pointSizes[fileIndex] = value;
+
     const slider = document.getElementById(`size-${fileIndex}`) as HTMLInputElement | null;
     const input = document.getElementById(`size-input-${fileIndex}`) as HTMLInputElement | null;
     if (slider) slider.value = String(value);
@@ -382,7 +374,7 @@
     if (!isNaN(newSize) && newSize > 0) {
       setPointSize(newSize);
     } else {
-      const currentSize = host.pointSizes[index] || defaultPointSize();
+      const currentSize = row.entry.state.pointSize || defaultPointSize();
       input.value = currentSize.toFixed(sizePrecision);
     }
   }
@@ -420,7 +412,7 @@
 
   const isObjFile = $derived(kind === 'pointcloud' && (data as any)?.isObjFile);
   const isObjWireframeOrFile = $derived(
-    kind === 'pointcloud' && ((data as any)?.isObjWireframe || (data as any)?.isObjFile)
+    kind === 'pointcloud' && ((data as any)?.isObjWireframe || (data as any)?.isObjFile),
   );
 
   function onLoadMtl() {
@@ -428,19 +420,19 @@
   }
 
   function onPoseDatasetColorsChange(e: Event) {
-    host.poseUseDatasetColors[poseIndex] = (e.target as HTMLInputElement).checked;
+    host.fileEntries.pose(poseIndex).useDatasetColors = (e.target as HTMLInputElement).checked;
     host.updatePoseAppearance(index);
   }
   function onPoseShowLabelsChange(e: Event) {
-    host.poseShowLabels[poseIndex] = (e.target as HTMLInputElement).checked;
+    host.fileEntries.pose(poseIndex).showLabels = (e.target as HTMLInputElement).checked;
     host.updatePoseLabels(index);
   }
   function onPoseScaleScoreChange(e: Event) {
-    host.poseScaleByScore[poseIndex] = (e.target as HTMLInputElement).checked;
+    host.fileEntries.pose(poseIndex).scaleByScore = (e.target as HTMLInputElement).checked;
     host.updatePoseScaling(index);
   }
   function onPoseScaleUncertaintyChange(e: Event) {
-    host.poseScaleByUncertainty[poseIndex] = (e.target as HTMLInputElement).checked;
+    host.fileEntries.pose(poseIndex).scaleByUncertainty = (e.target as HTMLInputElement).checked;
     host.updatePoseScaling(index);
   }
   function onPoseConventionChange(e: Event) {
@@ -449,7 +441,7 @@
   }
   function onPoseMinScoreInput(e: Event) {
     const v = Math.max(0, Math.min(1, parseFloat((e.target as HTMLInputElement).value)));
-    host.poseMinScoreThreshold[poseIndex] = v;
+    host.fileEntries.pose(poseIndex).minScoreThreshold = v;
     const value = document.getElementById(`pose-minscore-val-${index}`);
     if (value) value.textContent = v.toFixed(2);
     host.applyPoseFilters(index);
@@ -461,7 +453,7 @@
   }
   function onPoseMaxUncInput(e: Event) {
     const v = Math.max(0, Math.min(1, parseFloat((e.target as HTMLInputElement).value)));
-    host.poseMaxUncertaintyThreshold[poseIndex] = v;
+    host.fileEntries.pose(poseIndex).maxUncertaintyThreshold = v;
     const value = document.getElementById(`pose-maxunc-val-${index}`);
     if (value) value.textContent = v.toFixed(2);
     host.applyPoseFilters(index);
@@ -484,10 +476,11 @@
   let imagesVisible = $state(initialCameraUserData().imagesVisible === true);
   let imagesDistorted = $state(initialCameraUserData().imagesDistorted !== false);
   let imageDistortionAvailable = $state(
-    initialCameraUserData().imageDistortionAvailable !== false
+    initialCameraUserData().imageDistortionAvailable !== false,
   );
 
   async function applyImageDistortion(distorted: boolean) {
+    if (!cameraGroup) return;
     imagesDistorted = await setStonexImageDistortion(cameraGroup, distorted);
     imageDistortionAvailable = cameraGroup.userData.imageDistortionAvailable !== false;
     host.requestRender();
@@ -498,7 +491,7 @@
 
   async function onCameraShowImagesChange(e: Event) {
     imagesVisible = (e.target as HTMLInputElement).checked;
-    setStonexImagesVisible(cameraGroup, imagesVisible);
+    if (cameraGroup) setStonexImagesVisible(cameraGroup, imagesVisible);
     cameraSceneTick++;
     host.requestRender();
     if (imagesVisible) {
@@ -509,6 +502,7 @@
     await applyImageDistortion((e.target as HTMLInputElement).checked);
   }
   function onCameraShowScannerChange(e: Event) {
+    if (!cameraGroup) return;
     setStonexScannerVisible(cameraGroup, (e.target as HTMLInputElement).checked);
     host.requestRender();
   }
@@ -517,12 +511,12 @@
   // per-point frame index, so every mode here is a colour-array pass rather
   // than a reload.
   let colorCorrection = $state(
-    normalizeStonexColorCorrection(initialCameraUserData().colorCorrection)
+    normalizeStonexColorCorrection(initialCameraUserData().colorCorrection),
   );
   // Matches the double-click-to-reset every other slider in the panel offers.
   function onColorSliderReset(
     e: MouseEvent,
-    key: 'manualRedGain' | 'manualBlueGain' | 'exposureStops'
+    key: 'manualRedGain' | 'manualBlueGain' | 'exposureStops',
   ) {
     e.preventDefault();
     const value = DEFAULT_STONEX_COLOR_CORRECTION[key];
@@ -535,14 +529,16 @@
     const version = ++colorCorrectionVersion;
     await runWithFileActivity(() => {
       // Slider input can enqueue several values before the browser paints.
-      if (version !== colorCorrectionVersion) {return;}
-      setStonexColorCorrection(host, cameraGroup, colorCorrection);
+      if (version !== colorCorrectionVersion || !cameraGroup) {
+        return;
+      }
+      host.setCameraColorCorrection(cameraGroup, colorCorrection);
       host.requestRender();
     });
   }
 
   const matrixText = $derived.by(() => {
-    filesState.renderTick;
+    filesState.entries;
     const arr = host.getTransformationMatrixAsArray(index);
     let str = '';
     for (let r = 0; r < 4; ++r) {
@@ -560,22 +556,35 @@
       ? data?.fileName || `File ${index + 1}`
       : kind === 'pose'
         ? meta?.fileName || `Pose ${poseIndex + 1}`
-        : `📷 ${cameraProfileName}`
+        : `📷 ${cameraProfileName}`,
   );
   const shortPath = $derived(
     kind === 'pointcloud'
       ? data?.shortPath || data?.fileName || ''
       : kind === 'pose'
         ? (meta as any)?.shortPath || meta?.fileName || ''
-        : cameraProfileName
+        : cameraProfileName,
   );
   const removeTitle = $derived(
-    kind === 'pointcloud' ? 'Remove file' : kind === 'pose' ? 'Remove object' : 'Remove camera profile'
+    kind === 'pointcloud'
+      ? 'Remove file'
+      : kind === 'pose'
+        ? 'Remove object'
+        : 'Remove camera profile',
   );
 </script>
 
-<div class="file-item" data-render-tick={filesState.renderTick}>
-  <div class="file-item-main">
+<div
+  class="file-item"
+  data-entry-id={row.entry.id}
+  use:longPressFileReorder={{ host, entryId: row.entry.id }}
+  style:touch-action={collapsed ? 'none' : undefined}
+>
+  <div
+    class="file-item-main"
+    style="touch-action: none; user-select: none;"
+    title="Hold to reorder"
+  >
     <button
       class="collapse-toggle"
       data-file-index={index}
@@ -719,9 +728,9 @@
           >
             🎨 Load MTL Material
           </button>
-          {#if host.appliedMtlNames[index]}
+          {#if row.entry.resources.materialName}
             <div class="mtl-status" style="font-size: 9px; color: var(--vscode-textLink-foreground); margin-bottom: 4px; text-align: center;">
-              📄 {host.appliedMtlNames[index]} applied
+              📄 {row.entry.resources.materialName} applied
             </div>
           {/if}
         </div>

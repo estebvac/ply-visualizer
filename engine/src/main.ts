@@ -1,7 +1,21 @@
+import { isWebExtension } from './hosts/ideEnvironment';
+import type { FileEntry, PoseEntryData } from './state/fileEntries';
+import type { FileObject } from './visualization/fileObject';
+import { ViewerLifetime } from './utils/viewerLifetime';
+import { listenForViewerMessages } from './hosts/viewerRouter';
+import { readViewerMessage, type EntryRequest, type MessageOf } from './hosts/viewerProtocol';
+import {
+  addPointStreamPart,
+  cancelPointStream,
+  finishPointStream,
+  type PointStreamPart,
+} from './hosts/pointStream';
+import { buildFileObject, disposeObjects, disposeFileResources } from './visualization/fileObject';
+import './textImport/prompt';
 import { handleNativeAgentRequest } from './hosts/nativeAgent';
 import { updateAgentPointSizes } from './hosts/agentPointSizing';
 import { renderAgentComparison } from './hosts/agentComparison';
-import { createModelObject, updateModelPlayback } from './models/sceneModel';
+import { updateModelPlayback } from './models/sceneModel';
 import { handleSceneModelMessage } from './models/modelMessages';
 import * as THREE from 'three';
 import { TrackballControls } from 'three/examples/jsm/controls/TrackballControls.js';
@@ -13,6 +27,7 @@ import {
   SpatialFace,
   SpatialData,
   CameraParams,
+  DepthBytes,
   DepthConversionResult,
 } from './interfaces';
 import { CustomArcballControls, TurntableControls, VirtualBallControls } from './controls';
@@ -38,37 +53,6 @@ declare const acquireVsCodeApi: () => any;
 
 // Environment detection - works in both VSCode and browser
 const isVSCode = typeof acquireVsCodeApi !== 'undefined';
-
-const BACKGROUND_CHANGE_MESSAGES = new Set([
-  'stonexColorReady',
-  'spatialData',
-  'multiSpatialData',
-  'sceneModelData',
-  'splatContainerUri',
-  'ultimateRawBinaryData',
-  'ultimateRawBinaryUri',
-  'directTypedArrayData',
-  'binarySpatialData',
-  'addFiles',
-  'startLargeFile',
-  'largeFileChunk',
-  'largeFileComplete',
-  'depthData',
-  'objData',
-  'stlData',
-  'xyzData',
-  'pcdData',
-  'ptsData',
-  'kittiBinData',
-  'offData',
-  'gltfData',
-  'volumeData',
-  'colmapModelFiles',
-  'colmapImages',
-  'npyData',
-  'xyzVariantData',
-  'poseData',
-]);
 
 // Shared file handling functionality
 import {
@@ -154,13 +138,18 @@ import * as normalsVisualizer from './normalsVisualizer';
 import * as depthConversionPipeline from './depth/depthConversionPipeline';
 import * as colorImageForDepth from './depth/colorImageForDepth';
 import * as largeFileChunking from './largeFileChunking';
+import type { LargeFileChunkingHost } from './largeFileChunking';
 import * as binaryDataHandlers from './binaryDataHandlers';
 import * as datasetWorkflow from './depth/datasetWorkflow';
 import { mountSvelteSmokeTest } from './svelteSmokeTestMount';
 import { mountErrorOverlay } from './errorOverlayMount';
+import { setupContextRecovery, type ContextResidency } from './visualization/contextRecovery';
+import { RenderLoopSleep } from './rendering/renderLoopSleep';
 import { mountLoadingOverlay } from './loadingOverlayMount';
 import { mountTabNav } from './tabNavMount';
 import { mountWelcomeMessage } from './welcomeMessageMount';
+import { installBrowserAgent } from './hosts/browserAgent';
+import type { AgentViewerHost } from './hosts/agentBridge';
 import { mountPerformanceStats } from './performanceStatsMount';
 import { mountSequenceControls } from './sequenceControlsMount';
 import { mountFileList } from './fileListMount';
@@ -171,7 +160,7 @@ import { mountControlsTab } from './controlsTabMount';
 import { mountSceneGuides } from './sceneGuidesMount';
 import { updateSceneGuides } from './visualization/coordinateGrid';
 import { AdaptivePointRenderer } from './visualization/AdaptivePointRenderer';
-import { filesState } from './state/files.svelte';
+import { filesState, createEntryPresentation } from './state/files.svelte';
 import { GpuTimer, NULL_GPU_TIMER, createGpuTimer } from './rendering/gpuTimer';
 import type { ViewerRenderer } from './rendering/viewerRenderer';
 import { RendererBackend, WEBGPU_CAVEATS, createViewerRenderer } from './rendering/rendererBackend';
@@ -181,9 +170,10 @@ import {
   type VisibilityRenderContext,
 } from './rendering/WebGPUVisibilityRenderer';
 import { FileEntryRegistry } from './state/fileEntries';
-import { insertEntryState, removeEntryState } from './state/fileEntryState';
+import { insertEntryState } from './state/fileEntryState';
 import { viewerState } from './state/viewer.svelte';
 import { uiState } from './state/ui.svelte';
+import { filmState } from './state/film.svelte';
 import { acceptVolumeResponse, setVolumeError, updateVolumeProgress } from './state/volume.svelte';
 import { flushSync } from 'svelte';
 import { formatFileSize } from './utils/format';
@@ -195,15 +185,23 @@ import { SectionPlaneManager } from './visualization/sectionPlanes';
 import type { VolumeData } from './parsers/nrrdParser';
 import { normalizeDepth, projectToPointCloud } from './depth/DepthProjector';
 import {
+  decodeExrWasm,
+  decodeTiffWasm,
   initTiffWasm,
   projectDepthBandWasmSync,
   projectDepthWasmSync,
 } from './depth/readers/tiffWasm';
-import { projectDepthInBands } from './depth/depthProjectionPool';
+import {
+  decodeExrInBlocks,
+  decodeTiffInStrips,
+  projectDepthInBands,
+} from './depth/depthProjectionPool';
 import { registrationState } from './state/registration.svelte';
 import {
   inspectNpyWasm,
   isNpyPointCloudShape,
+  parsePlyBytes,
+  parsePlyFromRanges,
   parsePlyFromResponse,
   parsePlyWasm,
   readNpyWasm,
@@ -214,21 +212,32 @@ import { buildVolumeMeshAsync } from './visualization/isosurface';
 import { buildVolumeSlicesAsync } from './visualization/volumeSlices';
 import { buildVolumeVoxelsAsync } from './visualization/volumeVoxels';
 
+// As early as the bundle allows: a binary PLY the extension named in the page
+// starts streaming into the parser while the viewer below initialises.
+binaryDataHandlers.startPlyPrefetch(
+  (window as any).__PLY_PREFETCH__,
+  (window as any).__PLY_PREFETCH_SIZE__
+);
+depthConversionPipeline.startDepthPrefetch(
+  (window as any).__DEPTH_PREFETCH__,
+  (window as any).__DEPTH_PREFETCH_SIZE__
+);
+
 /**
  * Modern point cloud visualizer with unified file management and Depth image processing
  * Works in both VSCode extension and standalone browser environments
  */
 
-class PointCloudVisualizer {
+export class PointCloudVisualizer {
   /**
-   * Whether a VS Code extension host is on the other end of `vscode`.
+   * Whether a Node-based VS Code extension host is on the other end of `vscode`.
    *
    * Features that need a process still holding the opened file — the X3A
    * station pipeline re-reads the archive — key off this rather than sniffing
    * for `acquireVsCodeApi`, which cannot be faked in a test without flipping
    * the whole page into webview mode.
    */
-  readonly runningInVSCode: boolean = isVSCode;
+  readonly runningInVSCode: boolean = isVSCode && !isWebExtension;
   vscode: any = isVSCode
     ? acquireVsCodeApi()
     : {
@@ -263,6 +272,8 @@ class PointCloudVisualizer {
   // crashes the webview. This is the safety net for the multi-window
   // out-of-VRAM case (each window is a separate context sharing one GPU).
   private contextLost = false;
+  /** Releases the WebGL context while the viewer is hidden; see contextRecovery.ts. */
+  gpuResidency: ContextResidency | null = null;
   controls!:
     | TrackballControls
     | OrbitControls
@@ -298,13 +309,25 @@ class PointCloudVisualizer {
   pointPickingImplementation: PointPickingImplementation = 'cpu';
   webgpuPointRenderingAvailable: boolean = false;
   webgpuPointRenderingUnavailableReason: string | null = 'WebGPU availability has not been checked';
+  /** Settles (never rejects) once the optional WebGPU helpers are known. */
+  webgpuReady: Promise<void> = Promise.resolve();
   pointRenderingImplementation: PointRenderingImplementation = 'current';
   private webgpuVisibilityRenderer: WebGPUVisibilityRenderer | null = null;
   // Video mode: camera keyframes, playback and recording (film/FilmManager.ts)
   filmManager: FilmManager | null = null;
 
   // On-demand rendering state
-  needsRender: boolean = false;
+  private renderRequested = false;
+  get needsRender(): boolean {
+    return this.renderRequested;
+  }
+  /** Any request for a frame also wakes a loop that went to sleep. */
+  set needsRender(value: boolean) {
+    this.renderRequested = value;
+    if (value) {
+      this.loopSleep?.wake();
+    }
+  }
   private animationId: number | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private screenAnchor: ScreenAnchorController | null = null;
@@ -318,8 +341,8 @@ class PointCloudVisualizer {
   // When loading additional file(s) into a non-empty scene, we show progress as a
   // row in the Files list instead of a blocking overlay (the current cloud stays
   // interactive). Holds the label/detail of the in-progress add, or null.
-  private pendingLoadLabel: string | null = null;
-  private pendingLoadDetail: string = '';
+  pendingLoadLabel: string | null = null;
+  pendingLoadDetail: string = '';
 
   // FPS tracking
   fpsFrameTimes: number[] = [];
@@ -350,7 +373,9 @@ class PointCloudVisualizer {
   // one index space. fileEntries owns that ordering and hands out the index for
   // each entry, so nothing derives it from collection lengths - see
   // state/fileEntries.ts for why that derivation was unsafe.
-  readonly fileEntries = new FileEntryRegistry();
+  readonly fileEntries = new FileEntryRegistry(createEntryPresentation, entries => {
+    filesState.entries = entries;
+  });
   /** Image names of the loaded COLMAP model, for matching streamed photos. */
   private colmapImageNames: string[] = [];
   private colmapImagesDone = 0;
@@ -365,7 +390,6 @@ class PointCloudVisualizer {
   // Per-file "render as gaussian splats" mode (3DGS PLY files only). The
   // manager lives in visualization/splatMode.ts; this array is parallel to
   // spatialFiles like the render-mode arrays below.
-  splatModeActive: boolean[] = [];
   splatMode: SplatModeManager = new SplatModeManager(this);
   private isFirstFileLoad: boolean = true; // Track if this is the first file being loaded
 
@@ -389,71 +413,76 @@ class PointCloudVisualizer {
   sequenceTimer: number | null = null;
   sequenceFps = 2; // ~2 frames per second
   isSequencePlaying = false;
-  sequenceCache = new Map<number, THREE.Object3D>();
-  sequenceCacheOrder: number[] = [];
+  sequenceCache = new Map<number, FileEntry>();
+  sequencePending = new Map<
+    number,
+    { requestId: string; controller: AbortController; processing: boolean }
+  >();
+  sequenceDecoding = false;
+  sequenceQueuedFrame: import('./hosts/viewerProtocol').MessageOf<'sequence:file'> | null = null;
+  sequenceGeneration = 0;
+  sequenceRequestId = 0;
+  maxSequenceCacheBytes = 256 * 1024 * 1024;
   maxSequenceCache = 6; // keep more frames when navigating back
-  individualColorModes: string[] = []; // Individual color modes: 'original', 'assigned', or color index
-  appliedMtlColors: (number | null)[] = []; // Store applied MTL hex colors for each file
-  appliedMtlNames: (string | null)[] = []; // Store applied MTL material names for each file
-  appliedMtlData: (any | null)[] = []; // Store applied MTL data for each file
 
   // Per-file Depth data storage for reprocessing
-  fileDepthData: Map<
-    number,
-    {
-      originalData: ArrayBuffer;
-      cameraParams: CameraParams;
-      fileName: string;
-      depthDimensions: { width: number; height: number };
-      colorImageData?: ImageData;
-      colorImageName?: string;
-    }
-  > = new Map();
-
-  // Calibration data storage for each depth file
-  calibrationData?: Map<number, any>;
 
   // Depth converter instance
   private depthConverter: DepthConverter = new DepthConverter();
   private depthWorkerClient: DepthWorkerClient = new DepthWorkerClient(this.depthConverter);
 
-  // Pose entries managed like files but stored as Object3D groups
-  poseGroups: THREE.Group[] = [];
-  poseMeta: {
-    jointCount: number;
-    edgeCount: number;
-    fileName: string;
-    invalidJoints?: number;
-    // Dataset extras (Halpe or similar)
-    jointColors?: [number, number, number][]; // normalized 0-1
-    linkColors?: [number, number, number][]; // normalized 0-1
-    keypointNames?: string[];
-    skeletonLinks?: Array<[number, number]>;
-    jointScores?: number[];
-    jointUncertainties?: Array<[number, number, number]>;
-  }[] = [];
-  // Per-pose feature toggles
-  poseUseDatasetColors: boolean[] = [];
-  poseShowLabels: boolean[] = [];
-  poseScaleByScore: boolean[] = [];
-  poseScaleByUncertainty: boolean[] = [];
-  poseConvention: ('opencv' | 'opengl')[] = [];
-  poseMinScoreThreshold: number[] = [];
-  poseMaxUncertaintyThreshold: number[] = [];
-  poseLabelsGroups: (THREE.Group | null)[] = [];
-  poseJoints: Array<Array<{ x: number; y: number; z: number; valid?: boolean }>> = [];
-  poseEdges: Array<Array<[number, number]>> = [];
-
-  // Camera visualization
-  cameraGroups: THREE.Group[] = [];
-  cameraNames: string[] = [];
-  cameraVisibility: boolean = true;
-  cameraShowLabels: boolean[] = [];
-  cameraShowCoords: boolean[] = [];
+  get poseGroups(): readonly THREE.Group[] {
+    return this.fileEntries.ofKind('pose').map(entry => entry.pose!.object);
+  }
+  get poseMeta(): readonly PoseEntryData['meta'][] {
+    return this.fileEntries.ofKind('pose').map(entry => entry.pose!.meta);
+  }
+  get poseJoints(): readonly PoseEntryData['joints'][] {
+    return this.fileEntries.ofKind('pose').map(entry => entry.pose!.joints);
+  }
+  get poseEdges(): readonly PoseEntryData['edges'][] {
+    return this.fileEntries.ofKind('pose').map(entry => entry.pose!.edges);
+  }
+  get poseUseDatasetColors(): readonly boolean[] {
+    return this.fileEntries.ofKind('pose').map(entry => entry.pose!.useDatasetColors);
+  }
+  get poseShowLabels(): readonly boolean[] {
+    return this.fileEntries.ofKind('pose').map(entry => entry.pose!.showLabels);
+  }
+  get poseScaleByScore(): readonly boolean[] {
+    return this.fileEntries.ofKind('pose').map(entry => entry.pose!.scaleByScore);
+  }
+  get poseScaleByUncertainty(): readonly boolean[] {
+    return this.fileEntries.ofKind('pose').map(entry => entry.pose!.scaleByUncertainty);
+  }
+  get poseConvention(): readonly ('opencv' | 'opengl')[] {
+    return this.fileEntries.ofKind('pose').map(entry => entry.pose!.convention);
+  }
+  get poseMinScoreThreshold(): readonly number[] {
+    return this.fileEntries.ofKind('pose').map(entry => entry.pose!.minScoreThreshold);
+  }
+  get poseMaxUncertaintyThreshold(): readonly number[] {
+    return this.fileEntries.ofKind('pose').map(entry => entry.pose!.maxUncertaintyThreshold);
+  }
+  get poseLabelsGroups(): readonly (THREE.Group | null)[] {
+    return this.fileEntries.ofKind('pose').map(entry => entry.pose!.labelsGroup);
+  }
+  get cameraGroups(): readonly THREE.Group[] {
+    return this.fileEntries.ofKind('camera').map(entry => entry.camera!.object);
+  }
+  get cameraNames(): readonly string[] {
+    return this.fileEntries.ofKind('camera').map(entry => entry.camera!.name);
+  }
+  get cameraShowLabels(): readonly boolean[] {
+    return this.fileEntries.ofKind('camera').map(entry => entry.camera!.showLabels);
+  }
+  get cameraShowCoords(): readonly boolean[] {
+    return this.fileEntries.ofKind('camera').map(entry => entry.camera!.showCoords);
+  }
+  cameraVisibility = true;
 
   // Rotation matrices
   cameraMatrix: THREE.Matrix4 = new THREE.Matrix4(); // Current camera position and rotation
-  transformationMatrices: THREE.Matrix4[] = []; // Individual transformation matrices for each point cloud
   private frameCount: number = 0; // Frame counter for UI updates
   private lastCameraPosition: THREE.Vector3 = new THREE.Vector3(); // Track camera position changes
   private lastCameraQuaternion: THREE.Quaternion = new THREE.Quaternion(); // Track camera rotation changes
@@ -465,40 +494,10 @@ class PointCloudVisualizer {
   private useFlatLighting: boolean = false;
 
   // UI state for collapsible file sections
-  private fileItemsCollapsed: boolean[] = [];
   private lightingMode: 'normal' | 'flat' | 'unlit' = 'normal';
 
   // Large file chunked loading state
-  chunkedFileState: Map<
-    string,
-    {
-      fileName: string;
-      totalVertices: number;
-      totalChunks: number;
-      receivedChunks: number;
-      vertices: SpatialVertex[];
-      positionsArray?: Float32Array;
-      colorsArray?: Uint8Array;
-      normalsArray?: Float32Array;
-      scalarFields?: Record<string, Float32Array>;
-      useTypedArrays: boolean;
-      hasColors: boolean;
-      hasNormals: boolean;
-      faces: SpatialFace[];
-      format: string;
-      comments: string[];
-      messageType: string;
-      startTime: number;
-      firstChunkTime: number;
-      lastChunkTime: number;
-      shortPath?: string;
-      hasIntensity?: boolean;
-      sourcePointCount?: number;
-      sourceOrigin?: [number, number, number];
-      metadata?: Record<string, unknown>;
-      fileSizeInBytes?: number;
-    }
-  > = new Map();
+  chunkedFileState: LargeFileChunkingHost['chunkedFileState'] = new Map();
 
   // Adaptive decimation tracking
 
@@ -530,11 +529,6 @@ class PointCloudVisualizer {
   originalDepthFileName: string | null = null;
   currentCameraParams: CameraParams | null = null;
   private depthDimensions: { width: number; height: number } | null = null;
-  liveDepthUpdateFiles = new Set<number>();
-  liveDepthUpdateInFlight = new Set<number>();
-  liveDepthUpdateQueued = new Set<number>();
-  liveDepthUpdateTimers = new Map<number, number>();
-  liveDepthUpdateVersions = new Map<number, number>();
   useLinearColorSpace: boolean = true; // Default: toggle is inactive; renderer still outputs sRGB
   axesPermanentlyVisible: boolean = false; // Persistent axes visibility toggle
   // Color space handling: always output sRGB, optionally convert source sRGB colors to linear before shading
@@ -624,6 +618,16 @@ class PointCloudVisualizer {
   // Predefined colors for different files - use shared constants
   readonly fileColors: [number, number, number][] = DEFAULT_COLORS.FILE_COLORS;
 
+  readonly lifetime = new ViewerLifetime();
+  private readonly loopSleep = new RenderLoopSleep(
+    this.lifetime,
+    () => this.startRenderLoop(),
+    () =>
+      !this.camera.position.equals(this.lastCameraPosition) ||
+      !this.camera.quaternion.equals(this.lastCameraQuaternion) ||
+      !this.controls.target.equals(this.lastRotationCenter)
+  );
+
   constructor() {
     this.progressivePlyManager = new ProgressivePlyManager(this);
     // Forward PERF lines to the extension's "3D Visualizer" Output channel.
@@ -636,22 +640,57 @@ class PointCloudVisualizer {
       renderModeToggles.updateUniversalRenderButtonStates(this);
       // FileItem's mode-dependent controls are declarative; wake Svelte after
       // the asynchronous Spark state changes.
-      filesState.renderModeTick += 1;
     };
     this.init();
   }
 
   private async init(): Promise<void> {
+    // Keep startup failures visible even when no WebGL context can be created.
+    mountErrorOverlay(this.lifetime);
+    const pendingFiles: File[][] = [];
+    let acceptingFiles = false;
+    const captureFiles = (event: Event): void => {
+      if (acceptingFiles) {
+        return;
+      }
+      const files =
+        event.type === 'drop'
+          ? (event as DragEvent).dataTransfer?.files
+          : (event.target as HTMLInputElement)?.id === 'hiddenFileInput'
+            ? (event.target as HTMLInputElement).files
+            : null;
+      if (!files?.length) {
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      pendingFiles.push(Array.from(files));
+    };
+    document.addEventListener('change', captureFiles, true);
+    document.addEventListener('drop', captureFiles, true);
+    const releaseStartupListeners = (): void => {
+      acceptingFiles = true;
+      document.removeEventListener('change', captureFiles, true);
+      document.removeEventListener('drop', captureFiles, true);
+    };
+    this.lifetime.add(() => {
+      releaseStartupListeners();
+      pendingFiles.length = 0;
+    });
     try {
+      const initStartedAt = performance.now();
       await this.initThreeJS();
+      const rendererReadyAt = performance.now();
+      if (this.lifetime.disposed) {
+        return;
+      }
       this.applyEnvironmentSpecificUI();
       this.setupEventListeners();
-      mountSvelteSmokeTest();
-      mountErrorOverlay();
-      mountLoadingOverlay();
-      mountFileActivityIndicator();
-      mountPerformanceStats();
-      mountTabNav(this);
+      mountSvelteSmokeTest(this.lifetime);
+      mountLoadingOverlay(this.lifetime);
+      mountFileActivityIndicator(this.lifetime);
+      mountPerformanceStats(this.lifetime);
+      mountTabNav(this.lifetime, this);
 
       const panel = document.getElementById('main-ui-panel');
       if (panel) {
@@ -670,6 +709,7 @@ class PointCloudVisualizer {
 
       // Setup welcome message interactivity
       mountWelcomeMessage(
+        this.lifetime,
         () => this.triggerOpenFile(),
         () => browserFileDragDrop.loadExamplePointCloud(this, 'guided'),
         () => browserFileDragDrop.loadExamplePointCloud(this, 'basic')
@@ -684,8 +724,14 @@ class PointCloudVisualizer {
 
       if (isVSCode) {
         // VSCode extension environment
-        configureRegistrationExtensionHost(message => this.vscode.postMessage(message));
+        if (!isWebExtension) {
+          configureRegistrationExtensionHost(message => this.vscode.postMessage(message));
+        }
         this.setupMessageHandler();
+        // Boot phases on the webview's own clock (0 = navigation start).
+        perfLog(
+          `⏱️ PERF[webview/boot] script ${initStartedAt.toFixed(0)}ms · renderer ${(rendererReadyAt - initStartedAt).toFixed(0)}ms · ui ${(performance.now() - rendererReadyAt).toFixed(0)}ms | ready at ${performance.now().toFixed(0)}ms`
+        );
         // The extension may already be parsing a restored document, but it
         // queues all outbound messages until this listener is installed.
         this.vscode.postMessage({ type: 'webviewReady' });
@@ -696,13 +742,24 @@ class PointCloudVisualizer {
       } else {
         // Browser environment
         this.initializeBrowserFileHandler();
+        installBrowserAgent(this as unknown as AgentViewerHost, this.lifetime.signal);
         console.log('🌐 Initializing standalone browser version...');
       }
       // Hosts may deliver their first file only after the asynchronous renderer
       // and file/message listeners are ready (construction alone is too early).
       document.documentElement.dataset.visualizerReady = 'true';
+      releaseStartupListeners();
       window.dispatchEvent(new Event('visualizer-ready'));
+      this.precompileWhenIdle();
+      for (const files of pendingFiles.splice(0)) {
+        if (this.lifetime.disposed) {
+          break;
+        }
+        await browserFileDragDrop.handleDroppedFiles(this, files);
+      }
     } catch (error) {
+      releaseStartupListeners();
+      pendingFiles.length = 0;
       this.showError(
         `Failed to initialize 3D Visualizer: ${error instanceof Error ? error.message : String(error)}`
       );
@@ -746,6 +803,10 @@ class PointCloudVisualizer {
     // Backend selection and construction both live in rendering/rendererBackend.ts;
     // WebGL stays the default and every WebGPU failure falls back to it.
     const selection = await createViewerRenderer(canvas);
+    if (this.lifetime.disposed) {
+      selection.renderer.dispose();
+      return;
+    }
     this.renderer = selection.renderer;
     this.rendererBackend = selection.backend;
     this.webglRenderer = selection.webglRenderer;
@@ -805,21 +866,46 @@ class PointCloudVisualizer {
     this.measurementManager = new MeasurementManager(this.scene, this.camera, this.renderer, this);
 
     // Initialize selection manager
-    this.selectionManager = new SelectionManager(this.getSelectionContext());
-    await this.selectionManager.initializeWebGPUPicker();
-    this.webgpuPickingAvailable = this.selectionManager.isWebGPUPickingAvailable();
-    this.webgpuPickingUnavailableReason = this.selectionManager.getWebGPUUnavailableReason();
-    this.pointPickingImplementation = this.selectionManager.getPointPickingImplementation();
-    console.log(
-      this.webgpuPickingAvailable
-        ? '⚡ WebGPU point picking available and enabled'
-        : `ℹ️ WebGPU point picking unavailable; using CPU (${this.webgpuPickingUnavailableReason})`
-    );
-
-    const visibilitySelection = await WebGPUVisibilityRenderer.create(container);
-    this.webgpuVisibilityRenderer = visibilitySelection.renderer;
-    this.webgpuPointRenderingAvailable = visibilitySelection.renderer !== null;
-    this.webgpuPointRenderingUnavailableReason = visibilitySelection.unavailableReason;
+    const selectionManager = new SelectionManager(this.getSelectionContext());
+    this.selectionManager = selectionManager;
+    // The WebGPU picker and visibility renderer are optional, and creating
+    // their devices and pipelines cold took ~220 ms - on the first viewer of a
+    // VS Code session, ahead of its file. They now finish after the viewer is
+    // ready; until then picking takes the CPU path and points render as usual.
+    // Both must settle before publishing capabilities or disposing them.
+    this.webgpuReady = Promise.allSettled([
+      selectionManager.initializeWebGPUPicker(),
+      WebGPUVisibilityRenderer.create(container),
+    ]).then(([picker, visibility]) => {
+      // One helper failing must not leak the other's device.
+      const visibilityRenderer =
+        visibility.status === 'fulfilled' ? visibility.value.renderer : null;
+      if (this.lifetime.disposed) {
+        visibilityRenderer?.dispose();
+        selectionManager.dispose();
+        return;
+      }
+      for (const result of [picker, visibility]) {
+        if (result.status === 'rejected') {
+          console.warn('Optional WebGPU helper failed to start:', result.reason);
+        }
+      }
+      this.webgpuPickingAvailable = selectionManager.isWebGPUPickingAvailable();
+      this.webgpuPickingUnavailableReason = selectionManager.getWebGPUUnavailableReason();
+      this.pointPickingImplementation = selectionManager.getPointPickingImplementation();
+      console.log(
+        this.webgpuPickingAvailable
+          ? '⚡ WebGPU point picking available and enabled'
+          : `ℹ️ WebGPU point picking unavailable; using CPU (${this.webgpuPickingUnavailableReason})`
+      );
+      this.webgpuVisibilityRenderer = visibilityRenderer;
+      this.webgpuPointRenderingAvailable = visibilityRenderer !== null;
+      this.webgpuPointRenderingUnavailableReason =
+        visibility.status === 'fulfilled'
+          ? visibility.value.unavailableReason
+          : String(visibility.reason);
+      this.publishWebGPUCapabilities();
+    });
 
     // Initialize video mode (camera keyframes / recording)
     this.filmManager = new FilmManager(this);
@@ -831,11 +917,11 @@ class PointCloudVisualizer {
     this.addAxesHelper();
 
     // Window resize with ResizeObserver for comprehensive dimension change detection
-    window.addEventListener('resize', this.onWindowResize.bind(this));
+    this.lifetime.listen(window, 'resize', this.onWindowResize.bind(this));
     this.setupResizeObserver();
 
     // Global UI interaction listener - triggers render on any button/input change
-    document.addEventListener('click', e => {
+    this.lifetime.listen(document, 'click', e => {
       const target = e.target as HTMLElement;
       if (
         target.tagName === 'BUTTON' ||
@@ -848,7 +934,7 @@ class PointCloudVisualizer {
       }
     });
 
-    document.addEventListener('input', e => {
+    this.lifetime.listen(document, 'input', e => {
       const target = e.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'SELECT') {
         this.requestRender();
@@ -857,16 +943,18 @@ class PointCloudVisualizer {
     });
 
     // Double-click to change the rotation center.
-    this.renderer.domElement.addEventListener('dblclick', this.onDoubleClick.bind(this));
+    this.lifetime.listen(this.renderer.domElement, 'dblclick', this.onDoubleClick.bind(this));
 
     // Start render loop
     this.startRenderLoop();
 
     // Clean up on page unload
-    window.addEventListener('beforeunload', () => {
+    this.lifetime.listen(window, 'beforeunload', () => {
       this.dispose();
     });
   }
+
+  private disposeAxesVisibility: () => void = () => {};
 
   initializeControls(): void {
     this.cameraViewAnimator.cancel();
@@ -967,7 +1055,7 @@ class PointCloudVisualizer {
   }
 
   private setupAxesVisibility(): void {
-    axesFeature.setupAxesVisibility(this);
+    this.disposeAxesVisibility = axesFeature.setupAxesVisibility(this);
   }
 
   private addAxesHelper(): void {
@@ -1006,12 +1094,12 @@ class PointCloudVisualizer {
     }
 
     // Ensure initial UI states reflect current settings
-    setTimeout(() => {
+    this.lifetime.defer(() => {
       this.updateGammaButtonState();
       this.updateAxesButtonState();
       this.updateLightingButtonsState();
       this.updateRotationCenterModeButtons();
-    }, 0);
+    });
   }
 
   private updateLightingButtonsState(): void {
@@ -1080,10 +1168,6 @@ class PointCloudVisualizer {
     this.rotationCenterManager.updateModeButtons();
   }
 
-  private rebuildAllColorAttributesForCurrentGammaSetting(): void {
-    sceneBrightness.rebuildAllColorAttributesForCurrentGammaSetting(this);
-  }
-
   private setupResizeObserver(): void {
     const container = document.getElementById('viewer-container');
     if (!container) {
@@ -1109,18 +1193,44 @@ class PointCloudVisualizer {
       spatialFiles: this.spatialFiles,
       poseGroups: this.poseGroups,
       cameraGroups: this.cameraGroups,
-      fileVisibility: this.fileVisibility,
-      pointSizes: this.pointSizes,
       screenSpaceScaling: this.screenSpaceScaling,
       splatMeshes: this.spatialFiles.map((_, index) => this.splatMode.getMesh(index)),
       clippingPlanes: this.renderer.clippingPlanes,
     };
   }
 
-  private dispose(): void {
-    for (const data of this.spatialFiles) {
-      data.sceneModel?.dispose();
+  dispose(): void {
+    if (this.lifetime.disposed) {
+      return;
     }
+    this.lifetime.dispose();
+    this.stopRenderLoop();
+    this.disposeAxesVisibility();
+    this.adaptivePointRenderer.dispose();
+    this.smallViewAffordance.hide();
+    rotationCenterFeature.removeRotationCenterFeedback(this);
+    this.gpuTimer.dispose();
+    sequencePlayback.disposeSequence(this);
+    this.depthWorkerClient.dispose();
+    delete document.documentElement.dataset.visualizerReady;
+    this.disposeMessageHandler();
+    const entries = [...this.fileEntries.all];
+    this.splatMode.dispose();
+    this.sectionPlanes.dispose();
+    registrationFeature.endSession(this, false);
+    this.fileEntries.clear();
+    for (const entry of entries) {
+      if (entry.spatial) {
+        disposeFileResources(entry, entry.spatial.object, entry.spatial.data);
+      } else {
+        disposeObjects([entry.pose?.object, entry.pose?.labelsGroup, entry.camera?.object]);
+      }
+    }
+    disposeObjects([...(this.scene?.children ?? [])]);
+    this.volumeSources.clear();
+    this.pendingDepthFiles.clear();
+    this.datasetTextures.clear();
+    uiState.sequenceMode = false;
     // Clean up ResizeObserver
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();
@@ -1159,6 +1269,7 @@ class PointCloudVisualizer {
       this.edlPass = null;
     }
     if (this.effectComposer) {
+      this.effectComposer.dispose();
       this.effectComposer = null;
     }
 
@@ -1170,10 +1281,14 @@ class PointCloudVisualizer {
     // Clean up renderer
     if (this.renderer) {
       this.renderer.dispose();
+      this.renderer.domElement.replaceWith(this.renderer.domElement.cloneNode(false));
     }
   }
 
   private showLoading(show: boolean, message?: string): void {
+    if (this.lifetime.disposed) {
+      return;
+    }
     this.isFileLoading = show;
     // In VS Code the extension host sends backgroundOperationComplete only
     // after parsing, progressive colour delivery, and every other load phase
@@ -1262,11 +1377,18 @@ class PointCloudVisualizer {
 
     // Track render event for resize renders too
     this.trackRender();
+    // A resize needs no input inside the page, so wake a sleeping loop: its
+    // ticks reposition camera-relative overlays such as measurement labels.
+    // (Waking, not requesting: this frame is already drawn.)
+    this.loopSleep.wake();
   }
 
   private modelLastFrameTime = performance.now();
 
   private animate(): void {
+    if (this.lifetime.disposed) {
+      return;
+    }
     const modelNow = performance.now();
     updateModelPlayback(this, Math.min((modelNow - this.modelLastFrameTime) / 1000, 0.1));
     this.modelLastFrameTime = modelNow;
@@ -1336,6 +1458,7 @@ class PointCloudVisualizer {
       this.needsRender = true;
     }
 
+    const rendered = this.needsRender;
     // Always render when needed (this covers camera damping/momentum)
     if (this.needsRender) {
       // Consume the current invalidation before rendering. Renderer callbacks
@@ -1360,50 +1483,76 @@ class PointCloudVisualizer {
       // Track render event
       this.trackRender();
     }
+    this.sleepIfIdle(rendered || positionChanged || rotationChanged || rotationCenterChanged);
   }
 
   requestRender(): void {
+    if (this.lifetime.disposed) {
+      return;
+    }
     this.needsRender = true;
   }
 
   /**
-   * Recover gracefully from WebGL context loss instead of crashing.
-   *
-   * Context loss happens when the GPU runs out of memory — common when several
-   * extension windows each hold a large cloud, since every webview is a separate
-   * WebGL context but they all share one GPU's VRAM. Without this handler the
-   * next GL call throws and takes down the whole webview. We preventDefault() to
-   * let the browser attempt restoration, pause rendering while lost, and resume
-   * on restore (Three.js re-uploads geometries/textures automatically on the
-   * next render because their CPU-side arrays still exist).
+   * Compile the drag-only axes shaders once the viewer is up: a few
+   * milliseconds that do not belong on the startup path, done long before
+   * anyone can start a drag.
+   */
+  private precompileWhenIdle(): void {
+    const precompile = () => {
+      if (!this.lifetime.disposed && this.webglRenderer && !this.contextLost) {
+        axesFeature.precompileAxes(
+          this.webglRenderer,
+          this,
+          this.edlPass?.sceneRenderTarget ?? null
+        );
+      }
+    };
+    if (typeof requestIdleCallback === 'function') {
+      const id = requestIdleCallback(precompile, { timeout: 2000 });
+      this.lifetime.add(() => cancelIdleCallback(id));
+    } else {
+      this.lifetime.defer(precompile);
+    }
+  }
+
+  /**
+   * Keep a context lost while visible idle until the user chooses to re-upload
+   * the scene; release and restore it silently around hidden periods.
    */
   private setupContextLossHandling(canvas: HTMLCanvasElement): void {
-    // `webglcontextlost` never fires for a WebGPU canvas; that backend reports
-    // device loss through the renderer instead. Nothing listens for it yet, so
-    // a lost WebGPU device is simply not recovered from — acceptable while the
-    // backend is an opt-in experiment, and noted in docs/WEBGPU_READINESS.md.
-    if (this.rendererBackend !== 'webgl') {
+    if (this.rendererBackend !== 'webgl' || !this.webglRenderer) {
       return;
     }
-    canvas.addEventListener(
-      'webglcontextlost',
-      event => {
-        event.preventDefault(); // required so the context can be restored
-        this.contextLost = true;
-        console.warn('WebGL context lost — pausing rendering until restored.');
-        this.showStatus('GPU context lost (likely out of memory). Recovering…');
-      },
-      false
-    );
-    canvas.addEventListener(
-      'webglcontextrestored',
+    this.gpuResidency = setupContextRecovery(
+      canvas,
+      this.webglRenderer.getContext(),
+      this.lifetime,
       () => {
+        this.contextLost = true;
+        this.gpuTimer.dispose();
+        this.gpuTimer = NULL_GPU_TIMER;
+      },
+      () => {
+        this.gpuTimer = createGpuTimer(this.renderer);
         this.contextLost = false;
-        console.warn('WebGL context restored — resuming.');
-        this.showStatus('GPU context restored.');
         this.requestRender();
       },
-      false
+      {
+        canRelease: () =>
+          !filmState.recording &&
+          !uiState.fileLoading &&
+          uiState.backgroundChanges === 0 &&
+          !this.fileEntries.all.some(
+            entry => entry.state.splatModeActive || entry.spatial?.data.splatSource
+          ),
+        // The WebGPU picker and visibility renderer keep their own copies of
+        // the clouds' positions; they rebuild them on next use.
+        beforeRelease: () => {
+          this.selectionManager?.releaseUnusedPointBuffers(new Set());
+          this.webgpuVisibilityRenderer?.retainGeometries(new Set());
+        },
+      }
     );
   }
 
@@ -1412,7 +1561,10 @@ class PointCloudVisualizer {
    * falls back to direct renderer.render() when disabled for zero overhead.
    */
   performRender(): void {
-    // The GPU is gone while the context is lost; any GL call would throw.
+    if (this.lifetime.disposed) {
+      return;
+    }
+    // Also stay paused after restoration: replaying a large upload can lose it again.
     if (this.contextLost) {
       return;
     }
@@ -1423,16 +1575,16 @@ class PointCloudVisualizer {
     }
     this.smallViewAffordance.update();
     updateSceneGuides(this);
-    const visibilityContext = this.getVisibilityRenderContext();
     const useEDL = edl.prepareEDLFrame(this);
-    const useVisibilityRenderer =
+    const visibilityContext =
       this.pointRenderingImplementation === 'webgpu-visibility' &&
       !useEDL &&
       !this.allowTransparency &&
-      !!this.webgpuVisibilityRenderer &&
-      this.webgpuVisibilityRenderer.canRender(visibilityContext);
+      this.webgpuVisibilityRenderer
+        ? this.getVisibilityRenderContext()
+        : null;
 
-    if (useVisibilityRenderer && this.webgpuVisibilityRenderer) {
+    if (visibilityContext && this.webgpuVisibilityRenderer?.canRender(visibilityContext)) {
       const visibility = visibilityContext.pointClouds.map(cloud => cloud.visible);
       for (const cloud of visibilityContext.pointClouds) {
         cloud.visible = false;
@@ -1469,23 +1621,27 @@ class PointCloudVisualizer {
   }
 
   private getVisibilityRenderContext(): VisibilityRenderContext {
-    const pointClouds = this.meshes.filter(
-      (mesh, index): mesh is THREE.Points =>
-        !!mesh &&
-        this.fileVisibility[index] &&
-        mesh.visible &&
-        mesh instanceof THREE.Points &&
-        mesh.material instanceof THREE.PointsMaterial
-    );
+    const pointClouds: THREE.Points[] = [];
+    let hasDepthConflicts = false;
+    for (const entry of this.fileEntries.all) {
+      const mesh = entry.spatial?.object;
+      if (!mesh || !entry.state.visible || !mesh.visible) {
+        continue;
+      }
+      if (mesh instanceof THREE.Points) {
+        if (mesh.material instanceof THREE.PointsMaterial) {
+          pointClouds.push(mesh);
+        }
+      } else {
+        hasDepthConflicts = true;
+      }
+    }
     return {
       camera: this.camera,
       pointClouds,
       clippingPlanes: this.renderer.clippingPlanes,
       brightnessStops: this.brightnessStops,
-      hasDepthConflicts: this.meshes.some(
-        (mesh, index) =>
-          !!mesh && this.fileVisibility[index] && mesh.visible && !(mesh instanceof THREE.Points)
-      ),
+      hasDepthConflicts,
     };
   }
 
@@ -1535,13 +1691,26 @@ class PointCloudVisualizer {
     renderStats.updateFPSDisplay(this);
   }
 
+  /** End of a loop tick: stop the loop once nothing has happened for a while. */
+  private sleepIfIdle(active: boolean): void {
+    // A recording copies every frame of the canvas, rendered or not.
+    if (this.loopSleep.tick(active, !filmState.recording) && this.animationId !== null) {
+      cancelAnimationFrame(this.animationId);
+      this.animationId = null;
+    }
+  }
+
   private startRenderLoop(): void {
+    if (this.lifetime.disposed) {
+      return;
+    }
     if (this.animationId === null) {
       this.animate();
     }
   }
 
   private stopRenderLoop(): void {
+    this.loopSleep.cancel();
     if (this.animationId !== null) {
       cancelAnimationFrame(this.animationId);
       this.animationId = null;
@@ -1550,9 +1719,9 @@ class PointCloudVisualizer {
 
   private checkMeshVisibility(): void {
     // Check if any meshes are being culled by frustum culling
-    for (let i = 0; i < this.meshes.length; i++) {
-      const mesh = this.meshes[i];
-      const isVisible = this.fileVisibility[i];
+    for (const entry of this.fileEntries.ofKind('spatial')) {
+      const mesh = entry.spatial!.object;
+      const isVisible = entry.state.visible;
 
       if (!isVisible) {
         continue;
@@ -1598,7 +1767,7 @@ class PointCloudVisualizer {
     return transformationMatrix.getTransformationMatrix(this, fileIndex);
   }
 
-  private getTransformationMatrixAsArray(fileIndex: number): number[] {
+  getTransformationMatrixAsArray(fileIndex: number): number[] {
     return transformationMatrix.getTransformationMatrixAsArray(this, fileIndex);
   }
 
@@ -1656,10 +1825,20 @@ class PointCloudVisualizer {
     rotationCenterFeature.setRotationCenterToOrigin(this);
   }
 
+  /** Mirror the WebGPU capabilities into the reactive state the Controls tab reads. */
+  private publishWebGPUCapabilities(): void {
+    viewerState.webgpuPickingAvailable = this.webgpuPickingAvailable;
+    viewerState.webgpuPickingUnavailableReason = this.webgpuPickingUnavailableReason;
+    viewerState.pointPickingImplementation = this.pointPickingImplementation;
+    viewerState.webgpuPointRenderingAvailable = this.webgpuPointRenderingAvailable;
+    viewerState.webgpuPointRenderingUnavailableReason = this.webgpuPointRenderingUnavailableReason;
+  }
+
   setPointPickingImplementation(implementation: PointPickingImplementation): void {
     this.selectionManager?.setPointPickingImplementation(implementation);
     this.pointPickingImplementation =
       this.selectionManager?.getPointPickingImplementation() ?? 'cpu';
+    viewerState.pointPickingImplementation = this.pointPickingImplementation;
     this.showStatus(
       this.pointPickingImplementation === 'webgpu'
         ? 'Using WebGPU point picking'
@@ -1796,7 +1975,7 @@ class PointCloudVisualizer {
     return intensity.getIntensityArray(data);
   }
 
-  private hasIntensityData(data: SpatialData): boolean {
+  hasIntensityData(data: SpatialData): boolean {
     return intensity.hasIntensityData(data);
   }
 
@@ -1822,7 +2001,9 @@ class PointCloudVisualizer {
   // typed path is zero-copy (shares the parser's array). MESHES are unchanged:
   // they keep the Float32 + LUT path (few vertices, memory is a non-issue, and
   // their lit materials read linear vertex colors directly).
-  private buildOriginalColorArray(data: SpatialData): Float32Array | Uint8Array | null {
+  private buildOriginalColorArray(
+    data: SpatialData
+  ): Float32Array | Uint16Array | Uint8Array | null {
     return colorModeUtils.buildOriginalColorArray(this, data);
   }
 
@@ -1838,8 +2019,12 @@ class PointCloudVisualizer {
     return colorModeUtils.shouldUseVertexColors(data, colorMode);
   }
 
-  createGeometryFromSpatialData(data: SpatialData): THREE.BufferGeometry {
-    const { geometry, geometryMs } = meshBuilder.createGeometryFromSpatialData(this, data);
+  createGeometryFromSpatialData(data: SpatialData, colorMode?: string): THREE.BufferGeometry {
+    const { geometry, geometryMs } = meshBuilder.createGeometryFromSpatialData(
+      this,
+      data,
+      colorMode
+    );
     this.lastGeometryMs = geometryMs;
     return geometry;
   }
@@ -1848,7 +2033,7 @@ class PointCloudVisualizer {
     // Add file button - different behavior for VSCode vs browser
     const addFileBtn = document.getElementById('add-file');
     if (addFileBtn) {
-      addFileBtn.addEventListener('click', () => {
+      this.lifetime.listen(addFileBtn, 'click', () => {
         if (isVSCode) {
           // VSCode environment - request file from extension
           this.requestAddFile();
@@ -1864,7 +2049,7 @@ class PointCloudVisualizer {
 
     // Sequence controls - Svelte component (components/SequenceControls.svelte),
     // driven by state/ui.svelte.ts's sequence fields.
-    mountSequenceControls({
+    mountSequenceControls(this.lifetime, {
       onPlayPause: () => (this.isSequencePlaying ? this.pauseSequence() : this.playSequence()),
       onPrev: () => this.stepSequence(-1),
       onNext: () => this.stepSequence(1),
@@ -1873,16 +2058,16 @@ class PointCloudVisualizer {
 
     // File list - Svelte component (components/FileList.svelte), see
     // updateFileList() and docs/SVELTE_MIGRATION_PLAN.md Phase 3.
-    mountFileList(this);
-    mountGlobalAlignMenu(this);
-    mountStats(this);
-    mountControlsTab(this);
-    mountSceneGuides(this);
-    mountFilmPanel(this);
-    mountMeasurementQuickActions(this);
-    mountSmallViewAffordance(this);
+    mountFileList(this.lifetime, this);
+    mountGlobalAlignMenu(this.lifetime, this);
+    mountStats(this.lifetime, this);
+    mountControlsTab(this.lifetime, this);
+    mountSceneGuides(this.lifetime, this);
+    mountFilmPanel(this.lifetime, this);
+    mountMeasurementQuickActions(this.lifetime, this);
+    mountSmallViewAffordance(this.lifetime, this);
 
-    document.addEventListener('dblclick', e => {
+    this.lifetime.listen(document, 'dblclick', e => {
       const slider = e.target;
       if (!(slider instanceof HTMLInputElement) || slider.type !== 'range') {
         return;
@@ -1900,7 +2085,7 @@ class PointCloudVisualizer {
 
     // Tab navigation
     // Keyboard shortcuts
-    document.addEventListener('keydown', e => {
+    this.lifetime.listen(document, 'keydown', e => {
       // Only handle shortcuts when not typing in input fields
       if (
         e.target instanceof HTMLInputElement ||
@@ -2062,54 +2247,6 @@ class PointCloudVisualizer {
     sequencePlayback.seekSequence(this, index);
   }
 
-  private async sequenceHandleUltimate(message: any): Promise<void> {
-    await sequencePlayback.sequenceHandleUltimate(this, message);
-  }
-
-  private async sequenceHandlePly(message: any): Promise<void> {
-    await sequencePlayback.sequenceHandlePly(this, message);
-  }
-
-  private async sequenceHandleXyz(message: any): Promise<void> {
-    await sequencePlayback.sequenceHandleXyz(this, message);
-  }
-
-  private async sequenceHandleObj(message: any): Promise<void> {
-    await sequencePlayback.sequenceHandleObj(this, message);
-  }
-
-  private async sequenceHandleStl(message: any): Promise<void> {
-    await sequencePlayback.sequenceHandleStl(this, message);
-  }
-
-  private async sequenceHandleDepth(message: any): Promise<void> {
-    await sequencePlayback.sequenceHandleDepth(this, message);
-  }
-
-  private trimNormalModeArraysFrom(startIndex: number): void {
-    sequencePlayback.trimNormalModeArraysFrom(this, startIndex);
-  }
-
-  private async loadSequenceFrame(index: number): Promise<void> {
-    await sequencePlayback.loadSequenceFrame(this, index);
-  }
-
-  private useSequenceObject(obj: THREE.Object3D, index: number): void {
-    sequencePlayback.useSequenceObject(this, obj, index);
-  }
-
-  private cacheSequenceOnly(obj: THREE.Object3D, index: number): void {
-    sequencePlayback.cacheSequenceOnly(this, obj, index);
-  }
-
-  private swapSequenceObject(obj: THREE.Object3D, index: number): void {
-    sequencePlayback.swapSequenceObject(this, obj, index);
-  }
-
-  private ensureSequenceVisibility(obj: THREE.Object3D): void {
-    sequencePlayback.ensureSequenceVisibility(obj);
-  }
-
   fitCameraToObject(obj: THREE.Object3D): void {
     const box = new THREE.Box3().setFromObject(obj);
     if (!box.isEmpty()) {
@@ -2138,14 +2275,13 @@ class PointCloudVisualizer {
     }
   }
 
-  getDepthSettingsFromFileUI(fileIndex: number): CameraParams {
-    return depthPanelState.getDepthSettingsFromFileUI(fileIndex);
+  getDepthSettings(fileIndex: number): CameraParams {
+    return depthPanelState.depthParams(depthPanelState.getDepthForm(this, fileIndex));
   }
 
   private rebuildAllPlyMaterials(): void {
-    for (let i = 0; i < this.meshes.length && i < this.spatialFiles.length; i++) {
-      const data = this.spatialFiles[i];
-      const mesh = this.meshes[i];
+    for (const [i, entry] of this.fileEntries.ofKind('spatial').entries()) {
+      const { data, object: mesh } = entry.spatial!;
       if (!data || !mesh || data.sceneModel) {
         continue;
       }
@@ -2176,7 +2312,11 @@ class PointCloudVisualizer {
     // Tab collapse/expansion is intentional layout state, so it is one of the
     // few times the automatic visual center should follow the panel. Ordinary
     // row/content changes do not call this and therefore cannot move the view.
-    requestAnimationFrame(() => this.screenAnchor?.refreshAutomatic());
+    requestAnimationFrame(() => {
+      if (!this.lifetime.disposed) {
+        this.screenAnchor?.refreshAutomatic();
+      }
+    });
   }
 
   private toggleAxesVisibility(): void {
@@ -2184,7 +2324,8 @@ class PointCloudVisualizer {
   }
 
   private toggleNormalsVisibility(): void {
-    this.normalsVisualizers.forEach(normals => {
+    this.fileEntries.all.forEach(entry => {
+      const normals = entry.resources.normals;
       if (normals) {
         normals.visible = !normals.visible;
       }
@@ -2198,37 +2339,40 @@ class PointCloudVisualizer {
     }
 
     // Initialize visibility state if not set
-    if (this.pointsVisible[fileIndex] === undefined) {
-      this.pointsVisible[fileIndex] = true;
+    if (this.fileEntries.require(fileIndex).state.pointsVisible === undefined) {
+      this.fileEntries.require(fileIndex).state.pointsVisible = true;
     }
 
     // Toggle the visibility state
-    this.pointsVisible[fileIndex] = !this.pointsVisible[fileIndex];
+    this.fileEntries.require(fileIndex).state.pointsVisible =
+      !this.fileEntries.require(fileIndex).state.pointsVisible;
 
     // Apply to the actual mesh
     if (this.meshes[fileIndex]) {
-      this.meshes[fileIndex].visible = this.pointsVisible[fileIndex];
+      this.meshes[fileIndex].visible = this.fileEntries.require(fileIndex).state.pointsVisible;
     }
     this.requestRender();
     // this.requestRender();
   }
 
   private toggleFileNormalsVisibility(fileIndex: number): void {
-    if (fileIndex < 0 || fileIndex >= this.normalsVisualizers.length) {
+    if (fileIndex < 0 || fileIndex >= this.fileEntries.length) {
       return;
     }
 
     // Initialize visibility state if not set
-    if (this.normalsVisible[fileIndex] === undefined) {
-      this.normalsVisible[fileIndex] = true;
+    if (this.fileEntries.require(fileIndex).state.normalsVisible === undefined) {
+      this.fileEntries.require(fileIndex).state.normalsVisible = true;
     }
 
     // Toggle the visibility state
-    this.normalsVisible[fileIndex] = !this.normalsVisible[fileIndex];
+    this.fileEntries.require(fileIndex).state.normalsVisible =
+      !this.fileEntries.require(fileIndex).state.normalsVisible;
 
     // Apply to the actual normals visualizer
-    if (this.normalsVisualizers[fileIndex]) {
-      this.normalsVisualizers[fileIndex]!.visible = this.normalsVisible[fileIndex];
+    if (this.fileEntries.require(fileIndex).resources.normals) {
+      this.fileEntries.require(fileIndex).resources.normals!.visible =
+        this.fileEntries.require(fileIndex).state.normalsVisible;
     }
     this.requestRender();
     // this.requestRender();
@@ -2239,7 +2383,7 @@ class PointCloudVisualizer {
     const pointsButtons = document.querySelectorAll('.points-toggle-btn');
     pointsButtons.forEach(button => {
       const fileIndex = parseInt(button.getAttribute('data-file-index') || '0');
-      const isVisible = this.pointsVisible[fileIndex] !== false; // Default to true
+      const isVisible = this.fileEntries.require(fileIndex).state.pointsVisible !== false; // Default to true
 
       const baseStyle =
         'flex: 1; padding: 4px 8px; border: 1px solid var(--vscode-panel-border); border-radius: 2px; cursor: pointer; font-size: 10px;';
@@ -2268,7 +2412,7 @@ class PointCloudVisualizer {
         return;
       }
 
-      const isVisible = this.normalsVisible[fileIndex] !== false; // Default to true
+      const isVisible = this.fileEntries.require(fileIndex).state.normalsVisible !== false; // Default to true
 
       const baseStyle =
         'flex: 1; padding: 4px 8px; border: 1px solid var(--vscode-panel-border); border-radius: 2px; cursor: pointer; font-size: 10px;';
@@ -2325,13 +2469,7 @@ class PointCloudVisualizer {
     uiStatus.createShortcutsUI(() => this.updateControlStatus());
   }
 
-  private setupMessageHandler(): void {
-    window.addEventListener('message', async event => {
-      const message = event.data;
-      const tracksBackgroundChange = BACKGROUND_CHANGE_MESSAGES.has(message.type);
-      if (tracksBackgroundChange) {
-        uiState.backgroundChanges++;
-      }
+  private disposeMessageHandler: () => void = () => {};
 
       try {
         if (await this.progressivePlyManager.handleMessage(message)) {
@@ -2690,7 +2828,7 @@ class PointCloudVisualizer {
   // # VSCode changes: the functions below are used in the browser and were not used for the extension
   // Browser file handling methods
   private setupPanelResizeAndDrag(): void {
-    browserFileDragDrop.setupPanelResizeAndDrag();
+    browserFileDragDrop.setupPanelResizeAndDrag(this);
   }
 
   private setupBrowserFileHandlers(): void {
@@ -2720,38 +2858,30 @@ class PointCloudVisualizer {
   // # VSCode changes: the functions above are used in the browser and were not used for the extension
 
   async displayFiles(dataArray: SpatialData[]): Promise<void> {
-    // concise summary printed separately
+    if (this.lifetime.disposed) {
+      dataArray.forEach(data => data.sceneModel?.dispose());
+      return;
+    }
     // In sequence mode: do not auto-fit camera or heavy UI work
     if (this.sequenceMode) {
       this.addNewFiles(dataArray);
 
-      // Capture and restore form states even in sequence mode
-      const openPanelStates = this.captureDepthPanelStates();
       this.updateFileList();
-      this.restoreDepthPanelStates(openPanelStates);
-
-      // Ensure color consistency with current gamma setting
-      this.rebuildAllColorAttributesForCurrentGammaSetting();
 
       uiState.loadingVisible = false;
       return;
     }
 
-    // Normal mode
+    // Normal mode. addNewFiles has already published the file list and stats;
+    // publishing them again here forced a second synchronous list render.
     this.addNewFiles(dataArray);
-    this.updateFileStats();
-
-    // Capture current form states before regenerating UI
-    const openPanelStates = this.captureDepthPanelStates();
-    this.updateFileList();
-    // Restore form values after UI regeneration
-    this.restoreDepthPanelStates(openPanelStates);
 
     this.updateCameraControlsPanel();
 
-    // Ensure color consistency with current gamma setting
-    this.rebuildAllColorAttributesForCurrentGammaSetting();
-
+    // No colour pass here. Each new file's colour attribute and material are
+    // built from the current gamma setting when it is created; re-applying the
+    // colour mode to every loaded file after each load rebuilt (and re-uploaded)
+    // all earlier files' colours, quadratically for a container's scans.
     this.autoFitCameraOnFirstLoad();
     this.showLoading(false);
     this.clearError();
@@ -2763,8 +2893,12 @@ class PointCloudVisualizer {
     return new Promise(resolve => setTimeout(resolve, 0));
   }
 
-  createMaterialForFile(data: SpatialData, fileIndex: number): THREE.Material {
-    const colorMode = this.individualColorModes[fileIndex] || 'assigned';
+  createMaterialForFile(
+    data: SpatialData,
+    fileIndex: number,
+    state = this.fileEntries.require(fileIndex).state
+  ): THREE.Material {
+    const colorMode = state.colorMode || 'assigned';
 
     if (data.faceCount > 0) {
       // Mesh material
@@ -2805,12 +2939,11 @@ class PointCloudVisualizer {
       const material = new THREE.PointsMaterial();
 
       // Initialize point size if not set
-      if (!this.pointSizes[fileIndex]) {
-        this.pointSizes[fileIndex] = DEFAULT_POINT_SIZE;
-        filesState.pointSizes[fileIndex] = DEFAULT_POINT_SIZE;
+      if (!state.pointSize) {
+        state.pointSize = DEFAULT_POINT_SIZE;
       }
 
-      material.size = this.pointSizes[fileIndex];
+      material.size = state.pointSize;
       material.sizeAttenuation = true; // Always use distance-based scaling
 
       // Apply point count-based optimizations
@@ -2856,7 +2989,8 @@ class PointCloudVisualizer {
     }
 
     const box = new THREE.Box3();
-    for (const obj of this.meshes) {
+    for (const entry of this.fileEntries.ofKind('spatial')) {
+      const obj = entry.spatial!.object;
       box.expandByObject(obj);
     }
     for (const group of this.poseGroups) {
@@ -2879,9 +3013,9 @@ class PointCloudVisualizer {
     // actually occupy instead. Well-behaved clouds keep their previous
     // framing - see visualization/robustBounds.ts.
     const trimmed = new THREE.Box3();
-    for (let index = 0; index < this.spatialFiles.length; index++) {
-      const positions = this.spatialFiles[index]?.positionsArray;
-      const mesh = this.meshes[index];
+    for (const entry of this.fileEntries.ofKind('spatial')) {
+      const { data, object: mesh } = entry.spatial!;
+      const positions = data.positionsArray;
       if (!positions || !mesh) {
         continue;
       }
@@ -2944,18 +3078,26 @@ class PointCloudVisualizer {
     this.isFirstFileLoad = false;
   }
 
+  setCameraColorCorrection(
+    group: THREE.Group,
+    settings: import('./visualization/stonexColorCorrection').StonexColorCorrection
+  ): void {
+    stonexCameras.setStonexColorCorrection(this, group, settings);
+  }
+
   updateFileStats(): void {
+    if (this.lifetime.disposed) {
+      return;
+    }
     filesState.statsLoadingFileName = null;
     filesState.statsTick++;
   }
 
   updateFileList(): void {
-    // Phase 3 (docs/SVELTE_MIGRATION_PLAN.md): FileList.svelte now owns all
-    // rendering and event wiring for the file list, reading directly from
-    // this.spatialFiles/poseGroups/cameraGroups (and the many depth/pose/
-    // camera getter methods below) each time renderTick changes - mirroring
-    // this method's old "regenerate everything from scratch" model without
-    // needing every underlying field to be individually reactive.
+    if (this.lifetime.disposed) {
+      return;
+    }
+    // Publish membership/data changes; entry presentation updates are reactive.
     // A settings update may change row contents, but must never move the
     // user's place in the list. FileList keeps stable keyed rows; preserving
     // the container offset here is a second invariant at the one refresh
@@ -2963,7 +3105,7 @@ class PointCloudVisualizer {
     const fileList = document.getElementById('file-list');
     const scrollTop = fileList?.scrollTop ?? 0;
     const scrollLeft = fileList?.scrollLeft ?? 0;
-    filesState.renderTick++;
+    filesState.entries = [...this.fileEntries.all];
     // Force the Svelte re-render to apply synchronously so the button-state
     // sync calls below see the freshly rendered DOM, matching the old
     // synchronous innerHTML-then-listeners-then-button-states ordering.
@@ -2977,7 +3119,7 @@ class PointCloudVisualizer {
     this.updateDefaultButtonState();
   }
 
-  private isDepthDerivedFile(data: SpatialData): boolean {
+  isDepthDerivedFile(data: SpatialData): boolean {
     return commentSettings.isDepthDerivedFile(data);
   }
 
@@ -2986,8 +3128,8 @@ class PointCloudVisualizer {
     if (this.spatialFiles[fileIndex]?.sceneModel) {
       return;
     }
-    this.individualColorModes[fileIndex] = value;
-    filesState.colorModes[fileIndex] = value;
+    this.fileEntries.require(fileIndex).state.colorMode = value;
+
     const isPose = fileIndex >= this.spatialFiles.length;
     if (isPose) {
       const poseIndex = fileIndex - this.spatialFiles.length;
@@ -3038,7 +3180,7 @@ class PointCloudVisualizer {
     this.requestRender();
   }
 
-  private toggleFileVisibility(fileIndex: number): void {
+  toggleFileVisibility(fileIndex: number): void {
     if (fileIndex < 0) {
       return;
     }
@@ -3046,14 +3188,13 @@ class PointCloudVisualizer {
     const checkboxEl = document.getElementById(`file-${fileIndex}`) as HTMLInputElement | null;
     const desiredVisible = checkboxEl
       ? !!checkboxEl.checked
-      : !(this.fileVisibility[fileIndex] ?? true);
+      : !(this.fileEntries.require(fileIndex).state.visible ?? true);
     this.setFileEntryVisibility(fileIndex, desiredVisible);
   }
 
   /** Used by the capture-place toggles, which move several entries at once. */
   setFileEntryVisibility(fileIndex: number, desiredVisible: boolean): void {
-    this.fileVisibility[fileIndex] = desiredVisible;
-    filesState.visibility[fileIndex] = desiredVisible;
+    this.fileEntries.require(fileIndex).state.visible = desiredVisible;
 
     // If it's a mesh/pointcloud entry
     if (fileIndex < this.meshes.length && this.meshes[fileIndex]) {
@@ -3061,9 +3202,13 @@ class PointCloudVisualizer {
       this.updateMeshVisibilityAndMaterial(fileIndex);
 
       // Also update normals visualizer visibility
-      if (fileIndex < this.normalsVisualizers.length && this.normalsVisualizers[fileIndex]) {
-        const normalsVisible = this.normalsVisible[fileIndex] ?? false;
-        this.normalsVisualizers[fileIndex]!.visible = normalsVisible && desiredVisible;
+      if (
+        fileIndex < this.fileEntries.length &&
+        this.fileEntries.require(fileIndex).resources.normals
+      ) {
+        const normalsVisible = this.fileEntries.require(fileIndex).state.normalsVisible ?? false;
+        this.fileEntries.require(fileIndex).resources.normals!.visible =
+          normalsVisible && desiredVisible;
       }
 
       return;
@@ -3096,9 +3241,8 @@ class PointCloudVisualizer {
    * Universal render mode toggle for all file types
    * Handles solid, wireframe, points, and normals rendering modes
    */
-  private toggleUniversalRenderMode(fileIndex: number, mode: string): void {
+  toggleUniversalRenderMode(fileIndex: number, mode: string): void {
     renderModeToggles.toggleUniversalRenderMode(this, fileIndex, mode);
-    filesState.renderModeTick += 1;
   }
 
   private toggleSolidRendering(fileIndex: number): void {
@@ -3182,13 +3326,7 @@ class PointCloudVisualizer {
       this.pendingLoadLabel = fileName;
       this.pendingLoadDetail = 'Reading file…';
       uiState.loadingVisible = false;
-      // Wrap in capture/restore like every other updateFileList() call site -
-      // otherwise this remount silently discards any depth settings panel
-      // that's open and edited (open state + unsaved field values) the
-      // moment a second file starts loading.
-      const openPanelStates = this.captureDepthPanelStates();
       this.updateFileList();
-      this.restoreDepthPanelStates(openPanelStates);
       return;
     }
 
@@ -3239,6 +3377,9 @@ class PointCloudVisualizer {
   }
 
   showError(message: string): void {
+    if (this.lifetime.disposed) {
+      return;
+    }
     uiStatus.showError(message);
   }
 
@@ -3269,11 +3410,12 @@ class PointCloudVisualizer {
     });
   }
 
-  private requestLoadMtl(fileIndex: number): void {
+  requestLoadMtl(fileIndex: number): void {
     this.vscode.postMessage({
       type: 'loadMtl',
       fileIndex: fileIndex,
-    });
+      entryId: this.fileEntries.require(fileIndex).id,
+    } satisfies EntryRequest);
   }
 
   private requestColorImageForDepth(fileIndex: number): void {
@@ -3281,6 +3423,10 @@ class PointCloudVisualizer {
   }
 
   addNewFiles(newFiles: SpatialData[]): void {
+    if (this.lifetime.disposed) {
+      newFiles.forEach(data => data.sceneModel?.dispose());
+      return;
+    }
     // Phase feedback: the bytes are here, now we build GPU geometry.
     if (this.isFileLoading && newFiles.length > 0) {
       const pts = newFiles.reduce((s, f) => s + (f.vertexCount || 0), 0);
@@ -3296,23 +3442,9 @@ class PointCloudVisualizer {
       // Assign new file index
       data.fileIndex = this.spatialFiles.length;
 
-      // Add to data array
-      this.spatialFiles.push(data);
-
-      // Claim the entry's slot before anything writes per-file state into it.
-      // Spatial files sort first, so the unified index equals data.fileIndex,
-      // but the insert still has to happen here: appending would land past any
-      // pose or camera entries already loaded and hand this file their slots.
-      const { index: entryIndex } = this.fileEntries.add('spatial');
-      insertEntryState(this, entryIndex, {
-        visible: true,
-        pointSize: DEFAULT_POINT_SIZE,
-        colorMode: 'assigned',
-      });
-
-      // Update welcome message visibility
-      this.updateWelcomeMessageVisibility();
-
+      const entry = this.fileEntries.prepare('spatial');
+      entry.state.depthForm = depthPanelState.createDepthForm(this, data, data.fileIndex);
+      entry.state.liveDepth = true;
       // Initialize visibility states based on file type
       const isObjFile = (data as any).isObjFile;
       const objData = (data as any).objData;
@@ -3321,19 +3453,19 @@ class PointCloudVisualizer {
 
       if (data.faceCount > 0 || data.sceneModel) {
         // Native scenes can contain point primitives as well as meshes.
-        this.solidVisible.push(true);
+        entry.state.solidVisible = true;
 
         if (isMultiMaterial) {
           // Multi-material OBJ - points represent distinct geometric elements
-          this.pointsVisible.push(true); // Show points by default
+          entry.state.pointsVisible = true; // Show points by default
         } else {
           // Single-material mesh - points are just mesh vertices
-          this.pointsVisible.push(false); // Don't show mesh vertices as points
+          entry.state.pointsVisible = false; // Don't show mesh vertices as points
         }
       } else {
         // Point cloud file (PLY, XYZ, PTS) - show points only
-        this.solidVisible.push(false); // No mesh surface exists
-        this.pointsVisible.push(true); // Show actual point data
+        entry.state.solidVisible = false; // No mesh surface exists
+        entry.state.pointsVisible = true; // Show actual point data
       }
 
       // Wireframe, normals, and voxel view always start disabled.
@@ -3348,19 +3480,20 @@ class PointCloudVisualizer {
 
       // Initialize color mode before creating material. The slot already exists
       // at entryIndex, so this only assigns.
-      const initialColorMode =
-        (data.metadata?.volumeRenderMode === 'slices' ||
-          data.metadata?.volumeRenderMode === 'points' ||
-          data.metadata?.volumeRenderMode === 'voxels') &&
-        data.hasColors
+      const initialColorMode = colorModeUtils.isConvertedDepthCloud(data)
+        ? '0' // White, independent of the file's palette index; eligible for Auto EDL.
+        : (data.metadata?.volumeRenderMode === 'slices' ||
+              data.metadata?.volumeRenderMode === 'points' ||
+              data.metadata?.volumeRenderMode === 'voxels') &&
+            data.hasColors
           ? 'original'
           : this.useOriginalColors && data.hasColors
             ? 'original'
             : this.hasIntensityData(data)
               ? 'intensity'
               : 'assigned';
-      this.individualColorModes[data.fileIndex] = initialColorMode;
-      filesState.colorModes[data.fileIndex] = initialColorMode;
+      entry.state.colorMode = initialColorMode;
+
       console.log(
         `🎨 addNewFiles - fileIndex: ${data.fileIndex}, hasColors: ${data.hasColors}, colorMode: ${initialColorMode}, useOriginalColors: ${this.useOriginalColors}`
       );
@@ -3370,293 +3503,24 @@ class PointCloudVisualizer {
         typeof recommendedPointSize === 'number' && recommendedPointSize > 0
           ? recommendedPointSize
           : DEFAULT_POINT_SIZE;
-      this.pointSizes[data.fileIndex] = initialPointSize;
-      filesState.pointSizes[data.fileIndex] = initialPointSize;
-      // debug
+      entry.state.pointSize = initialPointSize;
 
-      // Create geometry and material
-      // Use data.fileIndex which is the spatialFiles array index
-      const geometry = this.createGeometryFromSpatialData(data);
-      const material = this.createMaterialForFile(data, data.fileIndex);
-
-      // Check if this is an OBJ file and handle different rendering modes
-      const isObjFile2 = (data as any).isObjFile;
-      const objRenderType = (data as any).objRenderType;
-
-      if (data.sceneModel) {
-        const modelObject = createModelObject(data, geometry, material);
-        this.scene.add(modelObject);
-        this.meshes.push(modelObject);
-        this.requestRender();
-      } else if (isObjFile2) {
-        if (objRenderType === 'wireframe' && (data as any).objLines) {
-          // Create wireframe using LineSegments
-          const lines = (data as any).objLines;
-          const linePositions = new Float32Array(lines.length * 6); // 2 vertices per line, 3 coords per vertex
-
-          for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            const startVertex = data.vertices[line.start];
-            const endVertex = data.vertices[line.end];
-
-            const i6 = i * 6;
-            linePositions[i6] = startVertex.x;
-            linePositions[i6 + 1] = startVertex.y;
-            linePositions[i6 + 2] = startVertex.z;
-            linePositions[i6 + 3] = endVertex.x;
-            linePositions[i6 + 4] = endVertex.y;
-            linePositions[i6 + 5] = endVertex.z;
-          }
-
-          const lineGeometry = new THREE.BufferGeometry();
-          lineGeometry.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
-
-          const lineMaterial = new THREE.LineBasicMaterial({
-            color: 0xff0000, // Red wireframe
-          });
-
-          const wireframeMesh = new THREE.LineSegments(lineGeometry, lineMaterial);
-          (wireframeMesh as any).isLineSegments = true;
-          this.scene.add(wireframeMesh);
-          this.meshes.push(wireframeMesh);
-          this.requestRender();
-        } else if (objRenderType === 'mesh' && data.faceCount > 0) {
-          // Create multi-material mesh(es)
-          const objData = (data as any).objData;
-
-          if (objData && objData.materialGroups && objData.materialGroups.length > 1) {
-            // Multi-material rendering: create separate mesh for each material group
-            const subMeshes: THREE.Object3D[] = [];
-            const meshGroup = new THREE.Group();
-
-            for (const materialGroup of objData.materialGroups) {
-              if (materialGroup.faces.length > 0) {
-                // Create geometry for this material group
-                const groupGeometry = new THREE.BufferGeometry();
-
-                // Collect vertices for faces in this group
-                const faceVertices: number[] = [];
-                const faceIndices: number[] = [];
-                let vertexOffset = 0;
-
-                for (const face of materialGroup.faces) {
-                  if (face.indices.length >= 3) {
-                    // Add vertices for this face
-                    for (const vertexIndex of face.indices) {
-                      const vertex = data.vertices[vertexIndex];
-                      faceVertices.push(vertex.x, vertex.y, vertex.z);
-                    }
-
-                    // Triangulate face (fan triangulation)
-                    for (let i = 1; i < face.indices.length - 1; i++) {
-                      faceIndices.push(vertexOffset);
-                      faceIndices.push(vertexOffset + i);
-                      faceIndices.push(vertexOffset + i + 1);
-                    }
-
-                    vertexOffset += face.indices.length;
-                  }
-                }
-
-                if (faceVertices.length > 0) {
-                  groupGeometry.setAttribute(
-                    'position',
-                    new THREE.BufferAttribute(new Float32Array(faceVertices), 3)
-                  );
-                  groupGeometry.setIndex(faceIndices);
-                  groupGeometry.computeVertexNormals();
-
-                  const groupMaterial = new THREE.MeshBasicMaterial({
-                    color: 0x808080, // Default gray - will be colored by MTL
-                    side: THREE.DoubleSide,
-                  });
-
-                  const groupMesh = new THREE.Mesh(groupGeometry, groupMaterial);
-                  (groupMesh as any).materialName = materialGroup.material;
-                  (groupMesh as any).isObjMesh = true;
-
-                  meshGroup.add(groupMesh);
-                  subMeshes.push(groupMesh);
-                }
-              }
-
-              // Handle lines in this material group
-              if (materialGroup.lines.length > 0) {
-                const linePositions = new Float32Array(materialGroup.lines.length * 6);
-
-                for (let i = 0; i < materialGroup.lines.length; i++) {
-                  const line = materialGroup.lines[i];
-                  const startVertex = data.vertices[line.start];
-                  const endVertex = data.vertices[line.end];
-
-                  const i6 = i * 6;
-                  linePositions[i6] = startVertex.x;
-                  linePositions[i6 + 1] = startVertex.y;
-                  linePositions[i6 + 2] = startVertex.z;
-                  linePositions[i6 + 3] = endVertex.x;
-                  linePositions[i6 + 4] = endVertex.y;
-                  linePositions[i6 + 5] = endVertex.z;
-                }
-
-                const lineGeometry = new THREE.BufferGeometry();
-                lineGeometry.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
-
-                const lineMaterial = new THREE.LineBasicMaterial({
-                  color: 0xff0000, // Default red - will be colored by MTL
-                });
-
-                const lineSegments = new THREE.LineSegments(lineGeometry, lineMaterial);
-                (lineSegments as any).materialName = materialGroup.material;
-                (lineSegments as any).isLineSegments = true;
-
-                meshGroup.add(lineSegments);
-                subMeshes.push(lineSegments);
-              }
-
-              // Handle points in this material group
-              if (materialGroup.points.length > 0) {
-                const pointPositions = new Float32Array(materialGroup.points.length * 3);
-
-                for (let i = 0; i < materialGroup.points.length; i++) {
-                  const point = materialGroup.points[i];
-                  const vertex = data.vertices[point.index];
-
-                  const i3 = i * 3;
-                  pointPositions[i3] = vertex.x;
-                  pointPositions[i3 + 1] = vertex.y;
-                  pointPositions[i3 + 2] = vertex.z;
-                }
-
-                const pointGeometry = new THREE.BufferGeometry();
-                pointGeometry.setAttribute(
-                  'position',
-                  new THREE.BufferAttribute(pointPositions, 3)
-                );
-
-                const pointMaterial = new THREE.PointsMaterial({
-                  color: 0xff0000, // Default red - will be colored by MTL
-                  size: this.pointSizes[data.fileIndex] || 0.001, // Use stored point size (world units)
-                  sizeAttenuation: true, // Use world-space sizing like other file types
-                  // Apply transparency settings
-                  transparent: this.allowTransparency,
-                  alphaTest: this.allowTransparency ? 0.1 : 0,
-                  opacity: 1.0,
-                  depthWrite: true,
-                  depthTest: true,
-                  side: THREE.DoubleSide,
-                });
-
-                const points = new THREE.Points(pointGeometry, pointMaterial);
-                (points as any).materialName = materialGroup.material;
-                (points as any).isPoints = true;
-
-                meshGroup.add(points);
-                subMeshes.push(points);
-              }
-            }
-
-            (meshGroup as any).isObjMesh = true;
-            (meshGroup as any).isMultiMaterial = true;
-            this.scene.add(meshGroup);
-            this.multiMaterialGroups[data.fileIndex!] = meshGroup;
-            this.materialMeshes[data.fileIndex!] = subMeshes;
-
-            console.log(`Created multi-material OBJ with ${subMeshes.length} sub-meshes`);
-          } else {
-            // Single material or fallback to original logic
-            const meshMaterial = new THREE.MeshBasicMaterial({
-              color: 0x808080,
-              side: THREE.DoubleSide,
-              vertexColors: data.hasColors,
-            });
-
-            if (objData && objData.hasNormals && objData.normals.length > 0) {
-              const normals = new Float32Array(data.vertexCount * 3);
-              for (let i = 0; i < data.vertexCount && i < objData.normals.length; i++) {
-                const normal = objData.normals[i];
-                normals[i * 3] = normal.nx;
-                normals[i * 3 + 1] = normal.ny;
-                normals[i * 3 + 2] = normal.nz;
-              }
-              geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-            }
-
-            const mesh = new THREE.Mesh(geometry, meshMaterial);
-            (mesh as any).isObjMesh = true;
-            this.scene.add(mesh);
-            this.meshes.push(mesh);
-            this.requestRender();
-            // this.requestRender();
-          }
-        } else {
-          // Fallback to points - use optimized creation
-          const mesh = this.createOptimizedPointCloud(geometry, material as THREE.PointsMaterial);
-          this.scene.add(mesh);
-          this.meshes.push(mesh);
-          this.requestRender();
-        }
-      } else {
-        // Handle legacy OBJ wireframe format and regular PLY files
-        const isObjWireframe = (data as any).isObjWireframe;
-
-        if (isObjWireframe && (data as any).objLines) {
-          // Legacy wireframe handling
-          const lines = (data as any).objLines;
-          const linePositions = new Float32Array(lines.length * 6);
-
-          for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            const startVertex = data.vertices[line.start];
-            const endVertex = data.vertices[line.end];
-
-            const i6 = i * 6;
-            linePositions[i6] = startVertex.x;
-            linePositions[i6 + 1] = startVertex.y;
-            linePositions[i6 + 2] = startVertex.z;
-            linePositions[i6 + 3] = endVertex.x;
-            linePositions[i6 + 4] = endVertex.y;
-            linePositions[i6 + 5] = endVertex.z;
-          }
-
-          const lineGeometry = new THREE.BufferGeometry();
-          lineGeometry.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
-
-          const lineMaterial = new THREE.LineBasicMaterial({
-            color: 0xff0000,
-          });
-
-          const wireframeMesh = new THREE.LineSegments(lineGeometry, lineMaterial);
-          (wireframeMesh as any).isLineSegments = true;
-          this.scene.add(wireframeMesh);
-          this.meshes.push(wireframeMesh);
-          this.requestRender();
-        } else {
-          // Create regular mesh for PLY files
-          const shouldShowAsPoints = data.faceCount === 0;
-          const mesh = shouldShowAsPoints
-            ? this.createOptimizedPointCloud(geometry, material as THREE.PointsMaterial)
-            : new THREE.Mesh(geometry, material);
-
-          this.scene.add(mesh);
-          this.meshes.push(mesh);
-          this.requestRender();
-        }
-      }
+      const object = buildFileObject(this, data, data.fileIndex, entry);
+      // No externally visible entry exists until every resource has been built.
+      entry.spatial = { data, object };
+      this.scene.add(object);
+      this.fileEntries.commit(entry);
+      this.updateWelcomeMessageVisibility();
+      this.requestRender();
       // If sequence mode is active, only the current frame stays visible to avoid overloading the scene
       const isSeqMode = this.sequenceFiles.length > 0;
       const shouldBeVisible = !isSeqMode || data.fileIndex === this.sequenceIndex;
-      this.fileVisibility[data.fileIndex] = shouldBeVisible;
-      filesState.visibility[data.fileIndex] = shouldBeVisible;
-      const lastObject = this.meshes[this.meshes.length - 1];
+      entry.state.visible = shouldBeVisible;
+
+      const lastObject = object;
       if (lastObject) {
         lastObject.visible = shouldBeVisible;
       }
-      const isObjFile3 = (data as any).isObjFile;
-      this.appliedMtlColors.push(null); // No MTL color applied initially
-      this.appliedMtlNames.push(null); // No MTL material applied initially
-      this.appliedMtlData.push(null); // No MTL data applied initially
-      this.multiMaterialGroups.push(null); // No multi-material group initially
-      this.materialMeshes.push(null); // No sub-meshes initially
 
       if ((data.metadata?.stonexCameraFrames as unknown[])?.length) {
         stonexCameraFiles.push(data);
@@ -3693,10 +3557,8 @@ class PointCloudVisualizer {
       }
     }
 
-    // Update UI (preserve depth panel states)
-    const openPanelStates = this.captureDepthPanelStates();
+    // Refresh entry data in the file list
     this.updateFileList();
-    this.restoreDepthPanelStates(openPanelStates);
     this.updateFileStats();
     this.showLoading(false);
 
@@ -3704,161 +3566,26 @@ class PointCloudVisualizer {
     this.splatMode.autoEnablePending();
   }
 
-  /**
-   * Drops an entry's registry slot and per-entry state, together with any
-   * entry that declared it as a parent.
-   *
-   * A container publishes children - a COLMAP reconstruction's cloud owns its
-   * camera profile - and removing the parent alone would strand their scene
-   * objects with no row to control them.
-   */
-  private removeEntryAndChildren(fileIndex: number): void {
-    const entry = this.fileEntries.at(fileIndex);
-
-    // Collection positions must be read before the registry forgets them.
-    const children = entry
-      ? this.fileEntries.childrenOf(entry.id).map(child => {
-          const unified = this.fileEntries.indexOf(child.id);
-          return { kind: child.kind, kindIndex: this.fileEntries.kindIndexAt(unified) };
-        })
-      : [];
-
-    // Only camera profiles are published as children today. Highest index
-    // first so the remaining positions stay valid.
-    const cameraChildren = children
-      .filter(child => child.kind === 'camera')
-      .sort((a, b) => b.kindIndex - a.kindIndex);
-    for (const child of cameraChildren) {
-      const group = this.cameraGroups[child.kindIndex];
-      if (!group) {
-        continue;
-      }
-      this.scene.remove(group);
-      group.traverse((object: any) => {
-        object.geometry?.dispose?.();
-        const materials = Array.isArray(object.material) ? object.material : [object.material];
-        for (const material of materials) {
-          material?.map?.dispose?.();
-          material?.dispose?.();
-        }
-      });
-      this.cameraGroups.splice(child.kindIndex, 1);
-      this.cameraNames.splice(child.kindIndex, 1);
-      this.cameraShowLabels.splice(child.kindIndex, 1);
-      this.cameraShowCoords.splice(child.kindIndex, 1);
-    }
-
-    // The registry returns removals in descending index order, so these
-    // per-entry splices stay valid as they go.
-    for (const removal of this.fileEntries.removeAt(fileIndex)) {
-      removeEntryState(this, removal.index);
-    }
-  }
-
   removeFileByIndex(fileIndex: number): void {
-    if (fileIndex < 0) {
-      return;
-    }
-
-    // Which collection this index refers to is the registry's to answer.
-    const kind = this.fileEntries.kindAt(fileIndex);
-
-    if (kind === 'camera') {
-      const cameraIndex = this.fileEntries.kindIndexAt(fileIndex);
-      if (cameraIndex < 0 || cameraIndex >= this.cameraGroups.length) {
-        return;
-      }
-
-      const group = this.cameraGroups[cameraIndex];
-      this.scene.remove(group);
-      group.traverse((obj: any) => {
-        if (obj.geometry && typeof obj.geometry.dispose === 'function') {
-          obj.geometry.dispose();
-        }
-        if (obj.material) {
-          if (Array.isArray(obj.material)) {
-            obj.material.forEach((m: any) => m.dispose && m.dispose());
-          } else if (typeof obj.material.dispose === 'function') {
-            const material = obj.material as THREE.Material & { map?: THREE.Texture };
-            material.map?.dispose();
-            obj.material.dispose();
+    registrationFeature.endSession(this);
+    const removed = this.fileEntries.removeAt(fileIndex);
+    registrationFeature.reconcileAlignmentResults(this);
+    for (const { entry, index } of removed) {
+      if (entry.spatial) {
+        const { data, object } = entry.spatial;
+        this.splatMode.onFileRemoved(index, data);
+        this.sectionPlanes.onFileRemoved(index);
+        const sessionId = data.metadata?.volumeSessionId;
+        if (typeof sessionId === 'string') {
+          const source = this.volumeSources.get(sessionId);
+          if (source) {
+            source.generation++;
           }
+          this.volumeSources.delete(sessionId);
         }
-      });
-      this.cameraGroups.splice(cameraIndex, 1);
-      this.cameraNames.splice(cameraIndex, 1);
-      this.cameraShowLabels.splice(cameraIndex, 1);
-      this.cameraShowCoords.splice(cameraIndex, 1);
-
-      this.removeEntryAndChildren(fileIndex);
-
-      // Preserve depth panel states when removing files
-      const openPanelStates = this.captureDepthPanelStates();
-      this.updateFileList();
-      this.restoreDepthPanelStates(openPanelStates);
-      this.updateFileStats();
-      return;
-    }
-
-    if (kind === 'pose') {
-      const poseIndex = this.fileEntries.kindIndexAt(fileIndex);
-      if (poseIndex < 0 || poseIndex >= this.poseGroups.length) {
-        return;
-      }
-
-      const group = this.poseGroups[poseIndex];
-      this.scene.remove(group);
-      group.traverse((obj: any) => {
-        if (obj.geometry && typeof obj.geometry.dispose === 'function') {
-          obj.geometry.dispose();
-        }
-        if (obj.material) {
-          if (Array.isArray(obj.material)) {
-            obj.material.forEach((m: any) => m.dispose && m.dispose());
-          } else if (typeof obj.material.dispose === 'function') {
-            obj.material.dispose();
-          }
-        }
-      });
-      this.poseGroups.splice(poseIndex, 1);
-      this.poseMeta.splice(poseIndex, 1);
-      this.poseLabelsGroups.splice(poseIndex, 1);
-      this.poseJoints.splice(poseIndex, 1);
-      this.poseEdges.splice(poseIndex, 1);
-
-      // pose.ts keys its per-pose toggles by the unified index, not by the pose
-      // index, so they are spliced here alongside the shared entry state rather
-      // than with poseGroups above.
-      this.poseUseDatasetColors.splice(fileIndex, 1);
-      this.poseShowLabels.splice(fileIndex, 1);
-      this.poseScaleByScore.splice(fileIndex, 1);
-      this.poseScaleByUncertainty.splice(fileIndex, 1);
-      this.poseConvention.splice(fileIndex, 1);
-      this.poseMinScoreThreshold.splice(fileIndex, 1);
-      this.poseMaxUncertaintyThreshold.splice(fileIndex, 1);
-
-      this.removeEntryAndChildren(fileIndex);
-
-      // Preserve depth panel states when removing files
-      const openPanelStates = this.captureDepthPanelStates();
-      this.updateFileList();
-      this.restoreDepthPanelStates(openPanelStates);
-      this.updateFileStats();
-      return;
-    }
-
-    this.spatialFiles[fileIndex]?.sceneModel?.dispose();
-    // Remove mesh from scene
-    const mesh = this.meshes[fileIndex];
-    this.scene.remove(mesh);
-    if (mesh.geometry) {
-      mesh.geometry.dispose();
-    }
-    if (mesh.material) {
-      if (Array.isArray(mesh.material)) {
-        mesh.material.forEach(mat => mat.dispose());
+        disposeFileResources(entry, object, data);
       } else {
-        mesh.material.dispose();
+        disposeObjects([entry.pose?.object, entry.pose?.labelsGroup, entry.camera?.object]);
       }
     }
 
@@ -4003,23 +3730,17 @@ class PointCloudVisualizer {
     this.liveDepthUpdateVersions = shiftedVersions;
 
     // Reassign file indices
-    for (let i = 0; i < this.spatialFiles.length; i++) {
-      this.spatialFiles[i].fileIndex = i;
-    }
+    this.fileEntries.ofKind('spatial').forEach((entry, index) => {
+      entry.spatial!.data.fileIndex = index;
+    });
 
-    // Update UI (preserve depth panel states)
-    const openPanelStates = this.captureDepthPanelStates();
+    // Update UI
     this.updateFileList();
-    this.restoreDepthPanelStates(openPanelStates);
     this.updateFileStats();
     this.updateWelcomeMessageVisibility();
 
     // If all scene objects are gone, allow first-load auto-fit for the next import.
-    if (
-      this.spatialFiles.length === 0 &&
-      this.poseGroups.length === 0 &&
-      this.cameraGroups.length === 0
-    ) {
+    if (this.fileEntries.length === 0) {
       this.isFirstFileLoad = true;
     }
 
@@ -4104,39 +3825,37 @@ class PointCloudVisualizer {
     return colorModeUtils.getColorName(fileIndex);
   }
 
-  private getColorOptions(fileIndex: number): string {
+  getColorOptions(fileIndex: number): string {
     return colorModeUtils.getColorOptions(this, fileIndex);
   }
 
   // ===== Pose feature updaters =====
-  private updatePoseAppearance(fileIndex: number): void {
+  updatePoseAppearance(fileIndex: number): void {
     pose.updatePoseAppearance(this, fileIndex);
   }
 
-  private updatePoseLabels(fileIndex: number): void {
+  updatePoseLabels(fileIndex: number): void {
     pose.updatePoseLabels(this, fileIndex);
   }
 
-  private updatePoseScaling(fileIndex: number): void {
+  updatePoseScaling(fileIndex: number): void {
     pose.updatePoseScaling(this, fileIndex);
   }
 
-  private applyPoseConvention(fileIndex: number, conv: 'opengl' | 'opencv'): void {
+  applyPoseConvention(fileIndex: number, conv: 'opengl' | 'opencv'): void {
     pose.applyPoseConvention(this, fileIndex, conv);
   }
 
-  private applyPoseFilters(fileIndex: number): void {
+  applyPoseFilters(fileIndex: number): void {
     pose.applyPoseFilters(this, fileIndex);
   }
 
-  private soloPointCloud(fileIndex: number): void {
+  soloPointCloud(fileIndex: number): void {
     const totalEntries = this.fileEntries.length;
     const selectedIsSoleVisible =
-      (this.fileVisibility[fileIndex] ?? filesState.visibility[fileIndex] ?? true) &&
+      this.fileEntries.require(fileIndex).state.visible &&
       Array.from({ length: totalEntries }, (_, index) => index).every(
-        index =>
-          index === fileIndex ||
-          !(this.fileVisibility[index] ?? filesState.visibility[index] ?? true)
+        index => index === fileIndex || !this.fileEntries.require(index).state.visible
       );
     const showAll = selectedIsSoleVisible;
 
@@ -4144,7 +3863,7 @@ class PointCloudVisualizer {
       this.setFileEntryVisibility(i, showAll || i === fileIndex);
     }
 
-    // filesState.visibility is reactive, so rebuilding the complete file list
+    // Entry visibility is reactive, so rebuilding the complete file list
     // here is unnecessary. Keeping the existing rows also preserves scroll,
     // focus, expanded panels, and each row's identity during Shift-click solo.
     this.requestRender();
@@ -4265,16 +3984,18 @@ class PointCloudVisualizer {
   }
 
   async processDepthToPointCloud(
-    depthData: ArrayBuffer,
+    depthData: ArrayBuffer | DepthBytes,
     fileName: string,
     cameraParams: CameraParams,
-    colorImageData?: ImageData
+    colorImageData?: ImageData,
+    signal?: AbortSignal
   ): Promise<DepthConversionResult> {
     return this.depthWorkerClient.processDepthToPointCloud(
       depthData,
       fileName,
       cameraParams,
-      colorImageData
+      colorImageData,
+      signal
     );
   }
 
@@ -4322,10 +4043,6 @@ class PointCloudVisualizer {
 
   private async handlePcdData(message: any): Promise<void> {
     await formatDataHandlers.handlePcdData(this, message);
-  }
-
-  private async handleNpyData(message: any): Promise<void> {
-    await formatDataHandlers.handleNpyData(this, message);
   }
 
   /**
@@ -4407,7 +4124,7 @@ class PointCloudVisualizer {
       profile.userData.hasImagePlanes = true;
       this.requestRender();
     }
-    filesState.renderTick += 1;
+    filesState.entries = [...this.fileEntries.all];
 
     if (total > 0 && this.colmapImagesDone >= total) {
       // One PERF line for the whole background phase, separate from the
@@ -4423,16 +4140,8 @@ class PointCloudVisualizer {
       perf.summary();
       // Clearing it removes the counter; the "Show images" toggle stays.
       profile.userData.imageProgress = null;
-      filesState.renderTick += 1;
+      filesState.entries = [...this.fileEntries.all];
     }
-  }
-
-  private async handlePtsData(message: any): Promise<void> {
-    await formatDataHandlers.handlePtsData(this, message);
-  }
-
-  private async handleKittiBinData(message: any): Promise<void> {
-    await formatDataHandlers.handleKittiBinData(this, message);
   }
 
   private async handleOffData(message: any): Promise<void> {
@@ -4594,10 +4303,6 @@ class PointCloudVisualizer {
     }
   }
 
-  private async handleXyzVariantData(message: any): Promise<void> {
-    await formatDataHandlers.handleXyzVariantData(this, message);
-  }
-
   createNormalsVisualizer(data: SpatialData): THREE.LineSegments {
     return normalsVisualizer.createNormalsVisualizer(data);
   }
@@ -4626,6 +4331,9 @@ class PointCloudVisualizer {
    */
 
   showStatus(message: string): void {
+    if (this.lifetime.disposed) {
+      return;
+    }
     uiStatus.showStatus(message);
   }
 
@@ -4739,10 +4447,6 @@ class PointCloudVisualizer {
     await liveDepthUpdate.requestLiveDepthUpdate(this, fileIndex);
   }
 
-  private isLiveDepthResultCurrent(fileIndex: number, version?: number): boolean {
-    return liveDepthUpdate.isLiveDepthResultCurrent(this, fileIndex, version);
-  }
-
   private waitForNextFrame(): Promise<void> {
     return liveDepthUpdate.waitForNextFrame();
   }
@@ -4793,8 +4497,8 @@ class PointCloudVisualizer {
 
   private refreshDepthFileFormsWithDefaults(): void {
     // Update existing depth file forms to use the new default settings
-    for (let i = 0; i < this.spatialFiles.length; i++) {
-      const data = this.spatialFiles[i];
+    for (const [i, entry] of this.fileEntries.ofKind('spatial').entries()) {
+      const data = entry.spatial!.data;
       if (commentSettings.isDepthDerivedFile(data)) {
         console.log(`🔄 Refreshing depth form ${i} with new defaults`);
         this.updateDepthFormWithDefaults(i);
@@ -4803,114 +4507,20 @@ class PointCloudVisualizer {
   }
 
   private updateDepthFormWithDefaults(fileIndex: number): void {
-    // Update form fields to show default values (but preserve cx/cy if they exist from image dimensions)
-    const fxInput = document.getElementById(`fx-${fileIndex}`) as HTMLInputElement;
-    const fyInput = document.getElementById(`fy-${fileIndex}`) as HTMLInputElement;
-    if (fxInput) {
-      fxInput.value = this.defaultDepthSettings.fx.toString();
-    }
-    if (fyInput && this.defaultDepthSettings.fy !== undefined) {
-      fyInput.value = this.defaultDepthSettings.fy.toString();
-    }
-
-    // Preserve cx/cy values if they were auto-calculated from Depth dimensions
-    const cxInput = document.getElementById(`cx-${fileIndex}`) as HTMLInputElement;
-    const cyInput = document.getElementById(`cy-${fileIndex}`) as HTMLInputElement;
-    const depthData = this.fileDepthData.get(fileIndex);
-
-    if (cxInput && depthData?.depthDimensions) {
-      // Keep the computed cx value based on actual image dimensions
-      const computedCx = (depthData.depthDimensions.width - 1) / 2;
-      cxInput.value = computedCx.toString();
-      console.log(
-        `📐 Preserving computed cx = ${computedCx} for file ${fileIndex} (not overriding with defaults)`
-      );
-    }
-
-    if (cyInput && depthData?.depthDimensions) {
-      // Keep the computed cy value based on actual image dimensions
-      const computedCy = (depthData.depthDimensions.height - 1) / 2;
-      cyInput.value = computedCy.toString();
-      console.log(
-        `📐 Preserving computed cy = ${computedCy} for file ${fileIndex} (not overriding with defaults)`
-      );
-    }
-
-    const cameraModelSelect = document.getElementById(
-      `camera-model-${fileIndex}`
-    ) as HTMLSelectElement;
-    if (cameraModelSelect) {
-      cameraModelSelect.value = this.defaultDepthSettings.cameraModel;
-    }
-
-    const depthTypeSelect = document.getElementById(`depth-type-${fileIndex}`) as HTMLSelectElement;
-    if (depthTypeSelect) {
-      depthTypeSelect.value = this.defaultDepthSettings.depthType;
-
-      // Update baseline and disparity offset visibility based on depth type
-      const baselineGroup = document.getElementById(`baseline-group-${fileIndex}`);
-      const disparityOffsetGroup = document.getElementById(`disparity-offset-group-${fileIndex}`);
-      const isDisparity = this.defaultDepthSettings.depthType === 'disparity';
-      if (baselineGroup) {
-        baselineGroup.style.display = isDisparity ? '' : 'none';
-      }
-      if (disparityOffsetGroup) {
-        disparityOffsetGroup.style.display = isDisparity ? '' : 'none';
-      }
-    }
-
-    const baselineInput = document.getElementById(`baseline-${fileIndex}`) as HTMLInputElement;
-    if (baselineInput && this.defaultDepthSettings.baseline !== undefined) {
-      baselineInput.value = this.defaultDepthSettings.baseline.toString();
-    }
-
-    const conventionSelect = document.getElementById(
-      `convention-${fileIndex}`
-    ) as HTMLSelectElement;
-    if (conventionSelect) {
-      conventionSelect.value = this.defaultDepthSettings.convention || 'opengl';
-    }
-
-    const depthScaleInput = document.getElementById(`depth-scale-${fileIndex}`) as HTMLInputElement;
-    if (depthScaleInput && this.defaultDepthSettings.depthScale !== undefined) {
-      depthScaleInput.value = this.defaultDepthSettings.depthScale.toString();
-    }
-
-    const depthBiasInput = document.getElementById(`depth-bias-${fileIndex}`) as HTMLInputElement;
-    if (depthBiasInput && this.defaultDepthSettings.depthBias !== undefined) {
-      depthBiasInput.value = this.defaultDepthSettings.depthBias.toString();
-    }
-
-    console.log(`✅ Updated depth form ${fileIndex} with defaults:`, this.defaultDepthSettings);
+    depthPanelState.resetFormDefaults(
+      depthPanelState.getDepthForm(this, fileIndex),
+      this.defaultDepthSettings
+    );
   }
 
   updatePrinciplePointFields(
     fileIndex: number,
     dimensions: { width: number; height: number }
   ): void {
-    // Update cx and cy form fields with computed values based on actual image dimensions
-    const cxInput = document.getElementById(`cx-${fileIndex}`) as HTMLInputElement;
-    const cyInput = document.getElementById(`cy-${fileIndex}`) as HTMLInputElement;
-
-    const computedCx = (dimensions.width - 1) / 2;
-    const computedCy = (dimensions.height - 1) / 2;
-
-    if (cxInput) {
-      cxInput.value = computedCx.toString();
-    }
-
-    if (cyInput) {
-      cyInput.value = computedCy.toString();
-    }
-
-    // Update image size display
-    const imageSizeDiv = document.getElementById(`image-size-${fileIndex}`);
-    if (imageSizeDiv) {
-      imageSizeDiv.textContent = `Image Size: Width: ${dimensions.width}, Height: ${dimensions.height}`;
-    }
-
-    // Note: Not calling updateSingleDefaultButtonState() here to avoid duplicate calls
-    // It will be called by updateFileList() which renders the UI
+    Object.assign(depthPanelState.getDepthForm(this, fileIndex), {
+      cx: (dimensions.width - 1) / 2,
+      cy: (dimensions.height - 1) / 2,
+    });
   }
 
   private updateDefaultButtonState(): void {
@@ -4985,11 +4595,11 @@ class PointCloudVisualizer {
     cameraProfile.updateCameraButtonState(this);
   }
 
-  private toggleCameraProfileLabels(cameraProfileIndex: number, showLabels: boolean): void {
+  toggleCameraProfileLabels(cameraProfileIndex: number, showLabels: boolean): void {
     cameraProfile.toggleCameraProfileLabels(this, cameraProfileIndex, showLabels);
   }
 
-  private toggleCameraProfileCoordinates(cameraProfileIndex: number, showCoords: boolean): void {
+  toggleCameraProfileCoordinates(cameraProfileIndex: number, showCoords: boolean): void {
     cameraProfile.toggleCameraProfileCoordinates(this, cameraProfileIndex, showCoords);
   }
 
@@ -4999,25 +4609,6 @@ class PointCloudVisualizer {
 
   private handleMtlData(message: any): void {
     formatDataHandlers.handleMtlData(this, message);
-  }
-
-  /**
-   * Capture the current open/closed state of depth settings panels and form values
-   */
-  captureDepthPanelStates(): Map<number, { panelOpen: boolean; formValues: any }> {
-    return depthPanelState.captureDepthPanelStates(this);
-  }
-
-  private captureDepthFormValues(fileIndex: number): any {
-    return depthPanelState.captureDepthFormValues(this, fileIndex);
-  }
-
-  restoreDepthPanelStates(states: Map<number, { panelOpen: boolean; formValues: any }>): void {
-    depthPanelState.restoreDepthPanelStates(this, states);
-  }
-
-  private restoreDepthFormValues(fileIndex: number, formValues: any): void {
-    depthPanelState.restoreDepthFormValues(this, fileIndex, formValues);
   }
 
   async promptForCameraParameters(fileName: string): Promise<CameraParams | null> {
@@ -5056,7 +4647,12 @@ class PointCloudVisualizer {
 // Test hook, same reason as __plyContainerPerf: the zero-copy PLY route runs
 // only when the extension host hands the webview a URI to fetch, so a browser
 // spec has no other way to reach it.
-(window as any).__plyParsePly = { parsePlyFromResponse, parsePlyWasm };
+(window as any).__plyParsePly = {
+  parsePlyBytes,
+  parsePlyFromRanges,
+  parsePlyFromResponse,
+  parsePlyWasm,
+};
 // Same reason: the NumPy reader's dtype and shape handling is worth testing
 // directly, not only through a depth panel that shows one pixel of the result.
 (window as any).__plyNpy = { inspectNpyWasm, isNpyPointCloudShape, readNpyWasm };
@@ -5074,7 +4670,13 @@ class PointCloudVisualizer {
   projectDepthBandWasmSync,
 };
 // The pool itself, so a benchmark can time it against the single pass.
-(window as any).__plyDepthPool = { projectDepthInBands };
+(window as any).__plyDepthPool = {
+  projectDepthInBands,
+  decodeTiffInStrips,
+  decodeTiffWasm,
+  decodeExrInBlocks,
+  decodeExrWasm,
+};
 // The picking workflow's live counters, so a test can assert what a real
 // double-click did rather than calling the handler behind it.
 (window as any).__plyRegistrationState = registrationState;

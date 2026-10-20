@@ -1,3 +1,7 @@
+import { renderWebviewHtml } from './webviewHtml';
+import { SequenceFileReader } from './providerHandlers/sequenceFiles';
+import { readHostMessage } from '../engine/src/hosts/viewerProtocol';
+import { sendToWebview, registerWebviewTransport } from './providerHandlers/webviewTransport';
 import { nativeAgentPanels } from './agent/panels';
 import { handleModelResourceRequest } from './providerHandlers/sceneModels';
 import { handleCadDecodeRequest } from './providerHandlers/cadModels';
@@ -8,17 +12,7 @@ import { DatasetManager } from './dataset/datasetManager';
 import { isColmapModelFile } from '../engine/src/formats/colmap/colmapFiles';
 import { isImageFile, MAX_TEXTURES } from '../engine/src/formats/colmap/colmapTextures';
 import { PlyParser } from '../engine/src/parsers/plyParser';
-import { ObjParser } from '../engine/src/parsers/objParser';
 import { MtlParser } from '../engine/src/parsers/mtlParser';
-import { StlParser } from '../engine/src/parsers/stlParser';
-import {
-  parsePcdWasm,
-  parsePtsWasm,
-  toPcdPayload,
-  toPointCloudPayload,
-} from '../engine/src/parsers/pointcloudWasm';
-import { OffParser } from '../engine/src/parsers/offParser';
-import { GltfParser } from '../engine/src/parsers/gltfParser';
 import {
   resendSplatContainerBytes,
   sendUltimateRawBinary,
@@ -33,9 +27,16 @@ import {
   handleDroppedFilesFromWebview,
   type AddFileHost,
 } from './providerHandlers/addFileHandlers';
-import { handleStationPipeline } from './providerHandlers/stationPipeline';
-import { handleRegistrationRequest } from './providerHandlers/registration';
-import { loadDocumentContent, type DocumentLoaderHost } from './providerHandlers/documentLoader';
+import { cancelStationPipeline, handleStationPipeline } from './providerHandlers/stationPipeline';
+import {
+  handleRegistrationRequest,
+  cancelRegistrationRequest,
+} from './providerHandlers/registration';
+import {
+  loadDocumentContent,
+  sendDepthImage,
+  type DocumentLoaderHost,
+} from './providerHandlers/documentLoader';
 import { createWebviewReadyGate, type WebviewReadyGate } from './providerHandlers/webviewReadyGate';
 import { clearVolume, reextractVolume } from './providerHandlers/volumeSessions';
 import { ProgressivePlyService } from './progressivePly/service';
@@ -102,43 +103,6 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
   }
 
   /**
-   * Wrap a panel's postMessage once so outbound messages wait for the webview
-   * listener and data-bearing messages receive an accurate send timestamp.
-   * Keeping this at the common boundary covers all format-specific send sites.
-   */
-  private prepareWebviewMessaging(
-    webviewPanel: vscode.WebviewPanel,
-    readyGate: WebviewReadyGate
-  ): void {
-    const webview = webviewPanel.webview;
-    const original = webview.postMessage.bind(webview);
-    (webview as any).postMessage = async (msg: any) => {
-      // VS Code may restore a custom editor before its scripts have installed
-      // a `message` listener. Keep parsing in parallel, but do not release
-      // extension-to-webview messages until the webview explicitly says it
-      // is ready. Disposing the panel resolves the gate with false so queued
-      // messages cannot leak or hang forever.
-      if (!(await readyGate.wait())) {
-        return false;
-      }
-      if (
-        msg &&
-        typeof msg === 'object' &&
-        typeof msg.type === 'string' &&
-        msg.type.endsWith('Data')
-      ) {
-        if (msg.postedAt === undefined) {
-          msg.postedAt = Date.now();
-        }
-        if (msg.loadStartedAt === undefined && this.currentLoadStartedAt) {
-          msg.loadStartedAt = this.currentLoadStartedAt;
-        }
-      }
-      return original(msg);
-    };
-  }
-
-  /**
    * Run one scripted benchmark step in the visible viewer.
    *
    * The benchmark harness lives in the extension host, but aligning and
@@ -157,7 +121,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
     if (!panel) {
       return false;
     }
-    await panel.webview.postMessage({ type: 'benchmarkScenario', step, anchorIndex });
+    await sendToWebview(panel, { type: 'benchmarkScenario', step, anchorIndex });
     return true;
   }
 
@@ -230,7 +194,10 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
     webviewPanel: vscode.WebviewPanel,
     token: vscode.CancellationToken
   ): Promise<void> {
+    const sequenceReader = new SequenceFileReader(message => sendToWebview(webviewPanel, message));
     const readyGate = createWebviewReadyGate();
+    const initialLoad = createWebviewReadyGate();
+    const loadStartedAt = Date.now();
     this.activePanels.add(webviewPanel);
     nativeAgentPanels.attach(webviewPanel, document.uri);
     this.pathToPanel.set(document.uri.fsPath, webviewPanel);
@@ -244,7 +211,11 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
       });
     });
     webviewPanel.onDidDispose(() => {
+      visibility.dispose();
+      sequenceReader.dispose();
+      cancelRegistrationRequest(webviewPanel);
       readyGate.dispose();
+      initialLoad.dispose();
       this.activePanels.delete(webviewPanel);
       this.pathToPanel.delete(document.uri.fsPath);
       this.panelToPath.delete(webviewPanel);
@@ -294,9 +265,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
     const isStlFile = fileType?.extension === 'stl';
     const isPcdFile = fileType?.extension === 'pcd';
     const isPtsFile = fileType?.extension === 'pts';
-    const isKittiBinFile = fileType?.extension === 'bin';
     const isStonexX3aFile = fileType?.extension === 'x3a' || fileType?.extension === 'x3r';
-    const isOffFile = fileType?.extension === 'off';
     const isGltfFile = fileType?.extension === 'gltf' || fileType?.extension === 'glb';
     const isVolumeFile = fileType?.extension === 'nrrd' || fileType?.extension === 'nhdr';
     const isXyzVariant =
@@ -324,6 +293,11 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
       switch (message.type) {
         case 'webviewReady':
           readyGate.markReady();
+          // How long the webview took to boot after its HTML was assigned.
+          // Every load waits behind this gate, so it is part of each total.
+          this.logPerf(
+            `⏱️ PERF[webview/ready] ${Date.now() - this.currentLoadStartedAt}ms after HTML`
+          );
           break;
         case 'error':
           vscode.window.showErrorMessage(message.message);
@@ -334,12 +308,15 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
         case 'perfLog':
           this.logPerf(message.line);
           break;
+        case 'registrationCancel':
+          cancelRegistrationRequest(webviewPanel, message.id);
+          break;
         case 'registrationRequest':
           await handleRegistrationRequest(webviewPanel, message);
           break;
         case 'volume:reextract':
           if (typeof message.sessionId !== 'string' || !message.sessionId) {
-            await webviewPanel.webview.postMessage({
+            await sendToWebview(webviewPanel, {
               type: 'volume:error',
               sessionId: '',
               requestId: message.requestId,
@@ -352,6 +329,19 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
           // silently, leaving the old point geometry on screen.
           await reextractVolume(message.sessionId, webviewPanel, message);
           break;
+        case 'depthFetchFailed':
+          // The page could not fetch the depth image itself; send the bytes.
+          {
+            const documentPath = this.panelToPath.get(webviewPanel);
+            if (documentPath) {
+              await sendDepthImage(
+                this.documentLoaderHost,
+                vscode.Uri.file(documentPath),
+                webviewPanel
+              );
+            }
+          }
+          break;
         case 'plyFetchFailed':
           await this.handlePlyFetchFallback(message);
           break;
@@ -363,6 +353,9 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
           break;
         case 'splatContainerFetchFailed':
           await resendSplatContainerBytes(webviewPanel, message);
+          break;
+        case 'stationPipelineCancel':
+          cancelStationPipeline(webviewPanel);
           break;
         case 'stationPipeline':
           await handleStationPipeline(
@@ -385,6 +378,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
           webviewPanel.webview.postMessage({
             type: 'fileRemoved',
             fileIndex: message.fileIndex,
+            entryId: message.entryId,
           });
           break;
         case 'requestCameraParams':
@@ -429,8 +423,11 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
         case 'selectCalibrationFile':
           await this.handleSelectCalibrationFile(webviewPanel, message);
           break;
+        case 'sequence:cancelFile':
+          sequenceReader.cancel(message.requestId);
+          break;
         case 'sequence:requestFile':
-          await this.handleSequenceRequestFile(webviewPanel, message);
+          await sequenceReader.request(message);
           break;
         case 'addFileFromPath':
           await handleAddFileFromPath(this.addFileHost, webviewPanel, message.path as string);
@@ -443,7 +440,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
               message.files || []
             );
           } finally {
-            await webviewPanel.webview.postMessage({ type: 'backgroundOperationComplete' });
+            await sendToWebview(webviewPanel, { type: 'backgroundOperationComplete' });
           }
           break;
         case 'requestDatasetTexture':
@@ -467,17 +464,28 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
     });
 
     // Show UI immediately. Reading/parsing starts in parallel below, while
-    // prepareWebviewMessaging queues all outbound messages until webviewReady.
-    webviewPanel.webview.html = this.getHtmlForWebview(webviewPanel.webview);
+    // The transport queues outbound messages until webviewReady.
+    const depthPrefetchUri = isDepthFile
+      ? depthImagePrefetchUri(document.uri, webviewPanel.webview)
+      : undefined;
+    webviewPanel.webview.html = this.getHtmlForWebview(
+      webviewPanel.webview,
+      fileType?.extension === 'ply'
+        ? binaryPlyPrefetchUri(document.uri, webviewPanel.webview)
+        : undefined,
+      depthPrefetchUri,
+      depthPrefetchUri ? depthImagePrefetchSize(document.uri) : undefined
+    );
 
     if (document.uri.scheme === 'viz3d-agent') {
+      initialLoad.markReady();
       return;
     }
 
     // Anchor the load's wall-clock start for the unified end-to-end timing line.
     this.currentLoadStartedAt = Date.now();
 
-    void webviewPanel.webview.postMessage({
+    void sendToWebview(webviewPanel, {
       type: 'startLoading',
       fileName: path.basename(document.uri.fsPath),
       isTifFile: isTifFile,
@@ -490,9 +498,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
       isStlFile: isStlFile,
       isPcdFile: isPcdFile,
       isPtsFile: isPtsFile,
-      isKittiBinFile: isKittiBinFile,
       isStonexX3aFile: isStonexX3aFile,
-      isOffFile: isOffFile,
       isGltfFile: isGltfFile,
       isXyzVariant: isXyzVariant,
     });
@@ -501,7 +507,12 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
     // and none of them parses as a point cloud on its own. Opening any one of
     // them loads the whole reconstruction from its directory instead.
     if (isColmapModelFile(path.basename(document.uri.fsPath))) {
-      setImmediate(() => void this.loadColmapReconstruction(document.uri, webviewPanel));
+      setImmediate(
+        () =>
+          void this.loadColmapReconstruction(document.uri, webviewPanel).finally(() =>
+            initialLoad.markReady()
+          )
+      );
       return;
     }
 
@@ -511,6 +522,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
       void (async () => {
         try {
           await loadDocumentContent(this.documentLoaderHost, document.uri, webviewPanel, {
+            depthPrefetchUri,
             fileType,
             isDepthFile,
             isPfmFile,
@@ -522,9 +534,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
             isStlFile,
             isPcdFile,
             isPtsFile,
-            isKittiBinFile,
             isStonexX3aFile,
-            isOffFile,
             isGltfFile,
             isVolumeFile,
             isXyzVariant,
@@ -533,7 +543,11 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
             isSplatContainerFile,
           });
         } finally {
-          await webviewPanel.webview.postMessage({ type: 'backgroundOperationComplete' });
+          try {
+            await sendToWebview(webviewPanel, { type: 'backgroundOperationComplete' });
+          } finally {
+            initialLoad.markReady();
+          }
         }
       })();
     });
@@ -583,7 +597,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
       // The model goes first and on its own. It is small and parses in well
       // under a second, so the cloud and the camera frames are on screen while
       // the photographs - often hundreds of megabytes - are still being read.
-      void webviewPanel.webview.postMessage({
+      void sendToWebview(webviewPanel, {
         type: 'colmapModelFiles',
         files: modelFiles,
         fileName: path.basename(directory.fsPath),
@@ -599,7 +613,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
         error instanceof Error ? error.message : String(error)
       }`;
       vscode.window.showErrorMessage(message);
-      void webviewPanel.webview.postMessage({ type: 'loadingError', error: message });
+      void sendToWebview(webviewPanel, { type: 'loadingError', error: message });
     }
   }
 
@@ -630,7 +644,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
       const totalBytes = files.reduce((sum, file) => sum + file.data.byteLength, 0);
       const BATCH = 8;
       for (let start = 0; start < files.length; start += BATCH) {
-        void webviewPanel.webview.postMessage({
+        void sendToWebview(webviewPanel, {
           type: 'colmapImages',
           files: files.slice(start, start + BATCH),
           total: files.length,
@@ -695,7 +709,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
   // Start sequence playback in current active webview with background loading hint
   public startSequence(filePaths: string[], wildcard: string): void {
     for (const panel of this.activePanels) {
-      panel.webview.postMessage({
+      sendToWebview(panel, {
         type: 'sequence:init',
         files: filePaths,
         wildcard: wildcard,
@@ -708,7 +722,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
   public startSequenceFor(targetFsPath: string, filePaths: string[], wildcard: string): void {
     const panel = this.pathToPanel.get(targetFsPath);
     if (panel) {
-      panel.webview.postMessage({ type: 'sequence:init', files: filePaths, wildcard });
+      sendToWebview(panel, { type: 'sequence:init', files: filePaths, wildcard });
       return;
     }
     // Fallback: use last known active panel if mapping not present
@@ -735,290 +749,25 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
     }
   }
 
-  private getHtmlForWebview(webview: vscode.Webview): string {
+  private getHtmlForWebview(
+    webview: vscode.Webview,
+    plyPrefetchUri?: { uri: string; size: number },
+    depthPrefetchUri?: string,
+    depthPrefetchSize?: number
+  ): string {
     // Read the shared index.html file (single source of truth)
     const htmlPath = vscode.Uri.joinPath(this.context.extensionUri, 'engine', 'index.html');
     const htmlPathOnDisk = htmlPath.fsPath;
     let html = fs.readFileSync(htmlPathOnDisk, 'utf8');
 
-    // Get URIs for VSCode webview resources
-    const scriptPathOnDisk = vscode.Uri.joinPath(
+    return renderWebviewHtml(
+      html,
+      webview,
       this.context.extensionUri,
-      'out',
-      'webview',
-      'main.js'
+      plyPrefetchUri,
+      depthPrefetchUri,
+      depthPrefetchSize
     );
-    const scriptUri = webview.asWebviewUri(scriptPathOnDisk).toString();
-
-    const stylePathOnDisk = vscode.Uri.joinPath(
-      this.context.extensionUri,
-      'engine',
-      'media',
-      'style.css'
-    );
-    const styleUri = webview.asWebviewUri(stylePathOnDisk).toString();
-    const componentStyleUri = webview
-      .asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'out', 'webview', 'bundle.css'))
-      .toString();
-
-    // Rust/WASM TIFF/EXR/PNG16 decoder (ported from the tiff-visualizer sister
-    // extension; the only image decoder in the webview). The glue defines a
-    // global wasm_bindgen; the webview fetches the .wasm binary from this URI
-    // at init time.
-    const tiffWasmGlueOnDisk = vscode.Uri.joinPath(
-      this.context.extensionUri,
-      'engine',
-      'media',
-      'wasm',
-      'tiff_wasm.js'
-    );
-    const tiffWasmGlueUri = webview.asWebviewUri(tiffWasmGlueOnDisk).toString();
-    const tiffWasmBinaryOnDisk = vscode.Uri.joinPath(
-      this.context.extensionUri,
-      'engine',
-      'media',
-      'wasm',
-      'tiff_wasm_bg.wasm'
-    );
-    const tiffWasmBinaryUri = webview.asWebviewUri(tiffWasmBinaryOnDisk).toString();
-
-    // Use a nonce to only allow specific scripts to be run
-    const nonce = getNonce();
-
-    // VSCode-specific modifications to the HTML:
-    // 1. Add Content Security Policy. 'wasm-unsafe-eval' is required to compile
-    //    the TIFF decoder WebAssembly module; connect-src already allows
-    //    fetching the .wasm binary from the webview resource origin.
-    //    connect-src blob: allows explicitly supplied GLTF buffers and textures.
-    //    connect-src data: is for Spark (gaussian splats), which fetches its
-    //    inlined WASM sorter from a data:application/wasm URL.
-    const cspMeta = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; connect-src ${webview.cspSource} https: data: blob:; worker-src ${webview.cspSource} blob:; script-src 'nonce-${nonce}' ${webview.cspSource} 'wasm-unsafe-eval'; img-src ${webview.cspSource} https: blob: data:; font-src ${webview.cspSource};">`;
-    html = html.replace('<meta name="viewport"', `${cspMeta}\n    <meta name="viewport"`);
-
-    // 2. Replace resource URLs with webview URIs
-    html = html.replace(/href="media\/style\.css"/, `href="${styleUri}"`);
-    html = html.replace(/href="bundle\.css"/, `href="${componentStyleUri}"`);
-    html = html.replace(
-      /src="media\/wasm\/tiff_wasm\.js"/,
-      `nonce="${nonce}" src="${tiffWasmGlueUri}"`
-    );
-    // Point the webview at the webview-resource URI for the .wasm binary.
-    html = html.replace(
-      /window\.__TIFF_WASM_GLUE_URL__ = window\.__TIFF_WASM_GLUE_URL__ \|\| 'media\/wasm\/tiff_wasm\.js';/,
-      `window.__TIFF_WASM_GLUE_URL__ = '${tiffWasmGlueUri}';`
-    );
-    html = html.replace(
-      /window\.__TIFF_WASM_URL__ = window\.__TIFF_WASM_URL__ \|\| 'media\/wasm\/tiff_wasm_bg\.wasm';/,
-      `window.__TIFF_WASM_URL__ = '${tiffWasmBinaryUri}';`
-    );
-    // Add the nonce to the inline bootstrap script that sets __TIFF_WASM_URL__.
-    html = html.replace(
-      /<script>\s*\n\s*\/\/ Default WASM binary location/,
-      `<script nonce="${nonce}">\n      // Default WASM binary location`
-    );
-    // The webview has no URL query string, so the engine's `?webgpu=1` switch
-    // is unreachable here; the setting is forwarded as the global instead.
-    // Injected before bundle.js because the viewer reads it while booting.
-    const useWebGPU = vscode.workspace
-      .getConfiguration('plyViewer')
-      .get<boolean>('experimentalWebGPU', false);
-    html = html.replace(
-      /window\.__TIFF_WASM_URL__ = '/,
-      `window.__PLY_WEBGPU__ = ${useWebGPU};\n      window.__TIFF_WASM_URL__ = '`
-    );
-    html = html.replace(/src="bundle\.js"/, `nonce="${nonce}" src="${scriptUri}"`);
-
-    // 3. Remove browser-specific elements (file input, navigation links)
-    // Note: Theme selector is now handled by JS (checking isVSCode) rather than removing HTML
-    html = html.replace(
-      /<input[^>]*id="hiddenFileInput"[^>]*>/,
-      '<!-- File input removed in VSCode -->'
-    );
-    html = html.replace(/<div class="bottom-right-nav">[\s\S]*?<\/div>/, '');
-    html = html.replace(/<div id="welcome-message-mount"><\/div>/, '');
-
-    return html;
-  }
-
-  private async handleSequenceRequestFile(
-    webviewPanel: vscode.WebviewPanel,
-    message: { path: string; index: number; requestId?: string }
-  ): Promise<void> {
-    const fileUri = vscode.Uri.file(message.path);
-    const fileName = path.basename(fileUri.fsPath);
-    const ext = path.extname(fileUri.fsPath).toLowerCase();
-    try {
-      if (ext === '.ply') {
-        const bytes = await vscode.workspace.fs.readFile(fileUri);
-        const parser = new PlyParser();
-        const isBinary = isPlyBinary(bytes);
-        if (isBinary) {
-          // The webview parses the file itself, so the whole buffer goes
-          // across - header included - and no offset table travels with it.
-          const rawBinaryData = bytes.buffer.slice(
-            bytes.byteOffset,
-            bytes.byteOffset + bytes.byteLength
-          );
-          webviewPanel.webview.postMessage({
-            type: 'sequence:file:ultimate',
-            index: message.index,
-            requestId: message.requestId,
-            fileName,
-            rawBinaryData,
-            fileSizeInBytes: bytes.byteLength,
-          });
-        } else {
-          const parsed = await parser.parse(bytes);
-          webviewPanel.webview.postMessage({
-            type: 'sequence:file:ply',
-            index: message.index,
-            requestId: message.requestId,
-            fileName,
-            data: parsed,
-          });
-        }
-        return;
-      }
-      if (ext === '.xyz') {
-        const xyz = await vscode.workspace.fs.readFile(fileUri);
-        webviewPanel.webview.postMessage({
-          type: 'sequence:file:xyz',
-          index: message.index,
-          requestId: message.requestId,
-          fileName,
-          data: xyz.buffer.slice(xyz.byteOffset, xyz.byteOffset + xyz.byteLength),
-        });
-        return;
-      }
-      if (ext === '.obj') {
-        const objBytes = await vscode.workspace.fs.readFile(fileUri);
-        const objParser = new ObjParser();
-        const parsed = await objParser.parse(objBytes);
-        webviewPanel.webview.postMessage({
-          type: 'sequence:file:obj',
-          index: message.index,
-          requestId: message.requestId,
-          fileName,
-          data: parsed,
-        });
-        return;
-      }
-      if (ext === '.stl') {
-        const stlBytes = await vscode.workspace.fs.readFile(fileUri);
-        const stlParser = new StlParser();
-        const parsed = await stlParser.parse(stlBytes);
-        webviewPanel.webview.postMessage({
-          type: 'sequence:file:stl',
-          index: message.index,
-          requestId: message.requestId,
-          fileName,
-          data: parsed,
-        });
-        return;
-      }
-      if (ext === '.pcd') {
-        const pcdBytes = await vscode.workspace.fs.readFile(fileUri);
-        const parsed = toPcdPayload(await parsePcdWasm(pcdBytes));
-        webviewPanel.webview.postMessage({
-          type: 'sequence:file:pcd',
-          index: message.index,
-          requestId: message.requestId,
-          fileName,
-          data: parsed,
-        });
-        return;
-      }
-      if (ext === '.pts') {
-        const ptsBytes = await vscode.workspace.fs.readFile(fileUri);
-        const parsed = toPointCloudPayload(await parsePtsWasm(ptsBytes), 'pts');
-        webviewPanel.webview.postMessage({
-          type: 'sequence:file:pts',
-          index: message.index,
-          requestId: message.requestId,
-          fileName,
-          data: parsed,
-        });
-        return;
-      }
-      if (ext === '.off') {
-        const offBytes = await vscode.workspace.fs.readFile(fileUri);
-        const offParser = new OffParser();
-        const parsed = await offParser.parse(offBytes);
-        webviewPanel.webview.postMessage({
-          type: 'sequence:file:off',
-          index: message.index,
-          requestId: message.requestId,
-          fileName,
-          data: parsed,
-        });
-        return;
-      }
-      if (ext === '.gltf' || ext === '.glb') {
-        const gltfBytes = await vscode.workspace.fs.readFile(fileUri);
-        const gltfParser = new GltfParser();
-        const parsed = await gltfParser.parse(gltfBytes);
-        webviewPanel.webview.postMessage({
-          type: 'sequence:file:gltf',
-          index: message.index,
-          requestId: message.requestId,
-          fileName,
-          data: parsed,
-        });
-        return;
-      }
-      if (ext === '.xyzn' || ext === '.xyzrgb') {
-        const xyzBytes = await vscode.workspace.fs.readFile(fileUri);
-        webviewPanel.webview.postMessage({
-          type: 'sequence:file:xyzvariant',
-          index: message.index,
-          requestId: message.requestId,
-          fileName,
-          data: xyzBytes.buffer.slice(
-            xyzBytes.byteOffset,
-            xyzBytes.byteOffset + xyzBytes.byteLength
-          ),
-          variant: ext.substring(1),
-        });
-        return;
-      }
-      if (
-        ext === '.tif' ||
-        ext === '.tiff' ||
-        ext === '.pfm' ||
-        ext === '.npy' ||
-        ext === '.npz' ||
-        ext === '.png' ||
-        ext === '.exr'
-      ) {
-        const depthBytes = await vscode.workspace.fs.readFile(fileUri);
-        webviewPanel.webview.postMessage({
-          type: 'sequence:file:depth',
-          index: message.index,
-          requestId: message.requestId,
-          fileName,
-          data: depthBytes.buffer.slice(
-            depthBytes.byteOffset,
-            depthBytes.byteOffset + depthBytes.byteLength
-          ),
-        });
-        return;
-      }
-      webviewPanel.webview.postMessage({
-        type: 'sequence:file:error',
-        index: message.index,
-        requestId: message.requestId,
-        fileName,
-        error: `Unsupported file type: ${ext}`,
-      });
-    } catch (err) {
-      webviewPanel.webview.postMessage({
-        type: 'sequence:file:error',
-        index: message.index,
-        requestId: message.requestId,
-        fileName,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
   }
 
   /**
@@ -1055,7 +804,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
       console.error('PLY fetch fallback failed:', error);
       const detail = error instanceof Error ? error.message : String(error);
       if (fallbackPanel) {
-        void fallbackPanel.webview.postMessage({
+        void sendToWebview(fallbackPanel, {
           type: 'loadingError',
           fileName: message.fileName,
           fileType: 'PLY',
@@ -1089,11 +838,12 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
         await vscode.workspace.fs.writeFile(saveUri, plyContent);
 
         // Send success response back to webview
-        webviewPanel.webview.postMessage({
+        sendToWebview(webviewPanel, {
           type: 'savePlyFileResult',
           success: true,
           filePath: saveUri.fsPath,
           fileIndex: message.fileIndex,
+          entryId: message.entryId,
         });
 
         // Show success message to user
@@ -1106,22 +856,24 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
       } else {
         // User cancelled the save dialog
         console.log('🚫 User cancelled PLY save dialog');
-        webviewPanel.webview.postMessage({
+        sendToWebview(webviewPanel, {
           type: 'savePlyFileResult',
           success: false,
           cancelled: true,
           fileIndex: message.fileIndex,
+          entryId: message.entryId,
         });
       }
     } catch (error) {
       console.error('❌ Error saving PLY file:', error);
 
       // Send error response back to webview
-      webviewPanel.webview.postMessage({
+      sendToWebview(webviewPanel, {
         type: 'savePlyFileResult',
         success: false,
         error: error instanceof Error ? error.message : String(error),
         fileIndex: message.fileIndex,
+        entryId: message.entryId,
       });
 
       // Show error message to user
@@ -1272,9 +1024,10 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
         }
 
         // Send file data back to webview
-        webviewPanel.webview.postMessage({
+        sendToWebview(webviewPanel, {
           type: 'colorImageData',
           fileIndex: message.fileIndex,
+          entryId: message.entryId,
           data: fileData.buffer.slice(
             fileData.byteOffset,
             fileData.byteOffset + fileData.byteLength
@@ -1311,7 +1064,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
       const fileName = path.basename(message.texturePath);
 
       // Send texture data to webview
-      webviewPanel.webview.postMessage({
+      sendToWebview(webviewPanel, {
         type: 'datasetTexture',
         fileName: fileName,
         sceneName: message.sceneName,
@@ -1345,7 +1098,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
       const fileContent = Buffer.from(fileData).toString('utf-8');
 
       // Send calibration file data to webview (same format as manual selection)
-      webviewPanel.webview.postMessage({
+      sendToWebview(webviewPanel, {
         type: 'calibrationFileSelected',
         fileIndex: fileIndex,
         fileName: fileName,
@@ -1393,7 +1146,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
       }
 
       // Send image data to webview (same format as manual selection)
-      webviewPanel.webview.postMessage({
+      sendToWebview(webviewPanel, {
         type: 'colorImageData',
         fileIndex: fileIndex,
         data: fileData.buffer.slice(fileData.byteOffset, fileData.byteOffset + fileData.byteLength),
@@ -1448,9 +1201,10 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
         };
 
         // Send MTL data to webview
-        webviewPanel.webview.postMessage({
+        sendToWebview(webviewPanel, {
           type: 'mtlData',
           fileIndex: message.fileIndex,
+          entryId: message.entryId,
           fileName: path.basename(mtlFile.fsPath),
           data: serializedMtl,
         });
@@ -1526,7 +1280,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
         };
 
         // Send MTL data to webview
-        webviewPanel.webview.postMessage({
+        sendToWebview(webviewPanel, {
           type: 'mtlData',
           fileIndex: fileIndex,
           fileName: path.basename(mtlPath),
@@ -1564,7 +1318,10 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
       // Filter out cx/cy from saved settings as they should be auto-calculated per image
       const filteredSettings = savedSettings
         ? {
-            fx: savedSettings.fx || 1000,
+            ...savedSettings,
+            fx: savedSettings.fx ?? 1000,
+            cx: undefined,
+            cy: undefined,
             fy: savedSettings.fy,
             cameraModel: savedSettings.cameraModel,
             depthType: savedSettings.depthType,
@@ -1585,7 +1342,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
         string | undefined;
 
       // Send settings back to webview
-      webviewPanel.webview.postMessage({
+      sendToWebview(webviewPanel, {
         type: 'defaultDepthSettings',
         settings: filteredSettings,
         viewConvention,
@@ -1600,7 +1357,7 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
     } catch (error) {
       console.error('Failed to load default depth settings:', error);
       // Send default fallback settings
-      webviewPanel.webview.postMessage({
+      sendToWebview(webviewPanel, {
         type: 'defaultDepthSettings',
         settings: {
           fx: 1000,
@@ -1646,9 +1403,10 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
         const fileContent = Buffer.from(fileData).toString('utf-8');
 
         // Send calibration file data to webview
-        webviewPanel.webview.postMessage({
+        sendToWebview(webviewPanel, {
           type: 'calibrationFileSelected',
           fileIndex: message.fileIndex,
+          entryId: message.entryId,
           fileName: fileName,
           content: fileContent,
         });
@@ -1674,11 +1432,51 @@ class SpatialDocument implements vscode.CustomDocument {
   }
 }
 
-function getNonce(): string {
-  let text = '';
-  const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  for (let i = 0; i < 32; i++) {
-    text += possible.charAt(Math.floor(Math.random() * possible.length));
+/**
+ * The webview URI of a local binary PLY, for the page to start fetching while
+ * it boots; undefined for ASCII PLYs (parsed in the extension host) and for
+ * anything not on disk. Reads only the header's first kilobyte.
+ */
+/**
+ * A local depth image is fetched by the page itself while the viewer boots,
+ * like a binary PLY: posting tens of megabytes only after the webview is ready
+ * put the whole transfer behind the boot (see `startDepthPrefetch`).
+ */
+function depthImagePrefetchUri(uri: vscode.Uri, webview: vscode.Webview): string | undefined {
+  return uri.scheme === 'file' && /\.(tiff?|pfm|exr|png)$/i.test(uri.fsPath)
+    ? webview.asWebviewUri(uri).toString()
+    : undefined;
+}
+
+/** Lets the page fetch a large depth image as several ranges at once. */
+function depthImagePrefetchSize(uri: vscode.Uri): number | undefined {
+  try {
+    return fs.statSync(uri.fsPath).size;
+  } catch {
+    return undefined;
   }
-  return text;
+}
+
+function binaryPlyPrefetchUri(
+  uri: vscode.Uri,
+  webview: vscode.Webview
+): { uri: string; size: number } | undefined {
+  if (uri.scheme !== 'file') {
+    return undefined;
+  }
+  try {
+    const fd = fs.openSync(uri.fsPath, 'r');
+    try {
+      const head = Buffer.alloc(1024);
+      const read = fs.readSync(fd, head, 0, head.length, 0);
+      // The size lets the page fetch a large file as several ranges at once.
+      return isPlyBinary(head.subarray(0, read))
+        ? { uri: webview.asWebviewUri(uri).toString(), size: fs.fstatSync(fd).size }
+        : undefined;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return undefined;
+  }
 }

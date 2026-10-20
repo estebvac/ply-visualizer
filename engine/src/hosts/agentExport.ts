@@ -1,4 +1,6 @@
 /* eslint-disable @typescript-eslint/naming-convention -- MCP wire keys */
+import { normalsAsFloat32 } from '../utils/normals';
+import { hasSourceRows, sourceRowsOf } from '../utils/sourceRows';
 import { exportAgentModels } from './agentModelExport';
 import type { ControlHost } from './agentControls';
 import { selectionData } from './agentInspection';
@@ -40,19 +42,19 @@ export async function agentExport(host: ControlHost, a: Record<string, any>) {
     const metadata = {
       ...(data.metadata?.depth ? { depth: data.metadata.depth } : {}),
       coordinates: 'object-local; apply local_to_world for the rendered pose',
-      local_to_world: host.transformationMatrices[host.spatialFiles.indexOf(data)].toArray(),
+      local_to_world: host.fileEntries.require(host.spatialFiles.indexOf(data)).transform.toArray(),
       source_origin: data.sourceOrigin ?? null,
       source_file: item.source.fileName,
-      original_rows_available: !!data.sourcePointIndices?.length,
+      original_rows_available: hasSourceRows(data),
     };
     const bytes = wasm.export_inspection_ply(
       data.positionsArray!,
       data.colorsArray ?? new Uint8Array(),
-      data.normalsArray ?? new Float32Array(),
+      data.normalsArray ? normalsAsFloat32(data.normalsArray) : new Float32Array(),
       flat,
       JSON.stringify(entries.map(([key]) => key)),
       item.indices,
-      data.sourcePointIndices ?? new Uint32Array(),
+      sourceRowsOf(data) ?? new Uint32Array(),
       JSON.stringify(metadata)
     );
     const id = storeExport(host, bytes);

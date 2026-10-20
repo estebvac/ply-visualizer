@@ -1,3 +1,4 @@
+import { hasSourceRows } from '../utils/sourceRows';
 import { agentPointSizeMode, agentPointSizePixels } from './agentPointSizing';
 import { transformUndoCount } from './agentTransforms';
 import { comparisonState, distanceState } from './agentComparison';
@@ -46,7 +47,7 @@ export function objectPresentation(host: ControlHost, index: number) {
       : null,
     point_size_pixels: agentPointSizePixels(host.spatialFiles[index]),
     point_size_mode: agentPointSizeMode(host.spatialFiles[index]),
-    original_rows_available: !!host.spatialFiles[index].sourcePointIndices?.length,
+    original_rows_available: hasSourceRows(host.spatialFiles[index]),
     opacity: opacities.length === 1 ? opacities[0] : null,
     available_color_modes: getPointCloudColorOptions(
       host as unknown as PointCloudColorOptionsHost,
@@ -69,7 +70,7 @@ export function agentViewState(host: ControlHost) {
   const canvas = host.renderer.domElement;
   const visible = new THREE.Box3();
   host.meshes.forEach((mesh, index) => {
-    if (mesh?.visible && host.fileVisibility[index]) {
+    if (mesh?.visible && host.fileEntries.require(index).state.visible) {
       visible.expandByObject(mesh);
     }
   });

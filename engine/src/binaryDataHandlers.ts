@@ -1,7 +1,14 @@
-import { SpatialData, SpatialVertex } from './interfaces';
+import { ScalarArray, SpatialData } from './interfaces';
+import { scalarArrayFromBuffer } from './utils/scalarFields';
 import { PerfTimer } from './utils/perfLog';
 import { noteContainerScanLoaded } from './utils/containerPerf';
-import { parsePlyFromResponse, parsePlyWasm, type PlyParseResult } from './parsers/pointcloudWasm';
+import {
+  parsePlyBytes,
+  parsePlyFromRanges,
+  parsePlyFromResponse,
+  warmUpPlyParser,
+  type PlyParseResult,
+} from './parsers/pointcloudWasm';
 
 export interface BinaryDataHandlersHost {
   vscode: { postMessage(message: any): void };
@@ -41,6 +48,72 @@ export async function loadWithPerf(
 }
 
 /**
+ * A binary PLY named in the page itself, fetched and parsed while the viewer
+ * boots.
+ *
+ * Without it the fetch can only start once the viewer has initialised, told
+ * the extension it is ready, and received the file's URI back - for a
+ * 200 MB cloud that is a few hundred milliseconds of the bytes sitting still.
+ * The extension writes the URI into the HTML when it already knows the file
+ * is a local binary PLY; the URI message that follows then picks up this
+ * in-flight result instead of fetching a second time.
+ */
+let plyPrefetch: { uri: string; parsed: Promise<PlyParseResult> } | null = null;
+
+/** Below this one request is about as fast as several. */
+const MIN_BYTES_FOR_RANGES = 32 * 1024 * 1024;
+
+/**
+ * @param size the file's length, from the extension: with it a large binary
+ *   point cloud is fetched as four ranges at once (`parsePlyFromRanges`).
+ */
+export function startPlyPrefetch(uri: unknown, size?: unknown): void {
+  if (typeof uri !== 'string' || !uri || plyPrefetch) {
+    return;
+  }
+  // Optimise the parser while the bytes are still in flight (see the helper).
+  void warmUpPlyParser().catch(() => undefined);
+  const whole = () =>
+    fetch(uri).then(response => {
+      if (!response.ok) {
+        throw new Error(`fetch failed: ${response.status}`);
+      }
+      return parsePlyFromResponse(response);
+    });
+  const parsed =
+    typeof size === 'number' && size >= MIN_BYTES_FOR_RANGES
+      ? // Four, measured: eight were slower again on large files (341 MB:
+        // 2.7 s against 1.3 s) - more parts in flight than the transport and
+        // the single decoding thread keep up with.
+        parsePlyFromRanges(uri, size, 4).catch(error => {
+          console.warn('[PLY] ranged fetch declined, fetching in one request:', error);
+          return whole();
+        })
+      : whole();
+  // Rejections are handled where the result is taken; never let an unused
+  // prefetch surface as an unhandled rejection.
+  parsed.catch(() => undefined);
+  const entry = { uri, parsed };
+  plyPrefetch = entry;
+  // If the extension never asks for it (it reported an error instead), do not
+  // hold a parsed cloud for the life of the page.
+  setTimeout(() => {
+    if (plyPrefetch === entry) {
+      plyPrefetch = null;
+    }
+  }, 60_000);
+}
+
+function takePlyPrefetch(uri: string): Promise<PlyParseResult> | null {
+  if (plyPrefetch?.uri !== uri) {
+    return null;
+  }
+  const { parsed } = plyPrefetch;
+  plyPrefetch = null;
+  return parsed;
+}
+
+/**
  * Transfer-via-fetch entry: instead of receiving the vertex buffer over
  * postMessage (a multi-hundred-ms structured clone for large clouds), fetch
  * the file directly from its webview URI, slice out the vertex bytes, and
@@ -51,8 +124,33 @@ export async function handleUltimateRawBinaryUri(
   host: BinaryDataHandlersHost,
   message: any
 ): Promise<void> {
-  let response: Response;
   const fetchStart = performance.now();
+  const prefetched = takePlyPrefetch(message.fileUri);
+  if (prefetched) {
+    message.uriReceivedAt = Date.now();
+    let parsed: PlyParseResult | null = null;
+    try {
+      parsed = await prefetched;
+    } catch (error) {
+      // Fall through to a fresh fetch, which has its own fallback.
+      console.warn('[PLY] prefetch failed, fetching again:', error);
+    }
+    if (parsed) {
+      // Only the part of the fetch that was still outstanding when the URI
+      // arrived; the rest overlapped the viewer's startup.
+      message.fetchMs = performance.now() - fetchStart;
+      message.parseMode = 'binary-rust-prefetch';
+      try {
+        await host.handleUltimateRawBinaryData(message, parsed);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        console.error('[PLY] parsing failed:', error);
+        host.showError(`Failed to load PLY file (${message.fileName}): ${detail}`);
+      }
+      return;
+    }
+  }
+  let response: Response;
   try {
     // Stamp when the (small) URI message arrived, BEFORE the fetch, so the
     // timer's `transfer` is just the URI crossing and the fetch is its own
@@ -107,7 +205,7 @@ export async function handleUltimateRawBinaryData(
   // second binary PLY decoder, with its own idea of splat colour and scalar
   // fields, sitting a message boundary away from the first.
   const rawData = message.rawBinaryData ? new Uint8Array(message.rawBinaryData) : null;
-  const parsed = preparsed ?? (await parsePlyWasm(rawData!));
+  const parsed = preparsed ?? (await parsePlyBytes(rawData!));
   const isSplat = parsed.isGaussianSplat;
 
   const parseTime = performance.now();
@@ -116,7 +214,8 @@ export async function handleUltimateRawBinaryData(
 
   const spatialData: SpatialData = {
     vertices: [],
-    faces: parsed.faces,
+    faces: [],
+    indicesArray: parsed.indicesArray,
     format: parsed.format,
     version: parsed.version,
     comments: parsed.comments,
@@ -198,7 +297,7 @@ export async function handleUltimateRawBinaryData(
   perf.note('MB', (message.fileSizeInBytes / 1048576).toFixed(1));
   // One decoder now, so the mode is a constant rather than which of two
   // JavaScript loops the file happened to qualify for.
-  perf.note('mode', 'binary-rust');
+  perf.note('mode', message.parseMode ?? 'binary-rust');
   perf.summary();
 }
 
@@ -296,58 +395,33 @@ export async function handleBinarySpatialData(
   }
 
   // Convert normal buffer if present
-  let normalArray: Float32Array | null = null;
+  let normalArray: Float32Array | Int16Array | null = null;
   if (message.normalBuffer) {
-    normalArray = new Float32Array(message.normalBuffer);
+    // A point cloud's unit normals arrive packed (utils/normals.ts).
+    normalArray =
+      message.normalType === 'Int16Array'
+        ? new Int16Array(message.normalBuffer)
+        : new Float32Array(message.normalBuffer);
   }
 
-  const scalarFields: Record<string, Float32Array> = {};
+  const scalarFields: Record<string, ScalarArray> = {};
   for (const [name, buffer] of Object.entries(message.scalarFieldBuffers || {})) {
-    scalarFields[name] = new Float32Array(buffer as ArrayBuffer);
+    scalarFields[name] = scalarArrayFromBuffer(
+      buffer as ArrayBuffer,
+      message.scalarFieldTypes?.[name]
+    );
   }
   spatialData.positionsArray = positionArray;
   spatialData.colorsArray = colorArray;
   spatialData.normalsArray = normalArray;
   spatialData.scalarFields = scalarFields;
-  spatialData.intensityArray = scalarFields.intensity ?? null;
+  // Intensity is never compacted (see compactScalarFields).
+  spatialData.intensityArray = (scalarFields.intensity as Float32Array | undefined) ?? null;
 
-  // Mesh normals still use the legacy vertex representation during ASCII PLY
-  // export. Point clouds—including LAS/LAZ/E57—stay entirely on typed arrays.
-  if (message.hasNormals) {
-    for (let i = 0; i < message.vertexCount; i++) {
-      const vertex: SpatialVertex = {
-        x: positionArray[i * 3],
-        y: positionArray[i * 3 + 1],
-        z: positionArray[i * 3 + 2],
-      };
-
-      // Add colors if present
-      if (colorArray && message.hasColors) {
-        vertex.red = colorArray[i * 3];
-        vertex.green = colorArray[i * 3 + 1];
-        vertex.blue = colorArray[i * 3 + 2];
-      }
-
-      // Add normals if present
-      if (normalArray) {
-        vertex.nx = normalArray[i * 3];
-        vertex.ny = normalArray[i * 3 + 1];
-        vertex.nz = normalArray[i * 3 + 2];
-      }
-
-      spatialData.vertices.push(vertex);
-    }
-  }
-
-  // Convert face buffer if present
+  // Faces arrive as one triangle index buffer and go to the GPU as they are.
   if (message.indexBuffer) {
-    const indexArray = new Uint32Array(message.indexBuffer);
-    // The buffer already represents triangulated indices; push as triples
-    for (let i = 0; i < indexArray.length; i += 3) {
-      spatialData.faces.push({
-        indices: [indexArray[i], indexArray[i + 1], indexArray[i + 2]],
-      });
-    }
+    spatialData.indicesArray = new Uint32Array(message.indexBuffer);
+    spatialData.faceCount = spatialData.indicesArray.length / 3;
   }
 
   const conversionTime = performance.now() - startTime;

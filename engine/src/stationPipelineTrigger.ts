@@ -69,23 +69,23 @@ function currentTransforms(
 ): Record<string, number[]> {
   const transforms: Record<string, number[]> = {};
   const alignedOnly =
-    registrationState.alignmentAnchorIndex === anchorIndex &&
-    registrationState.alignedIndices.length > 0
-      ? new Set(registrationState.alignedIndices)
+    registrationState.alignmentAnchorId === host.fileEntries.require(anchorIndex).id &&
+    registrationState.alignedIds.length > 0
+      ? new Set(registrationState.alignedIds)
       : null;
   for (let index = 0; index < (host.spatialFiles?.length ?? 0); index++) {
     const metadata = host.spatialFiles[index]?.metadata;
     if (metadata?.containerFileName !== archiveName || !metadata?.embeddedScanName) {
       continue;
     }
-    if (alignedOnly && !alignedOnly.has(index)) {
+    if (alignedOnly && !alignedOnly.has(host.fileEntries.require(index).id)) {
       continue;
     }
     const stem = String(metadata.embeddedScanName).replace(/\.x3r$/i, '');
     if (!scope.has(stem)) {
       continue;
     }
-    transforms[stem] = Array.from(host.transformationMatrices[index].elements);
+    transforms[stem] = Array.from(host.fileEntries.require(index).transform.elements);
   }
   return transforms;
 }
@@ -98,7 +98,7 @@ function visibleArchiveStems(host: any, archiveName: string, fallbackIndex: numb
     if (
       metadata?.containerFileName !== archiveName ||
       !metadata?.embeddedScanName ||
-      filesState.visibility[index] === false
+      host.fileEntries.require(index).state.visible === false
     ) {
       continue;
     }
@@ -121,6 +121,18 @@ function visibleArchiveStems(host: any, archiveName: string, fallbackIndex: numb
  * @param register when true the host re-derives the alignment itself and
  *   discards what is on screen; when false the current transforms are sent.
  */
+/**
+ * Ask the host to stop the colour run. It stops at the next scan boundary and
+ * answers with a cancelled result, which ends the run here like any other.
+ */
+export function cancelStationPipeline(host: any): void {
+  if (!stationPipelineUi.busy || !host.vscode) {
+    return;
+  }
+  stationPipelineUi.message = 'Cancelling after the current step...';
+  host.vscode.postMessage({ type: 'stationPipelineCancel' });
+}
+
 export function runStationPipeline(host: any, fileIndex: number, register: boolean): void {
   const archiveName = archiveNameOf(host, fileIndex);
   if (!archiveName || !host.vscode) {

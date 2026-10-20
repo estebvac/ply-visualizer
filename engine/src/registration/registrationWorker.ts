@@ -1,3 +1,4 @@
+import { runRegistration } from './run';
 /**
  * Worker host for the Rust registration solvers.
  *
@@ -8,12 +9,7 @@
  * across and hands the point buffers back.
  */
 
-import initWasm, {
-  coarse_align,
-  fit_correspondences,
-  icp_refine,
-  register_pair,
-} from '../../../wasm/pointcloud-parser/pkg-web/pointcloud_parser';
+import initWasm, * as wasm from '../../../wasm/pointcloud-parser/pkg-web/pointcloud_parser';
 
 export type RegistrationKind = 'register' | 'coarse' | 'icp' | 'fit';
 
@@ -31,51 +27,36 @@ const workerScope: any = self;
 
 let initPromise: Promise<unknown> | null = null;
 
-function ensureInitialized(): Promise<unknown> {
-  if (!initPromise) {
-    initPromise = initWasm();
-  }
-  return initPromise;
-}
-
-function run(request: RegistrationRequest): { matrix: Float64Array; stats: string } | null {
-  const { source, target, settingsJson } = request;
-  const result =
-    request.kind === 'register'
-      ? register_pair(source, target, settingsJson)
-      : request.kind === 'coarse'
-        ? coarse_align(source, target, settingsJson)
-        : request.kind === 'icp'
-          ? icp_refine(source, target, settingsJson)
-          : fit_correspondences(source, target);
-  if (!result) {
-    return null;
-  }
-  try {
-    return { matrix: result.matrix, stats: result.stats };
-  } finally {
-    result.free();
-  }
-}
-
-// Announced once the module is live, so the page can tell "this worker works"
-// from "this environment refused to start one" before it hands over any data.
-// A VS Code webview is the second case: its bundle is served from a different
-// origin than the document, so the Worker constructor rejects the script.
-ensureInitialized().then(
-  () => workerScope.postMessage({ ready: true }),
-  (error: unknown) =>
-    workerScope.postMessage({
-      ready: false,
-      error: error instanceof Error ? error.message : String(error),
-    })
-);
-
-workerScope.onmessage = async (event: MessageEvent<RegistrationRequest>) => {
+workerScope.onmessage = async (
+  event: MessageEvent<RegistrationRequest | { type: 'initialize'; module: WebAssembly.Module }>
+) => {
   const request = event.data;
+  if ('type' in request && request.type === 'initialize') {
+    // eslint-disable-next-line @typescript-eslint/naming-convention -- wasm-bindgen API
+    initPromise ??= initWasm({ module_or_path: request.module });
+    try {
+      await initPromise;
+      workerScope.postMessage({ ready: true });
+    } catch (error) {
+      workerScope.postMessage({ ready: false, error: String(error) });
+    }
+    return;
+  }
+  if (!('kind' in request)) {
+    return;
+  }
   try {
-    await ensureInitialized();
-    const result = run(request);
+    if (!initPromise) {
+      throw new Error('Registration worker was not initialized');
+    }
+    await initPromise;
+    const result = runRegistration(
+      wasm,
+      request.kind,
+      request.source,
+      request.target,
+      request.settingsJson
+    );
     workerScope.postMessage(
       { id: request.id, matrix: result?.matrix ?? null, stats: result?.stats ?? null },
       result ? [result.matrix.buffer] : []

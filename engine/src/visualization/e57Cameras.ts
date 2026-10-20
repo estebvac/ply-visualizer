@@ -21,17 +21,13 @@ import {
 interface E57CameraHost {
   scene: THREE.Scene;
   fileEntries: FileEntryRegistry;
-  spatialFiles: SpatialData[];
-  poseGroups: THREE.Group[];
-  cameraGroups: THREE.Group[];
-  cameraNames: string[];
-  cameraShowLabels: boolean[];
-  cameraShowCoords: boolean[];
-  fileVisibility: boolean[];
-  pointSizes: number[];
-  individualColorModes: string[];
-  transformationMatrices: THREE.Matrix4[];
-  meshes: THREE.Object3D[];
+  spatialFiles: readonly SpatialData[];
+  poseGroups: readonly THREE.Group[];
+  cameraGroups: readonly THREE.Group[];
+  cameraNames: readonly string[];
+  cameraShowLabels: readonly boolean[];
+  cameraShowCoords: readonly boolean[];
+  meshes: readonly THREE.Object3D[];
   applyColorModeToGeometry(
     data: SpatialData,
     geometry: THREE.BufferGeometry,
@@ -63,9 +59,7 @@ function createScannerMarker(data: SpatialData): THREE.Group {
 
 function registerCameraGroup(host: E57CameraHost, profile: THREE.Group, name: string): void {
   host.scene.add(profile);
-  host.cameraGroups.push(profile);
-  host.cameraNames.push(name);
-  registerCameraEntry(host);
+  registerCameraEntry(host, profile, name);
 }
 
 function imagePose(
@@ -509,8 +503,8 @@ async function colorPointCloudFromImages(
   data.hasColors = true;
   data.metadata = { ...data.metadata, e57PhotographicallyColoredPoints: coloredCount };
   const fileIndex = data.fileIndex!;
-  host.individualColorModes[fileIndex] = 'original';
-  filesState.colorModes[fileIndex] = 'original';
+  host.fileEntries.require(fileIndex).state.colorMode = 'original';
+
   const points = host.meshes[fileIndex] as THREE.Points | undefined;
   if (points?.geometry) {
     host.applyColorModeToGeometry(data, points.geometry, 'original');
@@ -520,7 +514,7 @@ async function colorPointCloudFromImages(
   }
   // Colouring finishes after the file list has rendered, so nudge it to pick up
   // the new "Original" mode and the photo-provenance note.
-  filesState.renderTick++;
+  filesState.entries = [...host.fileEntries.all];
   host.requestRender();
 }
 

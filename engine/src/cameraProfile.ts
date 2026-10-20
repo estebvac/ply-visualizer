@@ -1,30 +1,54 @@
 import * as THREE from 'three';
-import { createFrustumObjects, frustumDepthForExtent } from './visualization/cameraFrustum';
+import {
+  createFrustumObjects,
+  frustumDepthForExtent,
+  FrustumIntrinsics,
+} from './visualization/cameraFrustum';
+import { parseCameraRig, RigCamera } from './formats/cameraRig';
 import { FileEntryRegistry } from './state/fileEntries';
 import { registerCameraEntry } from './state/fileEntryState';
 
 export interface CameraProfileHost {
   scene: THREE.Scene;
-  fileEntries: FileEntryRegistry;
-  cameraGroups: THREE.Group[];
-  cameraNames: string[];
+  cameraGroups: readonly THREE.Group[];
+  cameraNames: readonly string[];
   cameraVisibility: boolean;
-  cameraShowLabels: boolean[];
-  cameraShowCoords: boolean[];
+  cameraShowLabels: readonly boolean[];
+  cameraShowCoords: readonly boolean[];
   spatialFiles: { length: number };
   poseGroups: { length: number };
-  fileVisibility: boolean[];
-  pointSizes: number[];
-  individualColorModes: string[];
-  transformationMatrices: THREE.Matrix4[];
   updateFileList(): void;
   updateFileStats(): void;
   autoFitCameraOnFirstLoad(): void;
   applyTransformationMatrix(fileIndex: number): void;
   showError(message: string): void;
+  fileEntries: FileEntryRegistry;
+}
+
+/** The `cameras.<name>.local_extrinsics` profile this viewer has always read. */
+function isLegacyProfile(data: any): boolean {
+  return (
+    !!data &&
+    !!data.cameras &&
+    typeof data.cameras === 'object' &&
+    !Array.isArray(data.cameras) &&
+    Object.values(data.cameras).some((camera: any) => camera?.local_extrinsics)
+  );
+}
+
+/**
+ * Whether a JSON document holds cameras (a legacy profile or any rig layout
+ * `formats/cameraRig.ts` recognises) rather than a skeletal pose.
+ */
+export function isCameraProfileData(data: any): boolean {
+  return isLegacyProfile(data) || parseCameraRig(data) !== null;
 }
 
 export function handleCameraProfile(host: CameraProfileHost, data: any, fileName: string): void {
+  if (!isLegacyProfile(data)) {
+    handleCameraRig(host, data, fileName);
+    return;
+  }
   try {
     const cameras = data.cameras;
     const cameraNames = Object.keys(cameras);
@@ -64,10 +88,8 @@ export function handleCameraProfile(host: CameraProfileHost, data: any, fileName
 
     if (cameraCount > 0) {
       host.scene.add(cameraProfileGroup);
-      host.cameraGroups.push(cameraProfileGroup);
-      host.cameraNames.push(fileName); // Store filename instead of individual camera names
 
-      const unifiedIndex = registerCameraEntry(host);
+      const unifiedIndex = registerCameraEntry(host, cameraProfileGroup, fileName);
       host.applyTransformationMatrix(unifiedIndex);
     }
 
@@ -85,6 +107,74 @@ export function handleCameraProfile(host: CameraProfileHost, data: any, fileName
       'Camera profile parse error: ' + (err instanceof Error ? err.message : String(err))
     );
   }
+}
+
+function handleCameraRig(host: CameraProfileHost, data: any, fileName: string): void {
+  try {
+    const cameras = parseCameraRig(data);
+    if (!cameras) {
+      host.showError(`No cameras found in ${fileName}`);
+      return;
+    }
+    const group = new THREE.Group();
+    group.name = `camera_profile_${fileName}`;
+    const frustumDepth = frustumDepthForExtent(spreadOf(cameras.map(camera => camera.position)));
+    for (const camera of cameras) {
+      group.add(createRigCameraVisualization(camera, frustumDepth));
+    }
+    host.scene.add(group);
+    const unifiedIndex = registerCameraEntry(host, group, fileName);
+    host.applyTransformationMatrix(unifiedIndex);
+
+    host.updateFileList();
+    host.updateFileStats();
+    host.autoFitCameraOnFirstLoad();
+    document.getElementById('loading')?.classList.add('hidden');
+    console.log(`Loaded ${cameras.length} rig cameras (${cameras[0].convention}) from ${fileName}`);
+  } catch (err) {
+    host.showError('Camera rig parse error: ' + (err instanceof Error ? err.message : String(err)));
+  }
+}
+
+function createRigCameraVisualization(camera: RigCamera, frustumDepth: number): THREE.Group {
+  const r = camera.rotation;
+  const quaternion = new THREE.Quaternion().setFromRotationMatrix(
+    new THREE.Matrix4().set(
+      r[0],
+      r[1],
+      r[2],
+      0,
+      r[3],
+      r[4],
+      r[5],
+      0,
+      r[6],
+      r[7],
+      r[8],
+      0,
+      0,
+      0,
+      0,
+      1
+    )
+  );
+  const group = buildCameraGroup(
+    camera.name,
+    camera.position,
+    quaternion,
+    frustumDepth,
+    camera.intrinsics
+  );
+  const details = group.userData.frameDetails as Array<{ label: string; value: string }>;
+  details.push({ label: 'Convention', value: camera.convention });
+  if (camera.intrinsics) {
+    const { fx, fy, cx, cy, imageWidth, imageHeight } = camera.intrinsics;
+    details.push({
+      label: 'Intrinsics',
+      value: `${imageWidth}×${imageHeight}, fx ${fx.toFixed(1)}, fy ${fy.toFixed(1)}, cx ${cx.toFixed(1)}, cy ${cy.toFixed(1)}`,
+    });
+  }
+  return group;
 }
 
 /**
@@ -109,13 +199,6 @@ export function createCameraVisualization(
   rotationType?: string,
   frustumDepth = 0.05
 ): THREE.Group {
-  const group = new THREE.Group();
-  group.name = `camera_${cameraName}`;
-
-  // Set camera position
-  const position = new THREE.Vector3(location[0], location[1], location[2]);
-  group.position.copy(position);
-
   // Set camera rotation from quaternion. Respect type if provided.
   // blender_quaternion is typically [w, x, y, z]
   let qx = rotationQuaternion[0];
@@ -129,12 +212,29 @@ export function createCameraVisualization(
     qz = rotationQuaternion[3];
   }
   const quaternion = new THREE.Quaternion(qx, qy, qz, qw).normalize();
+  const group = buildCameraGroup(cameraName, location, quaternion, frustumDepth);
+  if (rotationType) {
+    group.userData.frameDetails.push({ label: 'Convention', value: rotationType });
+  }
+  return group;
+}
+
+function buildCameraGroup(
+  cameraName: string,
+  location: number[],
+  quaternion: THREE.Quaternion,
+  frustumDepth: number,
+  intrinsics?: FrustumIntrinsics
+): THREE.Group {
+  const group = new THREE.Group();
+  group.name = `camera_${cameraName}`;
+  group.position.set(location[0], location[1], location[2]);
   group.setRotationFromQuaternion(quaternion);
 
-  // A wireframe frustum, the same shape X3A, E57 and COLMAP draw. A JSON
-  // profile carries only a pose, so the frustum uses the generic fallback
-  // field of view rather than claiming intrinsics the file never gave.
-  for (const object of createFrustumObjects({ depth: frustumDepth })) {
+  // A wireframe frustum, the same shape X3A, E57 and COLMAP draw. Without
+  // intrinsics (legacy JSON profiles carry only a pose) it uses the generic
+  // fallback field of view rather than claiming one the file never gave.
+  for (const object of createFrustumObjects({ depth: frustumDepth, intrinsics })) {
     group.add(object);
   }
 
@@ -155,7 +255,6 @@ export function createCameraVisualization(
       label: 'Rotation',
       value: `x ${quaternion.x.toFixed(5)}, y ${quaternion.y.toFixed(5)}, z ${quaternion.z.toFixed(5)}, w ${quaternion.w.toFixed(5)}`,
     },
-    ...(rotationType ? [{ label: 'Convention', value: rotationType }] : []),
   ];
 
   return group;
@@ -270,7 +369,7 @@ export function toggleCameraProfileLabels(
   });
 
   // Update state array
-  host.cameraShowLabels[cameraProfileIndex] = showLabels;
+  host.fileEntries.camera(cameraProfileIndex).showLabels = showLabels;
 }
 
 export function toggleCameraProfileCoordinates(
@@ -316,7 +415,7 @@ export function toggleCameraProfileCoordinates(
   });
 
   // Update state array
-  host.cameraShowCoords[cameraProfileIndex] = showCoords;
+  host.fileEntries.camera(cameraProfileIndex).showCoords = showCoords;
 }
 
 export function applyCameraScale(

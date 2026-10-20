@@ -1,16 +1,17 @@
-import { mount } from 'svelte';
+import { mount, unmount } from 'svelte';
+import type { ViewerLifetime } from './utils/viewerLifetime';
 import FileList from './components/FileList.svelte';
+import type { FileListHost } from './components/fileListTypes';
 
-/**
- * Phase 3 (docs/SVELTE_MIGRATION_PLAN.md): replaces the ~1,600-line
- * updateFileList() HTML-string-building block and its ~70 addEventListener
- * calls. FileList.svelte owns rendering; main.ts's updateFileList() just
- * bumps state/files.svelte.js's renderTick to trigger a re-render.
- */
-export function mountFileList(host: unknown): void {
+export function mountFileList(lifetime: ViewerLifetime, host: FileListHost): void {
   const target = document.getElementById('file-list');
   if (!target) {
     return;
   }
-  mount(FileList, { target, props: { host } });
+  {
+    const component = mount(FileList, { target, props: { host } });
+    lifetime.add(() => {
+      void unmount(component);
+    });
+  }
 }

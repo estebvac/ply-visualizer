@@ -8,7 +8,8 @@ import * as fs from 'fs/promises';
 
 suite('Native VS Code agent tools — real webview', function () {
   this.timeout(180000);
-  let id: string;
+  const scenes = new Set<string>();
+  let fixtureRoot: string;
   const points = [
     [0, 0, 0],
     [1, 0, 0],
@@ -24,14 +25,85 @@ suite('Native VS Code agent tools — real webview', function () {
     ) as vscode.LanguageModelTextPart;
     const data = JSON.parse(text.value);
     assert.ok(data.ok, JSON.stringify(data));
+    if (name === 'close_3d_scene') {scenes.delete(input.scene_id);}
+    else if (data.scene_id) {scenes.add(data.scene_id);}
     return { data, content: result.content };
   }
   suiteSetup(async () => {
+    const workspace = vscode.workspace.workspaceFolders?.[0];
+    assert.ok(workspace, 'Integration tests require a workspace');
+    fixtureRoot = await fs.mkdtemp(path.join(workspace.uri.fsPath, 'viz3d-native-'));
+    await fs.writeFile(
+      path.join(fixtureRoot, 'cloud.ply'),
+      'ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nend_header\n0 0 0\n1 0 0\n0 1 0\n'
+    );
+    const buffer = Buffer.from(
+      new Float32Array([
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        1,
+        0, // triangle
+        0,
+        1, // keyframe times
+        0,
+        0,
+        0,
+        1,
+        0,
+        0, // translations
+      ]).buffer
+    );
+    await fs.writeFile(path.join(fixtureRoot, 'animated.bin'), buffer);
+    await fs.writeFile(
+      path.join(fixtureRoot, 'animated.gltf'),
+      JSON.stringify({
+        asset: { version: '2.0' },
+        scene: 0,
+        scenes: [{ nodes: [0] }],
+        nodes: [{ mesh: 0 }],
+        meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+        buffers: [{ uri: 'animated.bin', byteLength: buffer.length }],
+        bufferViews: [
+          { buffer: 0, byteOffset: 0, byteLength: 36 },
+          { buffer: 0, byteOffset: 36, byteLength: 8 },
+          { buffer: 0, byteOffset: 44, byteLength: 24 },
+        ],
+        accessors: [
+          {
+            bufferView: 0,
+            componentType: 5126,
+            count: 3,
+            type: 'VEC3',
+            min: [0, 0, 0],
+            max: [1, 1, 0],
+          },
+          { bufferView: 1, componentType: 5126, count: 2, type: 'SCALAR', min: [0], max: [1] },
+          { bufferView: 2, componentType: 5126, count: 2, type: 'VEC3' },
+        ],
+        animations: [
+          {
+            name: 'Move',
+            samplers: [{ input: 1, output: 2 }],
+            channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+          },
+        ],
+      })
+    );
     await vscode.extensions.getExtension('kleinicke.ply-visualizer')!.activate();
   });
   suiteTeardown(async () => {
-    if (id) {
-      await call('close_3d_scene', { scene_id: id });
+    await fs.rm(fixtureRoot, { recursive: true, force: true });
+  });
+  teardown(async () => {
+    try {
+      await Promise.all([...scenes].map(scene_id => call('close_3d_scene', { scene_id })));
+    } finally {
+      scenes.clear();
     }
   });
   test('all 25 MCP viewer operations are discoverable as native tools', () => {
@@ -41,7 +113,7 @@ suite('Native VS Code agent tools — real webview', function () {
   });
   test('loads, navigates, transforms, captures and updates in the identical renderer/tab', async () => {
     const opened = (await call('visualize_points', { points })).data;
-    id = opened.scene_id;
+    const id = opened.scene_id;
     assert.strictEqual(opened.objects[0].vertices, 3);
     const renderer = opened.renderer_id;
     const moved = (
@@ -83,6 +155,7 @@ suite('Native VS Code agent tools — real webview', function () {
     assert.ok(scene.visible);
   });
   test('selection errors are informative; state export/import and subset exports work', async () => {
+    const id = (await call('visualize_points', { points })).data.scene_id;
     await call('manage_3d_scene_states', { scene_id: id, action: 'save', name: 'Overview' });
     await call('set_3d_appearance', {
       scene_id: id,
@@ -97,7 +170,7 @@ suite('Native VS Code agent tools — real webview', function () {
       bounds: [-1, -1, -1, 0.1, 0.1, 0.1],
       focus: true,
     });
-    const root = vscode.workspace.workspaceFolders![0].uri.fsPath;
+    const root = fixtureRoot;
     const artifact = path.join(root, `.native-agent-test-${Date.now()}.ply`);
     const state = artifact.replace('.ply', '.json');
     try {
@@ -128,7 +201,8 @@ suite('Native VS Code agent tools — real webview', function () {
     }
   });
   test('depth projection with defaults, attributes, comparison, measurements and preview', async () => {
-    const root = vscode.workspace.workspaceFolders![0].uri.fsPath;
+    const id = (await call('visualize_points', { points })).data.scene_id;
+    const root = fixtureRoot;
     const file = path.join(root, `.native-depth-${Date.now()}.pfm`);
     const header = Buffer.from('Pf\n2 2\n-1.0\n');
     const values = Buffer.alloc(16);
@@ -182,11 +256,8 @@ suite('Native VS Code agent tools — real webview', function () {
     }
   });
   test('animated models play, seek and change speed in the native scene and export GLB', async () => {
-    const root = vscode.workspace.workspaceFolders![0].uri.fsPath;
-    const model = path.join(
-      root,
-      'testfiles/scene-models/gltf/AnimatedMorphSphere/glTF/AnimatedMorphSphere.gltf'
-    );
+    const root = fixtureRoot;
+    const model = path.join(root, 'animated.gltf');
     const data = model.replace('.gltf', '.bin');
     const opened = (await call('open_3d_files', { paths: [model, data] })).data;
     const scene_id = opened.scene_id;
@@ -212,8 +283,9 @@ suite('Native VS Code agent tools — real webview', function () {
     }
   });
   test('URL loading uses the extension host, honors size limits and appends to the native scene', async () => {
-    const root = vscode.workspace.workspaceFolders![0].uri.fsPath;
-    const bytes = gzipSync(await fs.readFile(path.join(root, 'testfiles/ply/test_ascii.ply')));
+    const id = (await call('visualize_points', { points })).data.scene_id;
+    const root = fixtureRoot;
+    const bytes = gzipSync(await fs.readFile(path.join(root, 'cloud.ply')));
     const server = createServer((_request, response) => {
       response.end(bytes);
     });
@@ -235,12 +307,7 @@ suite('Native VS Code agent tools — real webview', function () {
     }
   });
   test('discovers a manually opened PLY editor and appends without changing camera', async () => {
-    const file = vscode.Uri.joinPath(
-      vscode.workspace.workspaceFolders![0].uri,
-      'testfiles',
-      'ply',
-      'test_ascii.ply'
-    );
+    const file = vscode.Uri.file(path.join(fixtureRoot, 'cloud.ply'));
     await vscode.commands.executeCommand('vscode.openWith', file, 'plyViewer.plyEditor');
     const scenes = (await call('list_3d_scenes')).data.scenes;
     const manual = scenes.find((s: any) => s.source === file.toString());

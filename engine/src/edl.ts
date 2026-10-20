@@ -1,3 +1,4 @@
+import type { FileEntryRegistry } from './state/fileEntries';
 import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { EDLPass } from './postprocessing/EDLPass';
@@ -18,10 +19,6 @@ export interface EDLHost {
   webglRenderer: THREE.WebGLRenderer | null;
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
-  meshes: THREE.Object3D[];
-  spatialFiles: SpatialData[];
-  fileVisibility: boolean[];
-  individualColorModes: string[];
   edlEnabled: boolean;
   edlMode: EDLMode;
   edlStrength: number;
@@ -31,6 +28,7 @@ export interface EDLHost {
   edlPass: EDLPass | null;
   requestRender(): void;
   showStatus(message: string): void;
+  fileEntries: FileEntryRegistry;
 }
 
 export function initEDLComposer(host: EDLHost): void {
@@ -93,14 +91,13 @@ export function toggleEDL(host: EDLHost): void {
  */
 export function getAutoEDLPointClouds(host: EDLHost): THREE.Points[] {
   const eligible: THREE.Points[] = [];
-  for (let index = 0; index < host.spatialFiles.length; index++) {
-    const object = host.meshes[index];
-    const data = host.spatialFiles[index];
+  for (const entry of host.fileEntries.ofKind('spatial')) {
+    const { object, data } = entry.spatial!;
     if (
       object instanceof THREE.Points &&
-      host.fileVisibility[index] !== false &&
+      entry.state.visible !== false &&
       object.visible &&
-      !shouldUseVertexColors(data, host.individualColorModes[index] ?? 'assigned')
+      !shouldUseVertexColors(data, entry.state.colorMode ?? 'assigned')
     ) {
       eligible.push(object);
     }

@@ -17,10 +17,12 @@ export interface AgentViewerHost {
   camera: THREE.PerspectiveCamera;
   controls: { target: THREE.Vector3; update(): void };
   renderer: { domElement: HTMLCanvasElement };
-  spatialFiles: SpatialData[];
-  meshes: (THREE.Object3D | null)[];
+  spatialFiles: readonly SpatialData[];
+  meshes: readonly (THREE.Object3D | null)[];
   fitCameraToAllObjects(): void;
   performRender(): void;
+  /** Absent on backends that never release their context. */
+  gpuResidency?: { ensureResident(): Promise<void> } | null;
 }
 
 const rendererId = Array.from(crypto.getRandomValues(new Uint8Array(16)), n =>
@@ -67,6 +69,9 @@ export async function executeAgentCommand(
   let reply: { id: string; result?: unknown; error?: string } = { id: command.id };
   try {
     validateAgentCommand(command.operation, command.arguments);
+    // A hidden tab or editor may have handed its WebGL context back; captures
+    // and readbacks need it live.
+    await host.gpuResidency?.ensureResident();
     if (requireLocalSession && document.documentElement.dataset.localSession !== 'loaded') {
       throw new Error(
         localSessionState.error
@@ -125,13 +130,20 @@ export async function executeAgentCommand(
         faces: file.faceCount,
         has_colors: file.hasColors,
         has_normals: file.hasNormals,
-        visible: (host as unknown as ControlHost).fileVisibility[host.spatialFiles.indexOf(file)],
-        point_size: (host as unknown as ControlHost).pointSizes[host.spatialFiles.indexOf(file)],
-        color_mode: (host as unknown as ControlHost).individualColorModes[
+        visible: (host as unknown as ControlHost).fileEntries.require(
           host.spatialFiles.indexOf(file)
-        ],
-        points: (host as unknown as ControlHost).pointsVisible[host.spatialFiles.indexOf(file)],
-        mesh: (host as unknown as ControlHost).solidVisible[host.spatialFiles.indexOf(file)],
+        ).state.visible,
+        point_size: (host as unknown as ControlHost).fileEntries.require(
+          host.spatialFiles.indexOf(file)
+        ).state.pointSize,
+        color_mode: (host as unknown as ControlHost).fileEntries.require(
+          host.spatialFiles.indexOf(file)
+        ).state.colorMode,
+        points: (host as unknown as ControlHost).fileEntries.require(
+          host.spatialFiles.indexOf(file)
+        ).state.pointsVisible,
+        mesh: (host as unknown as ControlHost).fileEntries.require(host.spatialFiles.indexOf(file))
+          .state.solidVisible,
       })),
       bounds: bounds.isEmpty() ? null : { min: bounds.min.toArray(), max: bounds.max.toArray() },
       ...agentViewState(host as unknown as ControlHost),

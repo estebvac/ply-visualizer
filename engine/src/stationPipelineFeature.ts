@@ -1,3 +1,14 @@
+import type {
+  StationPipelineUpdate,
+  StationPipelineMessage,
+  LoadTimeColorUpdate,
+} from './hosts/stationPipelineTypes';
+export type {
+  StationPipelineUpdate,
+  StationPipelineMessage,
+  LoadTimeColorUpdate,
+} from './hosts/stationPipelineTypes';
+import type { FileEntryRegistry } from './state/fileEntries';
 /**
  * Applies a station-pipeline result to already-loaded X3A scans.
  *
@@ -30,35 +41,18 @@ import {
   type StonexColorCalibration,
 } from './visualization/stonexColorCorrection';
 
-export interface StationPipelineUpdate {
-  /** `metadata.embeddedScanName`, the archive member this update belongs to. */
-  scanName: string;
-  /**
-   * Set on a partial update: colours cover the scan's own points only, so the
-   * host can send each scan as it finishes rather than the archive at the end.
-   */
-  partial?: boolean;
-  /** Column-major 4x4 placing the scan in the archive's common frame. */
-  transform: number[] | null;
-  /** Present only when this scan's colour changed. */
-  rawColors?: Uint8Array;
-  frameIndices?: Uint16Array;
-  photographicallyColoredPoints?: number;
-}
-
 export interface StationPipelineHost {
-  spatialFiles: SpatialData[];
-  transformationMatrices: THREE.Matrix4[];
-  individualColorModes?: string[];
+  spatialFiles: readonly SpatialData[];
   onFileColorModeChange?(fileIndex: number, mode: string): void;
   updateFileList?(): void;
   /** X3A camera profiles, so panoramas follow the scans they were shot from. */
-  cameraGroups?: THREE.Group[];
-  meshes: (THREE.Mesh | THREE.Points | THREE.LineSegments | null)[];
+  cameraGroups?: readonly THREE.Group[];
+  meshes: readonly (THREE.Mesh | THREE.Points | THREE.LineSegments | null)[];
   setTransformationMatrix(fileIndex: number, matrix: THREE.Matrix4): void;
   updateMatrixTextarea(fileIndex: number): void;
   requestRender(): void;
   updateFileStats?(): void;
+  fileEntries: FileEntryRegistry;
 }
 
 export interface StationPipelineOutcome {
@@ -88,11 +82,10 @@ function ensureRecoloredArray(data: SpatialData): Uint8Array {
 
 /** Switches a file to the recoloured mode if it is not already on it. */
 function selectRecoloredMode(host: StationPipelineHost, fileIndex: number): void {
-  if (host.individualColorModes?.[fileIndex] === RECOLORED_MODE) {
+  if (host.fileEntries.require(fileIndex).state.colorMode === RECOLORED_MODE) {
     return;
   }
   host.onFileColorModeChange?.(fileIndex, RECOLORED_MODE);
-  filesState.colorModes[fileIndex] = RECOLORED_MODE;
 }
 
 /** Pushes the recoloured buffer at the GPU when it is what is being drawn. */
@@ -205,14 +198,6 @@ export function reportStationPipelineProgress(message: unknown): void {
   }
 }
 
-export interface StationPipelineMessage {
-  updates?: StationPipelineUpdate[];
-  summary?: string;
-  error?: string;
-  /** A scan finished; more are still coming, so the run stays busy. */
-  partial?: boolean;
-}
-
 /**
  * Paints the archive's scans white and switches them to the camera view, before
  * any result exists.
@@ -261,7 +246,7 @@ export function beginStationRecolor(
       recolored.fill(255);
     }
     pendingRecolor.set(index, {
-      previousMode: host.individualColorModes?.[index] ?? 'original',
+      previousMode: host.fileEntries.require(index).state.colorMode ?? 'original',
       filled: false,
     });
     scanOrder.push({ index, name: String(data.metadata.embeddedScanName) });
@@ -309,7 +294,7 @@ function completeUntouchedScans(host: StationPipelineHost): { filled: number; re
       delete data.metadata.stationRecoloredColors;
     }
     host.onFileColorModeChange?.(fileIndex, pending.previousMode);
-    filesState.colorModes[fileIndex] = pending.previousMode;
+
     released++;
   }
   pendingRecolor.clear();
@@ -336,6 +321,10 @@ export function handleStationPipelineResult(
     for (const scan of stationPipelineUi.scans) {
       scan.colored = true;
     }
+  }
+  if (message.cancelled) {
+    stationPipelineUi.message = 'Colouring cancelled; scans finished before it keep their colour.';
+    return;
   }
   if (message.error) {
     stationPipelineUi.message = `Station pipeline failed: ${message.error}`;
@@ -405,7 +394,9 @@ export function capturePlaces(
       continue;
     }
     const stem = String(metadata.embeddedScanName).replace(/\.x3r$/i, '');
-    const origin = new THREE.Vector3().setFromMatrixPosition(host.transformationMatrices[index]);
+    const origin = new THREE.Vector3().setFromMatrixPosition(
+      host.fileEntries.require(index).transform
+    );
     const existing = places.find(place => place.origin.distanceTo(origin) <= SAME_PLACE_METRES);
     const place =
       existing ??
@@ -424,7 +415,7 @@ export function capturePlaces(
 
 export interface CapturePlaceHost extends StationPipelineHost {
   setFileEntryVisibility(fileIndex: number, visible: boolean): void;
-  fileVisibility: boolean[];
+  fileEntries: FileEntryRegistry;
 }
 
 /** Shows or hides everything captured from one place, cameras included. */
@@ -448,25 +439,6 @@ export function setCapturePlaceVisible(
     }
   }
   host.requestRender();
-}
-
-export interface LoadTimeColorUpdate {
-  scanName: string;
-  colors: Uint8Array;
-  /** The payload is raw camera RGB; derive corrected display RGB on completion. */
-  colorsAreRaw?: boolean;
-  /** Set when the colour arrives in chunks; absent means the whole scan. */
-  pointOffset?: number;
-  totalPoints?: number;
-  /** True on the closing chunk, which is what makes the colour visible. */
-  final?: boolean;
-  /** Present on the scan that carries the archive's camera profile. */
-  cameraFrames?: unknown[];
-  rawColors?: Uint8Array | null;
-  frameIndices?: Uint16Array | null;
-  colorCalibration?: unknown;
-  photographicallyColoredPoints?: number;
-  container?: unknown;
 }
 
 // Extension messages can overtake an async geometry build in the webview. Keep
@@ -564,7 +536,7 @@ export function applyLoadTimeColors(
       addStonexCameraVisualization(host as never, data);
     }
     host.onFileColorModeChange?.(fileIndex, 'original');
-    filesState.colorModes[fileIndex] = 'original';
+
     if (!chunked || update.final) {
       noteContainerScanLoaded(update.container, data.vertexCount);
     }

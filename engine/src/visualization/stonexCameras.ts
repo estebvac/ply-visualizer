@@ -21,17 +21,13 @@ import {
 interface StonexCameraHost {
   scene: THREE.Scene;
   fileEntries: FileEntryRegistry;
-  spatialFiles: SpatialData[];
-  meshes: THREE.Object3D[];
-  poseGroups: THREE.Group[];
-  cameraGroups: THREE.Group[];
-  cameraNames: string[];
-  cameraShowLabels: boolean[];
-  cameraShowCoords: boolean[];
-  fileVisibility: boolean[];
-  pointSizes: number[];
-  individualColorModes: string[];
-  transformationMatrices: THREE.Matrix4[];
+  spatialFiles: readonly SpatialData[];
+  meshes: readonly THREE.Object3D[];
+  poseGroups: readonly THREE.Group[];
+  cameraGroups: readonly THREE.Group[];
+  cameraNames: readonly string[];
+  cameraShowLabels: readonly boolean[];
+  cameraShowCoords: readonly boolean[];
 }
 
 const FRUSTUM_DEPTH_METRES = 5;
@@ -435,9 +431,7 @@ export function addStonexCameraVisualization(host: StonexCameraHost, data: Spati
   });
 
   host.scene.add(profile);
-  host.cameraGroups.push(profile);
-  host.cameraNames.push(`${profileName} cameras`);
-  registerCameraEntry(host);
+  registerCameraEntry(host, profile, `${profileName} cameras`);
   return true;
 }
 
@@ -458,8 +452,8 @@ function placeFrameGroup(group: THREE.Group, station?: THREE.Matrix4 | null): vo
 }
 
 interface StationTransformHost {
-  spatialFiles: { metadata?: Record<string, unknown> }[];
-  transformationMatrices: THREE.Matrix4[];
+  spatialFiles: readonly { metadata?: Record<string, unknown> }[];
+  fileEntries: FileEntryRegistry;
 }
 
 /**
@@ -476,7 +470,7 @@ function stationTransformLookup(
   for (let index = 0; index < host.spatialFiles.length; index++) {
     const name = host.spatialFiles[index]?.metadata?.embeddedScanName as string | undefined;
     if (name) {
-      byStem.set(name.replace(/\.x3r$/i, ''), host.transformationMatrices[index]);
+      byStem.set(name.replace(/\.x3r$/i, ''), host.fileEntries.require(index).transform);
     }
   }
   return stem => (stem ? (byStem.get(stem) ?? null) : null);
@@ -490,7 +484,7 @@ function stationTransformLookup(
  * piled on the origin.
  */
 export function updateStonexCameraStations(
-  host: StationTransformHost & { cameraGroups: THREE.Group[] }
+  host: StationTransformHost & { cameraGroups: readonly THREE.Group[] }
 ): void {
   const stationOf = stationTransformLookup(host);
   for (const profile of host.cameraGroups) {

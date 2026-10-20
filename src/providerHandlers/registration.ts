@@ -1,8 +1,8 @@
+import { sendToWebview } from './webviewTransport';
 import type * as vscode from 'vscode';
-import {
-  loadRegistrationWasm,
-  type RegistrationWasm,
-} from '../../engine/src/registration/wasmLoader';
+import { Worker } from 'node:worker_threads';
+import { join } from 'node:path';
+import { defaultParallelism, sharedModule } from './parsePool';
 import type { RegistrationKind } from '../../engine/src/registration/registrationWorker';
 
 interface RegistrationMessage {
@@ -29,32 +29,166 @@ function coordinates(value: unknown, name: string): Float32Array {
   return value;
 }
 
-function run(
-  wasm: RegistrationWasm,
-  kind: RegistrationKind,
-  source: Float32Array,
-  target: Float32Array,
-  settingsJson: string
-): { matrix: Float64Array; stats: string } | null {
-  const result =
-    kind === 'register'
-      ? wasm.register_pair(source, target, settingsJson)
-      : kind === 'coarse'
-        ? wasm.coarse_align(source, target, settingsJson)
-        : kind === 'icp'
-          ? wasm.icp_refine(source, target, settingsJson)
-          : wasm.fit_correspondences(source, target);
-  if (!result) {
-    return null;
+interface Job {
+  id: string;
+  request: { kind: string; source: Float32Array; target: Float32Array; settingsJson: string };
+  resolve(value: any): void;
+  reject(error: Error): void;
+}
+
+interface HostWorker {
+  worker: Worker;
+  active?: Job;
+}
+
+/**
+ * Each panel owns a few reusable, cancellable solver workers and a queue.
+ *
+ * Align-all registers every cloud against the reference independently, so the
+ * pairs can run side by side; with one worker five pairs of an archive took
+ * five times one pair. Cancelling terminates only the worker running that
+ * request (synchronous WASM cannot be interrupted any other way).
+ */
+interface PanelPool {
+  workers: HostWorker[];
+  queue: Job[];
+  idleTimer?: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * Idle solver workers are released after this long. Wasm memory never shrinks,
+ * so a worker keeps its largest solve's buffers for as long as it lives; six of
+ * them idling beside an open panel is memory the rest of the machine needs.
+ */
+const IDLE_RELEASE_MS = 10_000;
+const pools = new WeakMap<vscode.WebviewPanel, PanelPool>();
+
+/** Solver workers per panel: pairs are a few hundred ms to seconds each. */
+export function registrationParallelism(): number {
+  return Math.min(6, defaultParallelism());
+}
+
+function poolFor(panel: vscode.WebviewPanel): PanelPool {
+  let pool = pools.get(panel);
+  if (!pool) {
+    pool = { workers: [], queue: [] };
+    pools.set(panel, pool);
   }
-  try {
-    return { matrix: result.matrix, stats: result.stats };
-  } finally {
-    result.free?.();
+  return pool;
+}
+
+function abortError(): Error {
+  const error = new Error('Alignment cancelled.');
+  error.name = 'AbortError';
+  return error;
+}
+
+/**
+ * Termination interrupts synchronous WASM without blocking the extension host.
+ * Without an `id` everything stops and every worker goes (the panel closed).
+ */
+export function cancelRegistrationRequest(panel: vscode.WebviewPanel, id?: string): void {
+  const pool = pools.get(panel);
+  if (!pool) {
+    return;
+  }
+  if (id === undefined) {
+    pools.delete(panel);
+    clearTimeout(pool.idleTimer);
+    for (const job of pool.queue.splice(0)) {
+      job.reject(abortError());
+    }
+    for (const state of pool.workers.splice(0)) {
+      state.active?.reject(abortError());
+      state.active = undefined;
+      void state.worker.terminate();
+    }
+    return;
+  }
+  for (const job of pool.queue.filter(job => job.id === id)) {
+    pool.queue.splice(pool.queue.indexOf(job), 1);
+    job.reject(abortError());
+  }
+  for (const state of pool.workers.filter(state => state.active?.id === id)) {
+    pool.workers.splice(pool.workers.indexOf(state), 1);
+    state.active!.reject(abortError());
+    state.active = undefined;
+    void state.worker.terminate();
+  }
+  // The terminated worker may have been the only one; queued jobs still need
+  // somewhere to run.
+  pump(pool);
+}
+
+function startWorker(pool: PanelPool): HostWorker {
+  const worker = new Worker(join(__dirname, 'registrationWorker.js'), {
+    workerData: { wasmModule: sharedModule() },
+  });
+  const state: HostWorker = { worker };
+  pool.workers.push(state);
+  const forget = () => {
+    const index = pool.workers.indexOf(state);
+    if (index >= 0) {
+      pool.workers.splice(index, 1);
+    }
+  };
+  worker.on('message', value => {
+    const active = state.active;
+    state.active = undefined;
+    worker.unref();
+    if (value?.error) {
+      active?.reject(new Error(value.error));
+    } else {
+      active?.resolve(value);
+    }
+    pump(pool);
+  });
+  const failed = (error: Error) => {
+    forget();
+    state.active?.reject(error);
+    state.active = undefined;
+    void worker.terminate();
+    pump(pool);
+  };
+  worker.on('error', failed);
+  worker.on('exit', code => {
+    forget();
+    if (state.active) {
+      failed(new Error(`Registration worker exited (${code}).`));
+    }
+  });
+  worker.unref();
+  return state;
+}
+
+/** Start queued jobs on idle workers, adding workers up to the limit. */
+function pump(pool: PanelPool): void {
+  clearTimeout(pool.idleTimer);
+  pool.idleTimer = undefined;
+  while (pool.queue.length > 0) {
+    let state = pool.workers.find(candidate => !candidate.active);
+    if (!state) {
+      if (pool.workers.length >= registrationParallelism()) {
+        return;
+      }
+      state = startWorker(pool);
+    }
+    const job = pool.queue.shift()!;
+    state.active = job;
+    state.worker.ref();
+    // Do not detach webview transport buffers that another consumer may retain.
+    state.worker.postMessage(job.request);
+  }
+  if (pool.queue.length === 0 && pool.workers.every(state => !state.active)) {
+    pool.idleTimer = setTimeout(() => {
+      for (const state of pool.workers.splice(0)) {
+        void state.worker.terminate();
+      }
+    }, IDLE_RELEASE_MS);
+    pool.idleTimer.unref?.();
   }
 }
 
-/** Runs browser registration in the extension process so ICP cannot freeze the webview. */
 export async function handleRegistrationRequest(
   webviewPanel: vscode.WebviewPanel,
   message: RegistrationMessage
@@ -70,19 +204,35 @@ export async function handleRegistrationRequest(
     const source = coordinates(message.source, 'Source');
     const target = coordinates(message.target, 'Target');
     const settingsJson = typeof message.settingsJson === 'string' ? message.settingsJson : '{}';
-    const wasm = await loadRegistrationWasm();
-    if (!wasm) {
-      throw new Error('The registration WebAssembly module failed to load in the extension host.');
+    const pool = poolFor(webviewPanel);
+    if (
+      pool.queue.some(job => job.id === id) ||
+      pool.workers.some(state => state.active?.id === id)
+    ) {
+      throw new Error('This alignment request is already running.');
     }
-    const result = run(wasm, message.kind as RegistrationKind, source, target, settingsJson);
-    await webviewPanel.webview.postMessage({
+    const result = await new Promise<{ matrix: Float64Array; stats: string } | null>(
+      (resolve, reject) => {
+        pool.queue.push({
+          id,
+          request: { kind: message.kind as string, source, target, settingsJson },
+          resolve,
+          reject,
+        });
+        pump(pool);
+      }
+    );
+    await sendToWebview(webviewPanel, {
       type: 'registrationResult',
       id,
       matrix: result?.matrix ?? null,
       stats: result?.stats ?? null,
     });
   } catch (error) {
-    await webviewPanel.webview.postMessage({
+    if (error instanceof Error && error.name === 'AbortError') {
+      return;
+    }
+    await sendToWebview(webviewPanel, {
       type: 'registrationResult',
       id,
       error: error instanceof Error ? error.message : String(error),

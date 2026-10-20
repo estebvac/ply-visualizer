@@ -2,8 +2,8 @@ import * as THREE from 'three';
 import { SpatialData } from './interfaces';
 
 export interface PlyExportHost {
-  spatialFiles: SpatialData[];
-  meshes: (THREE.Mesh | THREE.Points | THREE.LineSegments)[];
+  spatialFiles: readonly SpatialData[];
+  meshes: readonly (THREE.Mesh | THREE.Points | THREE.LineSegments)[];
   vscode: { postMessage(message: any): void };
   showStatus(message: string): void;
   showError(message: string): void;
@@ -96,13 +96,16 @@ export function generatePlyFileContent(
 
   content += 'end_header\n';
 
-  // Point-cloud colors are stored as raw 8-bit sRGB (Uint8); mesh/intensity
-  // colors as Float32 [0,1]. Scale accordingly so export matches what's shown.
-  const colorIsByte =
-    hasColors &&
-    (colorAttribute.array instanceof Uint8Array ||
-      colorAttribute.array instanceof Uint8ClampedArray);
-  const colorScale = colorIsByte ? 1 : 255;
+  // Point-cloud colors are stored as raw 8-bit sRGB (Uint8); mesh and
+  // intensity/field colors as 16-bit normalized [0,1] (Uint16), and older
+  // paths as Float32 [0,1]. Scale accordingly so export matches what's shown.
+  const colorArray = hasColors ? colorAttribute.array : null;
+  const colorScale =
+    colorArray instanceof Uint8Array || colorArray instanceof Uint8ClampedArray
+      ? 1
+      : colorArray instanceof Uint16Array
+        ? 255 / 65535
+        : 255;
 
   // Export through matrixWorld so the editable per-file transform is reflected
   // in the saved coordinates, as promised by the save action.
@@ -126,15 +129,30 @@ export function generatePlyFileContent(
       content += ` ${r} ${g} ${b}`;
     }
 
-    if (spatialData.hasNormals && spatialData.vertices[i]) {
+    if (spatialData.hasNormals) {
+      // Rust-decoded files carry packed normals; legacy ones vertex objects.
+      const normals = spatialData.normalsArray;
       const vertex = spatialData.vertices[i];
-      content += ` ${vertex.nx || 0} ${vertex.ny || 0} ${vertex.nz || 0}`;
+      if (normals) {
+        // Packed point-cloud normals are snorm16 (utils/normals.ts).
+        const scale = normals instanceof Int16Array ? 1 / 32767 : 1;
+        content += ` ${normals[i3] * scale} ${normals[i3 + 1] * scale} ${normals[i3 + 2] * scale}`;
+      } else {
+        content += ` ${vertex?.nx || 0} ${vertex?.ny || 0} ${vertex?.nz || 0}`;
+      }
     }
 
     content += '\n';
   }
 
-  // Face data (if any) - these don't change with transformations
+  // Face data (if any) - these don't change with transformations. Packed
+  // meshes (STL, OBJ, OFF) keep their triangles in `indicesArray`.
+  const triangles = spatialData.faces.length === 0 ? spatialData.indicesArray : null;
+  if (triangles) {
+    for (let i = 0; i < triangles.length; i += 3) {
+      content += `3 ${triangles[i]} ${triangles[i + 1]} ${triangles[i + 2]}\n`;
+    }
+  }
   spatialData.faces.forEach(face => {
     content += `${face.indices.length}`;
     face.indices.forEach(index => {

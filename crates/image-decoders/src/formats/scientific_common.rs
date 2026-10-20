@@ -3,6 +3,22 @@
 //! `scaledDomain` in `media/modules/scientific-format-parsers.ts`. Wrapped
 //! into the public `DecodedArray` by `lib.rs`.
 
+// Several helpers below serve only the container formats. A NARROW build —
+// `jxl`, `jpegxr`, or `sdt` on their own — pulls this module in for its shared
+// types and
+// leaves the rest unused. That is expected; it is not dead code to delete.
+#![cfg_attr(
+    not(any(
+        feature = "fits",
+        feature = "netcdf",
+        feature = "dicom",
+        feature = "czi",
+        feature = "nd2",
+        feature = "lif"
+    )),
+    allow(dead_code)
+)]
+
 use crate::DecodeError;
 
 /// Intermediate result shared by the FITS and NetCDF entry points, before
@@ -63,7 +79,7 @@ pub(crate) fn ascii(bytes: &[u8], start: usize, length: usize) -> String {
 }
 
 fn oob_generic(context: &str) -> DecodeError {
-    DecodeError::new(&format!(
+    DecodeError::new(format!(
         "{}: unexpected end of data while reading samples",
         context
     ))
@@ -84,94 +100,99 @@ pub(crate) fn get_slice<'a>(
     data.get(offset..end).ok_or_else(|| oob_generic(context))
 }
 
+/// Marker of the error a [`SparseFile`] read returns for bytes the caller has
+/// not supplied yet: `[need-range:OFFSET:LENGTH]`. The page reads that range
+/// and calls the decoder again (`media/modules/ranged-source.ts`).
+#[allow(dead_code)] // absent from builds without a ranged decoder
+pub(crate) const NEED_RANGE_MARKER: &str = "[need-range:";
+
+/// The bytes of a file of known size of which only some ranges are present,
+/// addressed by absolute file offset. A decoder written against it reads a
+/// whole file (one piece) and a ranged one alike: a read outside the file
+/// fails exactly like [`get_slice`], a read inside it that no piece contains
+/// fails with a [`NEED_RANGE_MARKER`] error naming the range to fetch.
+#[allow(dead_code)] // absent from builds without a ranged decoder
+pub(crate) struct SparseFile<'a> {
+    size: usize,
+    /// `(file offset, bytes)`, sorted by offset.
+    pieces: Vec<(usize, &'a [u8])>,
+}
+
+#[allow(dead_code)] // absent from builds without a ranged decoder
+impl<'a> SparseFile<'a> {
+    /// A whole file in memory.
+    pub(crate) fn whole(data: &'a [u8]) -> Self {
+        Self {
+            size: data.len(),
+            pieces: vec![(0, data)],
+        }
+    }
+
+    /// `size` bytes of which `pieces` (file offset, bytes) are present.
+    pub(crate) fn new(size: usize, mut pieces: Vec<(usize, &'a [u8])>) -> Self {
+        pieces.sort_by_key(|(offset, _)| *offset);
+        Self { size, pieces }
+    }
+
+    /// The file's size (not the bytes present).
+    pub(crate) fn len(&self) -> usize {
+        self.size
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.size == 0
+    }
+
+    /// `len` bytes at `offset`. When they are missing, ask for at least
+    /// `want` bytes from `offset` (clamped to the file), so one fetch can
+    /// cover what usually follows, e.g. a whole chunk after its header.
+    pub(crate) fn slice_want(
+        &self,
+        offset: usize,
+        len: usize,
+        want: usize,
+        context: &str,
+    ) -> Result<&'a [u8], DecodeError> {
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| oob_generic(context))?;
+        if end > self.size {
+            return Err(oob_generic(context));
+        }
+        // The last piece starting at or before `offset` is the only candidate
+        // besides earlier, longer pieces; check from there backwards.
+        let after = self.pieces.partition_point(|(start, _)| *start <= offset);
+        for &(start, bytes) in self.pieces[..after].iter().rev() {
+            if start + bytes.len() >= end {
+                return Ok(&bytes[offset - start..end - start]);
+            }
+        }
+        let wanted = len.max(want).min(self.size - offset);
+        Err(DecodeError::new(format!(
+            "{NEED_RANGE_MARKER}{offset}:{wanted}] {context}: bytes not read yet"
+        )))
+    }
+
+    /// `len` bytes at `offset`; see [`SparseFile::slice_want`].
+    pub(crate) fn slice(
+        &self,
+        offset: usize,
+        len: usize,
+        context: &str,
+    ) -> Result<&'a [u8], DecodeError> {
+        self.slice_want(offset, len, len, context)
+    }
+}
+
+/// Whether `error` is a [`SparseFile`] request for more bytes.
+#[allow(dead_code)] // absent from builds without a ranged decoder
+pub(crate) fn is_need_range(error: &DecodeError) -> bool {
+    error.to_string().starts_with(NEED_RANGE_MARKER)
+}
+
 /// `Math.ceil(n / 4) * 4`, computed with checked arithmetic (no usize
 /// overflow on 32-bit wasm targets, no panics on adversarial sizes).
+#[allow(dead_code)] // absent from narrow TIFF+DICOM+JXL builds
 pub(crate) fn ceil4(n: usize) -> usize {
     n.checked_add(3).map(|v| v / 4 * 4).unwrap_or(usize::MAX)
 }
-
-/// IEEE 754 binary16 -> binary32.
-///
-/// Hand-rolled because `f16` is not stable Rust and this crate stays
-/// dependency-light. Subnormals, infinities and NaN are handled explicitly
-/// rather than approximated: NaN is a meaningful value in scientific data, so
-/// a NaN payload is preserved rather than flattened to a quiet NaN.
-pub(crate) fn f16_to_f32(bits: u16) -> f32 {
-    let sign = ((bits >> 15) as u32) << 31;
-    let exponent = ((bits >> 10) & 0x1f) as u32;
-    let mantissa = (bits & 0x03ff) as u32;
-    if exponent == 0 {
-        if mantissa == 0 {
-            return f32::from_bits(sign);
-        }
-        // A binary16 subnormal is `mantissa * 2^-24`. Shifting the mantissa
-        // left until bit 10 is set gives `m = mantissa << k`, so the value is
-        // `(m / 1024) * 2^(-14 - k)`; the binary32 biased exponent is
-        // therefore `127 - 14 - k`, i.e. `127 - 15 + (1 - k)`.
-        let mut shifts = 0i32;
-        let mut m = mantissa;
-        while m & 0x0400 == 0 {
-            m <<= 1;
-            shifts += 1;
-        }
-        let exp = (127 - 15 + (1 - shifts)) as u32;
-        return f32::from_bits(sign | (exp << 23) | ((m & 0x03ff) << 13));
-    }
-    if exponent == 0x1f {
-        return f32::from_bits(sign | 0x7f80_0000 | (mantissa << 13));
-    }
-    f32::from_bits(sign | ((exponent + 127 - 15) << 23) | (mantissa << 13))
-}
-
-#[cfg(test)]
-mod f16_tests {
-    use super::f16_to_f32;
-
-    /// Reference values are the exact binary16 encodings from IEEE 754-2008.
-    #[test]
-    fn matches_ieee_reference_values() {
-        assert_eq!(f16_to_f32(0x0000), 0.0);
-        assert_eq!(f16_to_f32(0x8000).to_bits(), (-0.0f32).to_bits(), "-0 keeps its sign");
-        assert_eq!(f16_to_f32(0x3c00), 1.0);
-        assert_eq!(f16_to_f32(0xbc00), -1.0);
-        assert_eq!(f16_to_f32(0x4000), 2.0);
-        assert_eq!(f16_to_f32(0x3555), 0.33325195); // nearest half to 1/3
-        assert_eq!(f16_to_f32(0x7bff), 65504.0);    // largest finite half
-        assert_eq!(f16_to_f32(0x0400), 6.1035156e-5); // smallest normal
-        assert_eq!(f16_to_f32(0x0001), 5.9604645e-8); // smallest subnormal
-        assert_eq!(f16_to_f32(0x03ff), 6.0975552e-5); // largest subnormal
-        assert!(f16_to_f32(0x7c00).is_infinite() && f16_to_f32(0x7c00) > 0.0);
-        assert!(f16_to_f32(0xfc00).is_infinite() && f16_to_f32(0xfc00) < 0.0);
-        assert!(f16_to_f32(0x7e00).is_nan());
-    }
-
-    /// Straight from the IEEE 754 definition, used only as the test oracle.
-    fn reference(bits: u16) -> f64 {
-        let sign = if bits >> 15 == 1 { -1.0 } else { 1.0 };
-        let exponent = ((bits >> 10) & 0x1f) as i32;
-        let mantissa = (bits & 0x03ff) as f64;
-        if exponent == 0 {
-            sign * mantissa * 2f64.powi(-24)
-        } else {
-            sign * (1.0 + mantissa / 1024.0) * 2f64.powi(exponent - 15)
-        }
-    }
-
-    /// All 65536 patterns against the definition. binary32 represents every
-    /// binary16 exactly, so anything but equality is a bug.
-    #[test]
-    fn every_bit_pattern_matches_the_definition() {
-        for bits in 0u32..=0xffff {
-            let bits = bits as u16;
-            let exponent = (bits >> 10) & 0x1f;
-            let got = f16_to_f32(bits);
-            if exponent == 0x1f {
-                // Inf/NaN are checked separately; only the class must match.
-                assert_eq!(got.is_nan(), (bits & 0x03ff) != 0, "pattern {:#06x}", bits);
-                continue;
-            }
-            assert_eq!(got as f64, reference(bits), "pattern {:#06x}", bits);
-        }
-    }
-}
-
