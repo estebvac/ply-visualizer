@@ -203,9 +203,14 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
     this.pathToPanel.set(document.uri.fsPath, webviewPanel);
     this.panelToPath.set(webviewPanel, document.uri.fsPath);
     this.panelVolumeSessions.set(webviewPanel, new Set([document.uri.toString()]));
-    this.prepareWebviewMessaging(webviewPanel, readyGate);
-    webviewPanel.onDidChangeViewState(event => {
-      void event.webviewPanel.webview.postMessage({
+    registerWebviewTransport(webviewPanel, readyGate, () => loadStartedAt, initialLoad);
+    const visibility = webviewPanel.onDidChangeViewState(event => {
+      // Keep the fork's GPU context recovery and progressive tile residency aligned.
+      void sendToWebview(webviewPanel, {
+        type: 'viewVisibility',
+        visible: event.webviewPanel.visible,
+      });
+      void webviewPanel.webview.postMessage({
         type: 'progressivePly:panelVisibility',
         visible: event.webviewPanel.visible,
       });
@@ -286,10 +291,19 @@ export class PointCloudEditorProvider implements vscode.CustomReadonlyEditorProv
 
     // Register before assigning HTML. Restored webviews can initialize very
     // quickly, and their ready signal must never race this subscription.
-    webviewPanel.webview.onDidReceiveMessage(async message => {
-      if (await this.progressivePlyService.handleMessage(webviewPanel, message)) {
+    webviewPanel.webview.onDidReceiveMessage(async raw => {
+      // Progressive tile requests have a separate binary-aware protocol.
+      if (await this.progressivePlyService.handleMessage(webviewPanel, raw)) {
         return;
       }
+      let message;
+      try {
+        message = readHostMessage(raw);
+      } catch (error) {
+        void vscode.window.showErrorMessage(String(error));
+        return;
+      }
+      if (!message) return;
       switch (message.type) {
         case 'webviewReady':
           readyGate.markReady();
