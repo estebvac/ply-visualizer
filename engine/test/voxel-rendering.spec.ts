@@ -108,4 +108,19 @@ test('point cloud can switch Points -> Voxels -> Points and resize voxels', asyn
       sourceVisible: true,
       voxelObjectVisible: false,
     });
+
+  // The fork stores file visibility in FileEntry, while the preserved voxel
+  // renderer historically used array-backed mode state. Hiding/showing a
+  // cloud must never resurrect it through a subsequent render-mode update.
+  const visibility = page.locator('#file-0');
+  await visibility.uncheck();
+  await expect.poll(() => page.evaluate(() => ({
+    entryVisible: (window as any).visualizer.fileEntries.require(0).state.visible,
+    meshVisible: (window as any).visualizer.meshes?.[0]?.visible,
+  }))).toEqual({ entryVisible: false, meshVisible: false });
+  await visibility.check();
+  await expect.poll(() => page.evaluate(() => ({
+    entryVisible: (window as any).visualizer.fileEntries.require(0).state.visible,
+    meshVisible: (window as any).visualizer.meshes?.[0]?.visible,
+  }))).toEqual({ entryVisible: true, meshVisible: true });
 });
